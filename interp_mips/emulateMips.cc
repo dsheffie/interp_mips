@@ -580,9 +580,14 @@ static void _multu(uint32_t inst, state_t *s)
   uint64_t y;
   uint32_t rs = (inst >> 21) & 31;
   uint32_t rt = (inst >> 16) & 31;
-  y = (uint64_t)s->gpr[rs] * (uint64_t)s->gpr[rt];
-  s->lo = (int32_t)(y & 0xffffffff);
-  s->hi = (int32_t)(y >> 32);
+
+  uint32_t u0 = *((uint32_t*)&s->gpr[rs]);
+  uint32_t u1 = *((uint32_t*)&s->gpr[rt]);
+  uint64_t uk0 = (uint64_t)u0;
+  uint64_t uk1 = (uint64_t)u1;
+  y = uk0*uk1;
+  *((uint32_t*)&(s->lo)) = (uint32_t)y;
+  *((uint32_t*)&(s->hi)) = (uint32_t)(y>>32);
   s->pc += 4;
 }
 
@@ -591,11 +596,14 @@ static void _mul(uint32_t inst, state_t *s)
   uint32_t rs = (inst >> 21) & 31;
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
-  s->gpr[rd] = s->gpr[rs] * s->gpr[rt];
-  //printf("pc before = %x\n", s->pc);
+  
+  //s->gpr[R_k0] = s->gpr[rs];
+  //s->gpr[R_k1] = s->gpr[rt];
+    
+  int64_t y = ((int64_t)s->gpr[rs]) * ((int64_t)s->gpr[rt]);
+  s->gpr[rd] = (int32_t)y;
   s->pc += 4;
-  //printf("pc after = %x\n", s->pc);
-  //exit(-1);
+  
 }
 
 static void _nor(uint32_t inst, state_t *s)

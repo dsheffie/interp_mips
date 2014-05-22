@@ -15,12 +15,6 @@
 #include "emulateMips.h"
 std::string log;
 
-#define __DO_HASH__ 1
-
-#ifdef __DO_HASH__
-#include <mhash.h>
-#endif
-
 
 int main(int argc, char *argv[])
 {
@@ -103,7 +97,10 @@ int main(int argc, char *argv[])
   fprintf(fpl, "%s", log.c_str());
   fclose(fpl);
   
-  printf("%g inst/sec\n", s->icnt / (estop-estart));
+  double runtime = (estop-estart);
+  printf("%g inst/sec (%g sec)\n", 
+	 s->icnt / runtime,
+	 runtime);
 
   if(h)
     {
