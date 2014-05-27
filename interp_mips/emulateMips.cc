@@ -10,6 +10,22 @@
 #include <fcntl.h>
 
 #include <unistd.h>
+#include <sys/time.h>
+#include <sys/times.h>
+
+typedef struct
+{
+  uint32_t tv_sec;
+  uint32_t tv_usec;
+} timeval32_t;
+
+typedef struct
+{
+  uint32_t tms_utime;
+  uint32_t tms_stime;
+  uint32_t tms_cutime;
+  uint32_t tms_cstime;
+} tms32_t;
 
 #define K1SIZE  (0x20000000)
 
@@ -81,7 +97,7 @@ static void _beq(uint32_t inst, state_t *s);
 static void _beql(uint32_t inst, state_t *s);
 static void _bne(uint32_t inst, state_t *s);
 static void _bnel(uint32_t inst, state_t *s);
-
+static void _bgtzl(uint32_t inst, state_t *s);
 static void _bgtz(uint32_t inst, state_t *s);
 static void _blez(uint32_t inst, state_t *s);
 
@@ -109,18 +125,24 @@ static void _clz(uint32_t inst, state_t *s);
 
 static void (*functTbl[64])(uint32_t inst, state_t *s) = {NULL};
 static void (*ITypeOpcodeTbl[64])(uint32_t inst, state_t *s) = {NULL};
-
+static bool enTimingFuncts = false;
 void printState(state_t *s)
 {
-  printf("executed %llu instructions, PC=0x%08x\n", s->icnt, s->pc);
+  printf("executed %zu instructions, PC=0x%08x\n", (size_t)s->icnt, s->pc);
   for(int32_t i = 0; i < 32; i++)
     {
-      printf("%s: 0x%08x (%d)\n", getGPRName(i).c_str(), s->gpr[i], s->gpr[i]);  
+      printf("%s: 0x%08x (%d)\n", 
+	     getGPRName(i).c_str(), 
+	     s->gpr[i], 
+	     s->gpr[i]);  
     }
+  printf("  lo: 0x%08x (%d)\n", s->lo, s->lo);
+  printf("  hi: 0x%08x (%d)\n", s->hi, s->hi);
 }
 
-void initEmulationTables()
+void initEmulationTables(bool enClockFuncts)
 {
+  enTimingFuncts = enClockFuncts;
   /* These are R Type instructions (use function) */
   functTbl[0x00] = _sll;
   functTbl[0x02] = _srl;
@@ -168,7 +190,8 @@ void initEmulationTables()
 
   ITypeOpcodeTbl[0x05] = _bne;
   ITypeOpcodeTbl[0x15] = _bnel;
-  
+  ITypeOpcodeTbl[0x17] = _bgtzl;
+
   ITypeOpcodeTbl[0x06] = _blez;
   ITypeOpcodeTbl[0x07] = _bgtz;
 
@@ -541,13 +564,13 @@ static void _mflo(uint32_t inst, state_t *s)
 static void _mthi(uint32_t inst, state_t *s)
 {
   uint32_t rs = (inst >> 21) & 31;
-  s->gpr[rs] = s->hi;
+  s->hi = s->gpr[rs];
   s->pc += 4;
 }
 static void _mtlo(uint32_t inst, state_t *s)
 {
   uint32_t rs = (inst >> 21) & 31;
-  s->gpr[rs] = s->lo;
+  s->lo = s->gpr[rs];
   s->pc += 4;
 }
 static void _mult(uint32_t inst, state_t *s)
@@ -674,8 +697,11 @@ static void _sra(uint32_t inst, state_t *s)
 }
 static void _srav(uint32_t inst, state_t *s)
 {
-  printf("%s", __func__); 
-  exit(-1);
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rt] >> s->gpr[rs];
+  s->pc += 4;
 }
 static void _srl(uint32_t inst, state_t *s)
 {
@@ -855,7 +881,26 @@ static void _bne(uint32_t inst, state_t *s)
     s->pc = (imm+npc);
 }
 
-
+static void _bgtzl(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  bool takeBranch = (s->gpr[rs]>0);
+  
+  if(takeBranch)
+    {
+      s->pc +=4;
+      execMips(s);
+      s->pc = (imm+npc);
+    }
+  else
+    {
+      s->pc += 8;
+    }
+}
 
 static void _bnel(uint32_t inst, state_t *s)
 {
@@ -1017,7 +1062,19 @@ static void _lh(uint32_t inst, state_t *s)
   s->pc +=4;
 }
 
-static void _lb(uint32_t inst, state_t *s){}
+static void _lb(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  
+  uint32_t ea = s->gpr[rs] + imm;
+  int8_t v = *((int8_t*)(s->mem + ea));
+  s->gpr[rt] = (int32_t)v;
+  s->pc += 4;
+}
+
 static void _lbu(uint32_t inst, state_t *s)
 {
   uint32_t rt = (inst >> 16) & 31;
@@ -1026,7 +1083,8 @@ static void _lbu(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  s->gpr[rt] = (int32_t)s->mem[ea];
+  uint32_t zExt = (uint32_t)s->mem[ea];
+  *((uint32_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
 }
 
@@ -1038,7 +1096,8 @@ static void _lhu(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  s->gpr[rt] = (int32_t)accessBigEndian(*((int16_t*)(s->mem + ea)));
+  uint32_t zExt = accessBigEndian(*((uint16_t*)(s->mem + ea)));
+  *((uint32_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
 }
 
@@ -1170,6 +1229,10 @@ static void _monitor(uint32_t inst, state_t *s)
     RSVD_INSTRUCTION_ARG_MASK;
   reason >>= 1;
   int32_t fd=-1,nr=-1;
+  struct timeval tp;
+  timeval32_t tp32;
+  struct tms tms_buf;
+  tms32_t tms32_buf;
   switch(reason)
     {
     case 6: /* int open(char *path, int flags) */
@@ -1198,6 +1261,31 @@ static void _monitor(uint32_t inst, state_t *s)
 	s->gpr[R_v0] = (int32_t)close(fd);
       else
 	s->gpr[R_v0] = 0;
+      break;
+      /* int gettimeofday(struct timeval *tp, void *tzp) */;
+    case 33:
+      if(enTimingFuncts) {
+	gettimeofday(&tp, NULL);
+	tp32.tv_sec = accessBigEndian((uint32_t)tp.tv_sec);
+	tp32.tv_usec = accessBigEndian((uint32_t)tp.tv_usec);
+      } else {
+	memset(&tp32, 0, sizeof(tp32));
+      }
+      *((timeval32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tp32;
+      s->gpr[R_v0] = 0;
+      break;
+    case 34:
+      if(enTimingFuncts) {
+	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
+	tms32_buf.tms_utime = accessBigEndian((uint32_t)tms_buf.tms_utime);
+	tms32_buf.tms_stime = accessBigEndian((uint32_t)tms_buf.tms_stime);
+	tms32_buf.tms_cutime = accessBigEndian((uint32_t)tms_buf.tms_cutime);
+	tms32_buf.tms_cstime = accessBigEndian((uint32_t)tms_buf.tms_cstime);
+      } else {
+	*((uint32_t*)(&s->gpr[R_v0])) = 0;
+	memset(&tms32_buf, 0, sizeof(tms32_buf));
+      }
+      *((tms32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tms32_buf;
       break;
     case 55: 
       /* void get_mem_info(unsigned int *ptr) */

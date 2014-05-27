@@ -76,10 +76,10 @@ void load_elf(const char* fn,
   assert(accessBigEndian(eh32->e_machine) == 8);
   *entry_p = accessBigEndian(eh32->e_entry);
 
-  printf("e_phoff = %d\n", accessBigEndian(eh32->e_phoff));
+  /*printf("e_phoff = %d\n", accessBigEndian(eh32->e_phoff));*/
 
   int32_t e_phnum = accessBigEndian(eh32->e_phnum);
-  printf("e_phnum = %d\n", e_phnum);
+  /*printf("e_phnum = %d\n", e_phnum); */
   ph32 = (Elf32_Phdr*)(buf + accessBigEndian(eh32->e_phoff));
   assert(ph32);
 
@@ -98,9 +98,10 @@ void load_elf(const char* fn,
 	  std::pair<uint32_t, uint32_t> p(p_vaddr, p_memsz);
 	  segs.push_back(p);
 
+	  /*
 	  printf("ph32 (%d) : va = %x, memsz=%d, offset=%d, filesz=%d\n", 
 		 i, p_vaddr, p_memsz, p_offset, p_filesz);
-
+	  */
 	  if( (p_vaddr + p_memsz) > lAddr)
 	    lAddr = (p_vaddr + p_memsz);
 

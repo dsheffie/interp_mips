@@ -19,18 +19,14 @@ std::string log;
 int main(int argc, char *argv[])
 {
   int c,d=0,h=0,n=-1;
+  bool enClockFuncts = false;
   uint8_t *mem = 0;
   uint32_t entry_p = 0, last_a;
   std::list<std::pair<uint32_t, uint32_t> > segs;
   double estart=0.0,estop=0.0;
 
-  initParseTables();
-  initEmulationTables();
-  state_t *s = new state_t;
-  initState(s);
-
-  char *filename = NULL;
-  while((c=getopt(argc,argv,"df:hn:"))!=-1)
+   char *filename = NULL;
+  while((c=getopt(argc,argv,"df:hn:t"))!=-1)
     {
       switch(c)
 	{
@@ -46,6 +42,9 @@ int main(int argc, char *argv[])
 	case 'n':
 	  n = atoi(optarg);
 	  break;
+	case 't':
+	  enClockFuncts = true;
+	  break;
 	}
     }
 
@@ -54,7 +53,10 @@ int main(int argc, char *argv[])
       printf("no file\n");
       exit(-1);
     }
-  
+  initParseTables();
+  initEmulationTables(enClockFuncts);
+  state_t *s = new state_t;
+  initState(s);
   mem = new uint8_t[1UL<<32];
  
   load_elf(filename,

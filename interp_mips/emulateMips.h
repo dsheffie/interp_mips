@@ -25,7 +25,7 @@ typedef struct
   uint64_t icnt;
 } state_t;
 
-void initEmulationTables();
+void initEmulationTables(bool enClockFuncts);
 void initState(state_t *s);
 void execMips(state_t *s);
 void printState(state_t *s);
