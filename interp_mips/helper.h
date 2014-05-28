@@ -7,7 +7,11 @@
 
 
 double timestamp();
+uint64_t rdtsc(void);
+
 void md5sum(uint8_t *bytes, size_t nBytes, std::vector<uint8_t> &hash);
+
+int32_t remapIOFlags(int32_t flags);
 
 template <class T> std::string toString(T x)
 {

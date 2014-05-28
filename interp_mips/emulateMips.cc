@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <sys/times.h>
+#include <errno.h>
 
 typedef struct
 {
@@ -1233,10 +1234,16 @@ static void _monitor(uint32_t inst, state_t *s)
   timeval32_t tp32;
   struct tms tms_buf;
   tms32_t tms32_buf;
+  char *path = 0;
+  int32_t flags = -1;
+
   switch(reason)
     {
     case 6: /* int open(char *path, int flags) */
-      s->gpr[R_v0] = open((char*)(s->mem + (uint32_t)s->gpr[R_a0]), s->gpr[R_a1]);
+      path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
+      flags = remapIOFlags(s->gpr[R_a1]);
+      fd = open(path, flags, S_IRUSR|S_IWUSR);
+      s->gpr[R_v0] = fd;
       break;
     case 7: /* int read(int file,char *ptr,int len) */
       fd = s->gpr[R_a0];

@@ -64,13 +64,6 @@ int main(int argc, char *argv[])
 	   &last_a,
 	   segs,
 	   mem);
-
-  printf("entry point at @ %x, last addr = %x\n", 
-	 entry_p, last_a);
-  assert((last_a & 0x3) == 0);
-
-  printf("at access point = %x\n", 
-	 accessBigEndian(*((uint32_t*)(mem+entry_p))));
   
   s->pc = entry_p;
   s->mem = mem;
