@@ -101,6 +101,7 @@ static void _bnel(uint32_t inst, state_t *s);
 static void _bgtzl(uint32_t inst, state_t *s);
 static void _bgtz(uint32_t inst, state_t *s);
 static void _blez(uint32_t inst, state_t *s);
+static void _blezl(uint32_t inst, state_t *s);
 
 static void _bgez_bltz(uint32_t inst, state_t *s);
 
@@ -123,6 +124,12 @@ static void _sdc1(uint32_t inst, state_t *s);
 static void _seh(uint32_t inst, state_t *s);
 static void _ext(uint32_t inst, state_t *s);
 static void _clz(uint32_t inst, state_t *s);
+
+static void _lwl(uint32_t inst, state_t *s);
+static void _lwr(uint32_t inst, state_t *s);
+static void _swl(uint32_t inst, state_t *s);
+static void _swr(uint32_t inst, state_t *s);
+
 
 static void (*functTbl[64])(uint32_t inst, state_t *s) = {NULL};
 static void (*ITypeOpcodeTbl[64])(uint32_t inst, state_t *s) = {NULL};
@@ -194,6 +201,7 @@ void initEmulationTables(bool enClockFuncts)
   ITypeOpcodeTbl[0x17] = _bgtzl;
 
   ITypeOpcodeTbl[0x06] = _blez;
+  ITypeOpcodeTbl[0x16] = _blezl;
   ITypeOpcodeTbl[0x07] = _bgtz;
 
   ITypeOpcodeTbl[0x01] = _bgez_bltz;
@@ -215,6 +223,11 @@ void initEmulationTables(bool enClockFuncts)
   ITypeOpcodeTbl[0x2B] = _sw;
   ITypeOpcodeTbl[0x3D] = _sdc1;
   ITypeOpcodeTbl[0x35] = _ldc1;
+
+  ITypeOpcodeTbl[0x2a] = _swl;
+  ITypeOpcodeTbl[0x2e] = _swr;
+  ITypeOpcodeTbl[0x22] = _lwl;
+  ITypeOpcodeTbl[0x26] = _lwr;
 }
 
 void execMips(state_t *s)
@@ -954,6 +967,28 @@ static void _blez(uint32_t inst, state_t *s)
     s->pc = imm+npc;
 }
 
+static void _blezl(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  bool takeBranch = (s->gpr[rs]<=0);
+  s->pc += 4;
+
+  if(takeBranch)
+    {
+      execMips(s);
+      s->pc = imm+npc;
+    }
+  else
+    {
+      s += 4;
+    }
+}
+
+
 static void _bgez_bltz(uint32_t inst, state_t *s)
 {
   uint32_t rt = (inst >> 16) & 31;
@@ -1314,4 +1349,78 @@ static void _monitor(uint32_t inst, state_t *s)
       break;
     }
   s->pc = s->gpr[31];
+}
+
+static void _swl(uint32_t inst, state_t *s)
+{
+  //printf("%s\n", __func__);
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
+  uint32_t ea = s->gpr[rs] + imm;
+  uint32_t ma = ea & 3;
+  //printf("swl: ea = %x, ma = %x\n", ea, ma);
+  uint32_t m = ~((1U << (8*(4-ma))) - 1);
+  //printf("swl mask = %08x\n", m);
+  uint32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  uint32_t rmw = (r & m) | (s->gpr[rt] & (~m));
+  *((int32_t*)(s->mem + ea)) = accessBigEndian(rmw);
+  s->pc += 4;
+}
+
+static void _swr(uint32_t inst, state_t *s)
+{
+  //printf("%s\n", __func__);
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
+  
+  uint32_t ea = s->gpr[rs] + imm;
+  uint32_t ma = ea & 3;
+  //printf("swr: ea = %x, ma = %x\n", ea, ma);
+  uint32_t m = ~((1U << (8*(ma+1))) - 1);
+  // printf("swr mask = %08x\n", m);
+  uint32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  uint32_t rmw = (r & m) | (s->gpr[rt] & (~m));
+  *((int32_t*)(s->mem + ea)) = accessBigEndian(rmw);
+  s->pc += 4;
+}
+
+static void _lwl(uint32_t inst, state_t *s)
+{
+  printf("%s\n", __func__);
+  exit(-1);
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
+
+  uint32_t ea = (uint32_t)s->gpr[rs] + imm;
+
+  s->gpr[rt] = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  /* printf("lw (pc=0x%x): loading from address 0x%x, value = %x\n",
+     s->pc, ea, s->gpr[rt]); */
+  s->pc += 4;
+}
+static void _lwr(uint32_t inst, state_t *s)
+{
+  printf("%s\n", __func__);
+  exit(-1);
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
+
+  uint32_t ea = (uint32_t)s->gpr[rs] + imm;
+
+  s->gpr[rt] = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  /* printf("lw (pc=0x%x): loading from address 0x%x, value = %x\n",
+     s->pc, ea, s->gpr[rt]); */
+  s->pc += 4;
 }

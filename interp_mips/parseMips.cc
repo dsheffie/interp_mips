@@ -91,6 +91,7 @@ static void _bnel(uint32_t inst, uint32_t addr, std::string &s);
 static void _bgtzl(uint32_t inst, uint32_t addr, std::string &s);
 static void _bgtz(uint32_t inst, uint32_t addr, std::string &s);
 static void _blez(uint32_t inst, uint32_t addr, std::string &s);
+static void _blezl(uint32_t inst, uint32_t addr, std::string &s);
 
 static void _bgez_bltz(uint32_t inst, uint32_t addr, std::string &s);
 
@@ -115,6 +116,13 @@ static void _ldc1(uint32_t inst, uint32_t addr, std::string &s);
 static void _ext(uint32_t inst, uint32_t addr, std::string &s);
 static void _seh(uint32_t inst, uint32_t addr, std::string &s);
 static void _clz(uint32_t inst, uint32_t addr, std::string &s);
+
+static void _swl(uint32_t inst, uint32_t addr, std::string &s);
+static void _swr(uint32_t inst, uint32_t addr, std::string &s);
+static void _lwl(uint32_t inst, uint32_t addr, std::string &s);
+static void _lwr(uint32_t inst, uint32_t addr, std::string &s);
+
+
 
 static void (*functTbl[64])(uint32_t inst, uint32_t addr, std::string &s) = {NULL};
 static void (*ITypeOpcodeTbl[64])(uint32_t inst, uint32_t addr, std::string &s) = {NULL};
@@ -171,6 +179,7 @@ void initParseTables()
   ITypeOpcodeTbl[0x17] = _bgtzl;
 
   ITypeOpcodeTbl[0x06] = _blez;
+  ITypeOpcodeTbl[0x16] = _blezl;
   ITypeOpcodeTbl[0x07] = _bgtz;
 
   ITypeOpcodeTbl[0x01] = _bgez_bltz;
@@ -193,7 +202,11 @@ void initParseTables()
   
   ITypeOpcodeTbl[0x3D] = _sdc1;
   ITypeOpcodeTbl[0x35] = _ldc1;
-    
+
+  ITypeOpcodeTbl[0x2a] = _swl;
+  ITypeOpcodeTbl[0x2e] = _swr;
+  ITypeOpcodeTbl[0x22] = _lwl;
+  ITypeOpcodeTbl[0x26] = _lwr;
 }
 
 std::string getAsmString(uint32_t inst, uint32_t addr)
@@ -852,6 +865,16 @@ static void _blez(uint32_t inst, uint32_t addr, std::string &s)
   s += "blez " + regNames[rs] + "," + toStringHex(imm+npc);
 }
 
+static void _blezl(uint32_t inst, uint32_t addr, std::string &s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = addr+4; 
+  assert(rt == 0);
+  s += "blezl " + regNames[rs] + "," + toStringHex(imm+npc);
+
 
 static void _lui(uint32_t inst, uint32_t addr,std::string &s)
 {
@@ -1026,4 +1049,45 @@ static void _clz(uint32_t inst, uint32_t addr,std::string &s)
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s += "ext " + regNames[rd] + "," + regNames[rt];
+}
+
+static void _swl(uint32_t inst, uint32_t addr,std::string &s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  
+  s += "swl " + regNames[rt] + "," +  toString<int32_t>(imm) +
+    "(" + regNames[rs] + ")";
+}
+static void _swr(uint32_t inst, uint32_t addr,std::string &s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  
+  s += "swr " + regNames[rt] + "," +  toString<int32_t>(imm) +
+    "(" + regNames[rs] + ")";
+}
+static void _lwl(uint32_t inst, uint32_t addr,std::string &s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  
+  s += "lwl " + regNames[rt] + "," +  toString<int32_t>(imm) +
+    "(" + regNames[rs] + ")";
+}
+static void _lwr(uint32_t inst, uint32_t addr,std::string &s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  
+  s += "lwr " + regNames[rt] + "," +  toString<int32_t>(imm) +
+    "(" + regNames[rs] + ")";
 }
