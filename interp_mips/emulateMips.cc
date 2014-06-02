@@ -121,7 +121,9 @@ static void _sh(uint32_t inst, state_t *s);
 static void _sb(uint32_t inst, state_t *s);
 static void _sdc1(uint32_t inst, state_t *s);
 
+static void _seb(uint32_t inst, state_t *s);
 static void _seh(uint32_t inst, state_t *s);
+
 static void _ext(uint32_t inst, state_t *s);
 static void _clz(uint32_t inst, state_t *s);
 
@@ -302,6 +304,9 @@ void execSpecial3(uint32_t inst,state_t *s)
     {
       switch(op)
 	{
+	case 0x10:
+	  _seb(inst, s);
+	  break;
 	case 0x18:
 	  _seh(inst, s);
 	  break;
@@ -1216,6 +1221,14 @@ static void _seh(uint32_t inst, state_t *s)
   s->pc +=4;
 }
 
+static void _seb(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = (int32_t)((int8_t)s->gpr[rt]);
+  s->pc +=4;
+}
+
 static void _ext(uint32_t inst, state_t *s)
 {
   uint32_t rt = (inst >> 16) & 31;
@@ -1392,25 +1405,28 @@ static void _swr(uint32_t inst, state_t *s)
 
 static void _lwl(uint32_t inst, state_t *s)
 {
-  printf("%s\n", __func__);
-  exit(-1);
+  uint32_t masks[4] = {0xffffffff, 
+		       0x00ffffff,
+		       0x0000ffff,
+		       0x000000ff};
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
-
+  
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
-
-  s->gpr[rt] = accessBigEndian(*((int32_t*)(s->mem + ea))); 
-  /* printf("lw (pc=0x%x): loading from address 0x%x, value = %x\n",
-     s->pc, ea, s->gpr[rt]); */
+  uint32_t ma = ea & 3;
+  int32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  int32_t old_rt =  s->gpr[rt];
+  s->gpr[rt] = (old_rt & (~masks[ma])) | (r & masks[ma]);
   s->pc += 4;
 }
 static void _lwr(uint32_t inst, state_t *s)
 {
-  printf("%s\n", __func__);
-  exit(-1);
+  uint32_t masks[4] = {0x000000ff, 
+		       0x0000ffff,
+		       0x00ffffff,
+		       0xffffffff};
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -1418,9 +1434,10 @@ static void _lwr(uint32_t inst, state_t *s)
   /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
 
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
-
-  s->gpr[rt] = accessBigEndian(*((int32_t*)(s->mem + ea))); 
-  /* printf("lw (pc=0x%x): loading from address 0x%x, value = %x\n",
-     s->pc, ea, s->gpr[rt]); */
+  uint32_t ma = ea & 3;
+  //printf("lwr: ea = %x, ma = %x\n", ea, ma);
+  int32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  int32_t old_rt =  s->gpr[rt];
+  s->gpr[rt] = (old_rt & (~masks[ma])) | (r & masks[ma]);
   s->pc += 4;
 }

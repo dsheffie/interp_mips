@@ -26,10 +26,13 @@ int main(int argc, char *argv[])
   double estart=0.0,estop=0.0;
 
    char *filename = NULL;
-  while((c=getopt(argc,argv,"df:hn:t"))!=-1)
+  while((c=getopt(argc,argv,"cdf:hn:"))!=-1)
     {
       switch(c)
 	{
+	case 'c':
+	  enClockFuncts = true;
+	  break;
 	case 'd':
 	  d = 1;
 	  break;
@@ -41,9 +44,6 @@ int main(int argc, char *argv[])
 	  break;
 	case 'n':
 	  n = atoi(optarg);
-	  break;
-	case 't':
-	  enClockFuncts = true;
 	  break;
 	}
     }

@@ -874,7 +874,7 @@ static void _blezl(uint32_t inst, uint32_t addr, std::string &s)
   int32_t npc = addr+4; 
   assert(rt == 0);
   s += "blezl " + regNames[rs] + "," + toStringHex(imm+npc);
-
+}
 
 static void _lui(uint32_t inst, uint32_t addr,std::string &s)
 {
