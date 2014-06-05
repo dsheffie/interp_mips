@@ -131,7 +131,7 @@ static void _mtc0(uint32_t inst, state_t *s);
 static void _mfc0(uint32_t inst, state_t *s);
 static void _mtc1(uint32_t inst, state_t *s);
 static void _mfc1(uint32_t inst, state_t *s);
-static void _movd(uint32_t inst, state_t *s);
+
 
 static void _lwl(uint32_t inst, state_t *s);
 static void _lwr(uint32_t inst, state_t *s);
@@ -151,12 +151,13 @@ static void _truncl(uint32_t inst, state_t *s);
 
 static void _lwc1(uint32_t inst, state_t *s);
 static void _swc1(uint32_t inst, state_t *s);
-
+static void _movci(uint32_t inst, state_t *s);
 
 static void _fadd(uint32_t inst, state_t *s);
 static void _fsub(uint32_t inst, state_t *s);
 static void _fmul(uint32_t inst, state_t *s);
 static void _fdiv(uint32_t inst, state_t *s);
+static void _fmov(uint32_t inst, state_t *s);
 
 static void _adds(uint32_t inst, state_t *s);
 static void _subs(uint32_t inst, state_t *s);
@@ -174,6 +175,8 @@ static void _bc1t(uint32_t inst, state_t *s);
 static void _bc1fl(uint32_t inst, state_t *s);
 static void _bc1tl(uint32_t inst, state_t *s);
 
+static void _movd(uint32_t inst, state_t *s);
+static void _movs(uint32_t inst, state_t *s);
 
 
 static void (*functTbl[64])(uint32_t inst, state_t *s) = {NULL};
@@ -198,6 +201,7 @@ void initEmulationTables(bool enClockFuncts)
   enTimingFuncts = enClockFuncts;
   /* These are R Type instructions (use function) */
   functTbl[0x00] = _sll;
+  functTbl[0x01] = _movci;
   functTbl[0x02] = _srl;
   functTbl[0x03] = _sra;
   functTbl[0x04] = _sllv;
@@ -292,7 +296,7 @@ void execMips(state_t *s)
   //printf("%x: %s\n", s->pc, asmString.c_str());
 
   //std::string asmString = getAsmString(inst, s->pc);
-  log += "0x" + toStringHex(s->pc) + "\n";
+  //log += "0x" + toStringHex(s->pc) + "\n";
   
   //printf("pc=%x\n", s->pc);
 
@@ -387,7 +391,8 @@ void execRType(uint32_t inst,state_t *s)
   uint32_t funct = inst & 63;
   if(functTbl[funct] == 0)
     {
-      printf("unknown RType instruction, funct = %d\n", funct);
+      printf("unknown RType instruction @ %x, funct = %d\n", 
+	     s->pc, funct);
       exit(-1);
     }
   else
@@ -529,7 +534,7 @@ void execCoproc1(uint32_t inst, state_t *s)
 	      break;
 	    case 0x6:
 	      /* MOV.D */
-	      _movd(inst, s);
+	      _fmov(inst, s);
 	      break;
 	    case 0x9:
 	      _truncl(inst, s);
@@ -1365,7 +1370,7 @@ void initState(state_t *s)
 
 uint32_t getConditionCode(state_t *s, uint32_t cc)
 {
-  return (s->fcr1[CP1_CR25] & (1<<cc)) >> cc;
+  return ((s->fcr1[CP1_CR25] & (1<<cc)) >> cc) & 0x1;
 }
 void setConditionCode(state_t *s, uint32_t v, uint32_t cc)
 {
@@ -1525,13 +1530,6 @@ static void _mfc1(uint32_t inst, state_t *s)
   s->pc +=4;
 }
 
-static void _movd(uint32_t inst, state_t *s)
-{
-  uint32_t fd = (inst>>6) & 31;
-  uint32_t fs = (inst>>11) & 31;
-  s->cpr1[fd] = s->cpr1[fs];
-  s->pc += 4;
-}
 
 static void _swl(uint32_t inst, state_t *s)
 {
@@ -1676,6 +1674,24 @@ static void _lwc1(uint32_t inst, state_t *s)
   uint32_t v = accessBigEndian(*((uint32_t*)(s->mem + ea))); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
+}
+
+static void _fmov(uint32_t inst, state_t *s)
+{
+ uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _movs(inst, s);
+      break;
+    case FMT_D:
+      _movd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
 }
 
 static void _fadd(uint32_t inst, state_t *s)
@@ -2119,4 +2135,41 @@ static void _truncl(uint32_t inst, state_t *s)
 {
   printf("%s\n",__func__);
   exit(-1);
+}
+static void _movd(uint32_t inst, state_t *s)
+{
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  s->cpr1[fd+0] = s->cpr1[fs+0];
+  s->cpr1[fd+1] = s->cpr1[fs+1];
+  s->pc += 4;
+}
+
+static void _movs(uint32_t inst, state_t *s)
+{
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  s->cpr1[fd+0] = s->cpr1[fs+0];
+  s->pc += 4;
+}
+
+static void _movci(uint32_t inst, state_t *s)
+{
+  uint32_t cc = (inst >> 18) & 7;
+  uint32_t tf = (inst>>16) & 1;
+  uint32_t rd = (inst>>11) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+
+  if(tf==0)
+    {
+      /* movf */
+      s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rd] : s->gpr[rs];
+    }
+  else
+    {
+      /* movt */
+      s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rs] : s->gpr[rd];
+    }
+
+  s->pc += 4;
 }
