@@ -1269,6 +1269,8 @@ static void _sw(uint32_t inst, state_t *s)
   /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
   
   uint32_t ea = s->gpr[rs] + imm;
+  if(s->pc == 0xa0020430)
+    printf("storing %x to %x\n", s->gpr[rt], ea);
 
   *((int32_t*)(s->mem + ea)) = accessBigEndian(s->gpr[rt]);
   s->pc += 4;
@@ -2027,18 +2029,11 @@ static void _bc1t(uint32_t inst, state_t *s)
   s->pc += 4;
   execMips(s);
   
-
-  
   if(takeBranch)
     {
-      s->pc +=4;
-      execMips(s);
       s->pc = (imm+npc);
     }
-  else
-    {
-      s->pc += 8;
-    }
+
 }
 static void _bc1fl(uint32_t inst, state_t *s)
 {
