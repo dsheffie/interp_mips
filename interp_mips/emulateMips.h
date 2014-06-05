@@ -17,7 +17,7 @@ typedef struct
   uint32_t pc;
   int32_t gpr[32];
   uint32_t cpr0[32];
-  uint64_t cpr1[32];
+  uint32_t cpr1[32];
   uint32_t fcr1[5];
   int32_t lo;
   int32_t hi;

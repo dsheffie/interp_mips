@@ -292,7 +292,7 @@ void execMips(state_t *s)
   //printf("%x: %s\n", s->pc, asmString.c_str());
 
   //std::string asmString = getAsmString(inst, s->pc);
-  //log += "0x" + toStringHex(s->pc) + ": " + asmString + "\n";
+  log += "0x" + toStringHex(s->pc) + "\n";
   
   //printf("pc=%x\n", s->pc);
 
@@ -1184,7 +1184,9 @@ static void _ldc1(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
   uint32_t ea = s->gpr[rs] + imm;
-  s->cpr1[ft] = accessBigEndian(*((int64_t*)(s->mem + ea))); 
+  *((int64_t*)(s->cpr1 + ft)) = accessBigEndian(*((int64_t*)(s->mem + ea))); 
+  //printf("%s\n",__func__);
+  //exit(-1);
   s->pc += 4;
 }
 
@@ -1281,8 +1283,9 @@ static void _sdc1(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->mem + ea)) = accessBigEndian(s->cpr1[ft]);
-  //*((int32_t*)(s->mem + ea)) = accessBigEndian(s->gpr[rt]);
+  //printf("%s\n", __func__);
+  //exit(-1);
+  *((int64_t*)(s->mem + ea)) = accessBigEndian((*(int64_t*)(s->cpr1 + ft)));
   s->pc += 4;
 }
 
@@ -1486,6 +1489,7 @@ static void _monitor(uint32_t inst, state_t *s)
       exit(-1);
       break;
     }
+  //printf("return address from monitor call = %x\n", s->gpr[31]);
   s->pc = s->gpr[31];
 }
 
@@ -1621,11 +1625,9 @@ static void _cvts(uint32_t inst, state_t *s)
     case FMT_W:
       *((float*)(s->cpr1 + fd)) = (float)(*((int32_t*)(s->cpr1 + fs)));
       break;
-    case FMT_L:
+    default:
       printf("%s @ %d\n", __func__, __LINE__);
       exit(-1);
-      break;
-    default:
       break;
     }
   s->pc += 4;
@@ -1644,11 +1646,9 @@ static void _cvtd(uint32_t inst, state_t *s)
     case FMT_W:
      *((double*)(s->cpr1 + fd)) = (double)(*((int32_t*)(s->cpr1 + fs)));
       break;
-    case FMT_L:
+    default:
       printf("%s @ %d\n", __func__, __LINE__);
       exit(-1);
-      break;
-    default:
       break;
     }
   s->pc += 4;
@@ -1770,6 +1770,8 @@ static void _addd(uint32_t inst, state_t *s)
   double d_fs = *((double*)(s->cpr1+fs));
   double d_ft = *((double*)(s->cpr1+ft));
   *((double*)(s->cpr1 + fd)) = d_fs + d_ft;
+  //printf("d_fs = %g, d_ft = %g, result = %g\n", d_fs, d_ft,
+  //*((double*)(s->cpr1 + fd)) );
   s->pc += 4;
 }
 
@@ -1878,6 +1880,7 @@ static void _cs(uint32_t inst, state_t *s)
   float f_fs = *((float*)(s->cpr1+fs));
   float f_ft = *((float*)(s->cpr1+ft));
   uint32_t v = 0;
+
   switch(cond)
     {
       /*
@@ -1939,6 +1942,8 @@ static void _cd(uint32_t inst, state_t *s)
   double d_fs = *((double*)(s->cpr1+fs));
   double d_ft = *((double*)(s->cpr1+ft));
   uint32_t v = 0;
+  
+  //printf("c.%d.d @ %x\n", cond, s->pc);
 
   switch(cond)
     {
@@ -1950,6 +1955,7 @@ static void _cd(uint32_t inst, state_t *s)
       */
     case COND_EQ:
       v = (d_fs == d_ft);
+      //printf("d_fs = %g, d_ft = %g, eq=%d\n", d_fs, d_ft, v); 
       setConditionCode(s,v,cc);
       break;
        /*
@@ -2001,6 +2007,7 @@ static void _bc1f(uint32_t inst, state_t *s)
   int32_t npc = s->pc+4; 
   uint32_t cc = (inst >> 18) & 7;
   bool takeBranch = getConditionCode(s,cc)==0;
+  //printf("%s @ %x => cc=%d\n", __func__, s->pc, getConditionCode(s,cc));
   s->pc += 4;
   execMips(s);
   if(takeBranch)
@@ -2017,6 +2024,7 @@ static void _bc1t(uint32_t inst, state_t *s)
   int32_t npc = s->pc+4; 
   uint32_t cc = (inst >> 18) & 7;
   bool takeBranch = getConditionCode(s,cc)==1;
+  //printf("%s @ %x => cc=%d\n", __func__, s->pc, getConditionCode(s,cc));
   //printf("pc=%x, takeBranch = %d\n", s->pc, (int)takeBranch);
   //printf("s->gpr[R_v0] = %d, s->gpr[R_v1] = %u\n", 
   //s->gpr[R_v0], s->gpr[R_v1]);
@@ -2098,8 +2106,9 @@ static void _truncw(uint32_t inst, state_t *s)
       *ptr = (int32_t)d;
       //printf("id=%d\n", *ptr);
       break;
-      break;
     default:
+      printf("unknown trunc for fmt %d\n", fmt);
+      exit(-1);
       break;
     }
     
