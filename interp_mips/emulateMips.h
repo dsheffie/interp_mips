@@ -18,6 +18,7 @@ typedef struct
   int32_t gpr[32];
   uint32_t cpr0[32];
   uint64_t cpr1[32];
+  uint32_t fcr1[5];
   int32_t lo;
   int32_t hi;
   uint8_t *mem;
@@ -29,6 +30,9 @@ void initEmulationTables(bool enClockFuncts);
 void initState(state_t *s);
 void execMips(state_t *s);
 void printState(state_t *s);
+
+uint32_t getConditionCode(state_t *s, uint32_t cc);
+void setConditionCode(state_t *s, uint32_t v, uint32_t cc);
 
 void mkMonitorVectors(state_t *s);
 

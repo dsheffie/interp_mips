@@ -127,10 +127,53 @@ static void _seh(uint32_t inst, state_t *s);
 static void _ext(uint32_t inst, state_t *s);
 static void _clz(uint32_t inst, state_t *s);
 
+static void _mtc0(uint32_t inst, state_t *s);
+static void _mfc0(uint32_t inst, state_t *s);
+static void _mtc1(uint32_t inst, state_t *s);
+static void _mfc1(uint32_t inst, state_t *s);
+static void _movd(uint32_t inst, state_t *s);
+
 static void _lwl(uint32_t inst, state_t *s);
 static void _lwr(uint32_t inst, state_t *s);
 static void _swl(uint32_t inst, state_t *s);
 static void _swr(uint32_t inst, state_t *s);
+
+/* FLOATING-POINT */
+static void _c(uint32_t inst, state_t *s);
+static void _cs(uint32_t inst, state_t *s);
+static void _cd(uint32_t inst, state_t *s);
+
+static void _cvts(uint32_t inst, state_t *s);
+static void _cvtd(uint32_t inst, state_t *s);
+
+static void _truncw(uint32_t inst, state_t *s);
+static void _truncl(uint32_t inst, state_t *s);
+
+static void _lwc1(uint32_t inst, state_t *s);
+static void _swc1(uint32_t inst, state_t *s);
+
+
+static void _fadd(uint32_t inst, state_t *s);
+static void _fsub(uint32_t inst, state_t *s);
+static void _fmul(uint32_t inst, state_t *s);
+static void _fdiv(uint32_t inst, state_t *s);
+
+static void _adds(uint32_t inst, state_t *s);
+static void _subs(uint32_t inst, state_t *s);
+static void _muls(uint32_t inst, state_t *s);
+static void _divs(uint32_t inst, state_t *s);
+
+static void _addd(uint32_t inst, state_t *s);
+static void _subd(uint32_t inst, state_t *s);
+static void _muld(uint32_t inst, state_t *s);
+static void _divd(uint32_t inst, state_t *s);
+
+
+static void _bc1f(uint32_t inst, state_t *s);
+static void _bc1t(uint32_t inst, state_t *s);
+static void _bc1fl(uint32_t inst, state_t *s);
+static void _bc1tl(uint32_t inst, state_t *s);
+
 
 
 static void (*functTbl[64])(uint32_t inst, state_t *s) = {NULL};
@@ -223,13 +266,19 @@ void initEmulationTables(bool enClockFuncts)
   ITypeOpcodeTbl[0x28] = _sb;
   ITypeOpcodeTbl[0x29] = _sh;
   ITypeOpcodeTbl[0x2B] = _sw;
+
   ITypeOpcodeTbl[0x3D] = _sdc1;
   ITypeOpcodeTbl[0x35] = _ldc1;
+
+  ITypeOpcodeTbl[0x31] = _lwc1;  
+  ITypeOpcodeTbl[0x39] = _swc1;
+
 
   ITypeOpcodeTbl[0x2a] = _swl;
   ITypeOpcodeTbl[0x2e] = _swr;
   ITypeOpcodeTbl[0x22] = _lwl;
   ITypeOpcodeTbl[0x26] = _lwr;
+
 }
 
 void execMips(state_t *s)
@@ -245,6 +294,8 @@ void execMips(state_t *s)
   //std::string asmString = getAsmString(inst, s->pc);
   //log += "0x" + toStringHex(s->pc) + ": " + asmString + "\n";
   
+  //printf("pc=%x\n", s->pc);
+
   s->icnt++;
 
   uint32_t opcode = inst>>26;
@@ -387,17 +438,16 @@ void execCoproc0(uint32_t inst, state_t *s)
 
   assert(sel==0);
   opcode &= 0x3;
-  s->pc += 4;
 
   switch(functField)
     {
     case 0x0:
       /* move from coprocessor */
-      s->gpr[rt] = s->cpr0[rd];
+      _mfc0(inst,s);
       break;
     case 0x4:
       /* move to coprocessor */
-      s->cpr0[rd] = s->gpr[rt];
+      _mtc0(inst, s);
       break;
     default:
       printf("unknown %s instruction @ %x", __func__, s->pc);
@@ -410,47 +460,95 @@ void execCoproc1(uint32_t inst, state_t *s)
 {
   uint32_t opcode = inst>>26;
   uint32_t functField = (inst>>21) & 31;
-  uint32_t lowop = inst & 63;
+  uint32_t lowop = inst & 63;  
+  uint32_t fmt = (inst >> 21) & 31;
+  
   uint32_t rd = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
 
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
-
+  uint32_t nd_tf = (inst>>16) & 3;
+  
   uint32_t lowbits = inst & ((1<<11)-1);
   opcode &= 0x3;
-  s->pc += 4;
 
-  if(lowbits == 0)
+  if(fmt == 0x8)
     {
-      switch(functField)
+      switch(nd_tf)
 	{
 	case 0x0:
+	  _bc1f(inst, s);
+	  break;
+	case 0x1:
+	  _bc1t(inst, s);
+	  break;
+	case 0x2:
+	  _bc1fl(inst, s);
+	  break;
+	case 0x3:
+	  _bc1tl(inst, s);
+	  break;
+	}
+      /*BRANCH*/
+    }
+  else if((lowbits == 0) && ((functField==0x0) || (functField==0x4)))
+    {
+      if(functField == 0x0)
+	{
 	  /* move from coprocessor */
-	  s->gpr[rt] = s->cpr1[rd];
-	  break;
-	case 0x4:
+	  _mfc1(inst,s);
+	}
+      else if(functField == 0x4)
+	{
 	  /* move to coprocessor */
-	  s->cpr1[rd] = s->gpr[rt];
-	  break;
-	default:
-	  printf("unhandled coproc1 instruction (functfield = %x) @ %08x\n", functField, s->pc);
-	  exit(-1);
-	  break;
+	  _mtc1(inst,s);
 	}
     }
   else
     {
-      switch(lowop)
+      if((lowop >> 4) == 3)
 	{
-	case 0x6:
-	  /* MOV.D */
-	  s->cpr1[fd] = s->cpr1[fs];
-	  break;
-	default:
-	  printf("unhandled coproc1 instruction @ %08x\n", s->pc);
-	  exit(-1);
-	  break;
+	  _c(inst, s);
+	}
+      else
+	{
+	  switch(lowop)
+	    {
+	    case 0x0:
+	      _fadd(inst, s);
+	      break;
+	    case 0x1:
+	      _fsub(inst, s);
+	      break;
+	    case 0x2:
+	      _fmul(inst, s);
+	      break;
+	    case 0x3:
+	      _fdiv(inst, s);
+	      break;
+	    case 0x6:
+	      /* MOV.D */
+	      _movd(inst, s);
+	      break;
+	    case 0x9:
+	      _truncl(inst, s);
+	      break;
+	    case 0xd:
+	      _truncw(inst, s);
+	      break;
+	    case 0x20:
+	      /* cvt.s */
+	      _cvts(inst, s);
+	      break;
+	    case 0x21:
+	      _cvtd(inst, s);
+	      break;
+	    default:
+	      printf("unhandled coproc1 instruction (%x) @ %08x\n", inst, s->pc);
+	      exit(-1);
+	      break;
+	    }
 	}
 
     }
@@ -1171,6 +1269,7 @@ static void _sw(uint32_t inst, state_t *s)
   /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
   
   uint32_t ea = s->gpr[rs] + imm;
+
   *((int32_t*)(s->mem + ea)) = accessBigEndian(s->gpr[rt]);
   s->pc += 4;
 }
@@ -1257,6 +1356,33 @@ void initState(state_t *s)
   /* setup the status register */
   s->cpr0[12] |= 1<<2;
   s->cpr0[12] |= 1<<22;
+  /* setup the floating-point implementation register */
+  s->fcr1[CP1_CR0] |= 1<<16; /* single precision supported */
+  s->fcr1[CP1_CR0] |= 1<<17; /* double precision supported */
+}
+
+uint32_t getConditionCode(state_t *s, uint32_t cc)
+{
+  return (s->fcr1[CP1_CR25] & (1<<cc)) >> cc;
+}
+void setConditionCode(state_t *s, uint32_t v, uint32_t cc)
+{
+  uint32_t m0,m1;
+  /*
+  if(cc==0)
+    {
+      m0 = ~(1U<<23);
+      s->fcr1[CP1_CR31] = ((s->fcr1[CP1_CR31] & m0) | ((1U<<23) & v));
+    }
+  else
+    {
+      m0 = ~(1U<<(24+cc));
+      s->fcr1[CP1_CR31] = ((s->fcr1[CP1_CR31] & m0) | ((1U<<(24+cc)) & v));
+    }
+  */
+  m1 = ~(1U<<cc);
+  s->fcr1[CP1_CR25] = (s->fcr1[CP1_CR25] & m1) | ((1<<cc) & v);
+  //printf("cc=%d,v=%d, s->fcr1=%x\n", cc, v, s->fcr1[CP1_CR25]);
 }
 
 void mkMonitorVectors(state_t *s)
@@ -1364,6 +1490,46 @@ static void _monitor(uint32_t inst, state_t *s)
   s->pc = s->gpr[31];
 }
 
+static void _mtc0(uint32_t inst, state_t *s)
+{
+  uint32_t rd = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  s->cpr0[rd] = s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _mfc0(uint32_t inst, state_t *s)
+{
+  uint32_t rd = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  s->gpr[rt] = s->cpr0[rd];
+  s->pc +=4;
+}
+
+static void _mtc1(uint32_t inst, state_t *s)
+{
+  uint32_t rd = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  s->cpr1[rd] = s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _mfc1(uint32_t inst, state_t *s)
+{
+  uint32_t rd = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  s->gpr[rt] = s->cpr1[rd];
+  s->pc +=4;
+}
+
+static void _movd(uint32_t inst, state_t *s)
+{
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  s->cpr1[fd] = s->cpr1[fs];
+  s->pc += 4;
+}
+
 static void _swl(uint32_t inst, state_t *s)
 {
   //printf("%s\n", __func__);
@@ -1440,4 +1606,518 @@ static void _lwr(uint32_t inst, state_t *s)
   int32_t old_rt =  s->gpr[rt];
   s->gpr[rt] = (old_rt & (~masks[ma])) | (r & masks[ma]);
   s->pc += 4;
+}
+
+static void _cvts(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  switch(fmt)
+    {
+    case FMT_D:
+      printf("%s @ %d\n", __func__, __LINE__);
+      exit(-1);
+      break;
+    case FMT_W:
+      *((float*)(s->cpr1 + fd)) = (float)(*((int32_t*)(s->cpr1 + fs)));
+      break;
+    case FMT_L:
+      printf("%s @ %d\n", __func__, __LINE__);
+      exit(-1);
+      break;
+    default:
+      break;
+    }
+  s->pc += 4;
+}
+
+static void _cvtd(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      *((double*)(s->cpr1 + fd)) = (double)(*((float*)(s->cpr1 + fs)));
+      break;
+    case FMT_W:
+     *((double*)(s->cpr1 + fd)) = (double)(*((int32_t*)(s->cpr1 + fs)));
+      break;
+    case FMT_L:
+      printf("%s @ %d\n", __func__, __LINE__);
+      exit(-1);
+      break;
+    default:
+      break;
+    }
+  s->pc += 4;
+}
+
+static void _swc1(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  uint32_t ea = s->gpr[rs] + imm;
+  uint32_t v = *((uint32_t*)(s->cpr1+ft));
+  *((uint32_t*)(s->mem + ea)) = accessBigEndian(v);
+  s->pc += 4;
+}
+
+static void _lwc1(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  uint32_t ea = s->gpr[rs] + imm;
+  uint32_t v = accessBigEndian(*((uint32_t*)(s->mem + ea))); 
+  *((float*)(s->cpr1 + ft)) = *((float*)&v);
+  s->pc += 4;
+}
+
+static void _fadd(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _adds(inst, s);
+      break;
+    case FMT_D:
+      _addd(inst, s);
+      break;
+    default:
+      printf("unsupported add\n");
+      exit(-1);
+      break;
+    }
+}
+static void _fsub(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _subs(inst, s);
+      break;
+    case FMT_D:
+      _subd(inst, s);
+      break;
+    default:
+      printf("unsupported sub\n");
+      exit(-1);
+      break;
+    }
+}
+
+static void _fmul(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _muls(inst, s);
+      break;
+    case FMT_D:
+      _muld(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+static void _fdiv(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _divs(inst, s);
+      break;
+    case FMT_D:
+      _divd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+static void _adds(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  float f_ft = *((float*)(s->cpr1+ft));
+  *((float*)(s->cpr1 + fd)) = f_fs + f_ft;
+  s->pc += 4;
+}
+
+static void _addd(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  double d_ft = *((double*)(s->cpr1+ft));
+  *((double*)(s->cpr1 + fd)) = d_fs + d_ft;
+  s->pc += 4;
+}
+
+static void _subs(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  float f_ft = *((float*)(s->cpr1+ft));
+  *((float*)(s->cpr1 + fd)) = f_fs - f_ft;
+  
+  s->pc += 4;
+}
+
+static void _subd(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  double d_ft = *((double*)(s->cpr1+ft));
+  *((double*)(s->cpr1 + fd)) = d_fs - d_ft;
+  s->pc += 4;
+}
+
+static void _muls(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  float f_ft = *((float*)(s->cpr1+ft));
+  *((float*)(s->cpr1 + fd)) = f_fs * f_ft;
+  
+  s->pc += 4;
+}
+
+static void _muld(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  double d_ft = *((double*)(s->cpr1+ft));
+  *((double*)(s->cpr1 + fd)) = d_fs * d_ft;
+  s->pc += 4;
+}
+
+
+static void _divs(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  float f_ft = *((float*)(s->cpr1+ft));
+  *((float*)(s->cpr1 + fd)) = f_fs / f_ft;
+  
+  s->pc += 4;
+}
+
+static void _divd(uint32_t inst, state_t *s)
+{
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  double d_ft = *((double*)(s->cpr1+ft));
+  *((double*)(s->cpr1 + fd)) = d_fs / d_ft;
+  s->pc += 4;
+}
+
+
+
+static void _c(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _cs(inst, s);
+      break;
+    case FMT_D:
+      _cd(inst, s);
+      break;
+    default:
+      printf("unsupported comparison\n");
+      exit(-1);
+      break;
+    }
+}
+
+static void _cs(uint32_t inst, state_t *s)
+{
+  uint32_t cond = inst & 15;
+  uint32_t cc = (inst >> 8) & 7;
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  float f_fs = *((float*)(s->cpr1+fs));
+  float f_ft = *((float*)(s->cpr1+ft));
+  uint32_t v = 0;
+  switch(cond)
+    {
+      /*
+    case COND_F:
+      break;
+    case COND_UN:
+      break;
+      */
+    case COND_EQ:
+      printf("EQ : f_fs = %g, f_ft = %g\n", f_fs, f_ft);
+      v = (f_fs == f_ft);
+      setConditionCode(s,v,cc);
+      break;
+    case COND_LT:
+      v = (f_fs < f_ft);
+      //printf("LT : f_fs = %g, f_ft = %g, v = %d\n", f_fs, f_ft, v);
+      setConditionCode(s,v,cc);
+      break;
+      /*
+    case COND_UEQ:
+      break;
+    case COND_OLT:
+      break;
+    case COND_ULT:
+      break;
+    case COND_OLE:
+      break;
+    case COND_ULE:
+      break;
+    case COND_SF:
+      break;
+    case COND_NGLE:
+      break;
+    case COND_SEQ:
+      break;
+    case COND_NGL:
+      break;
+
+    case COND_NGE:
+      break;
+    case COND_LE:
+      break;
+    case COND_NGT:
+      break;
+      */
+    default:
+      printf("unimplemented c = %u\n", cond);
+      exit(-1);
+      break;
+    }
+  s->pc += 4;
+}
+
+static void _cd(uint32_t inst, state_t *s)
+{
+  uint32_t cond = inst & 15;
+  uint32_t cc = (inst >> 8) & 7;
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  double d_fs = *((double*)(s->cpr1+fs));
+  double d_ft = *((double*)(s->cpr1+ft));
+  uint32_t v = 0;
+
+  switch(cond)
+    {
+      /*
+    case COND_F:
+      break;
+    case COND_UN:
+      break;
+      */
+    case COND_EQ:
+      printf("EQ : d_fs = %g, d_ft = %g\n", d_fs, d_ft);
+      v = (d_fs == d_ft);
+      setConditionCode(s,v,cc);
+      break;
+    case COND_LT:
+      v = (d_fs < d_ft);
+      //printf("LT : d_fs = %g, d_ft = %g\n", d_fs, d_ft);
+      setConditionCode(s,v,cc);
+      break;
+      /*
+    case COND_UEQ:
+      break;
+    case COND_OLT:
+      break;
+    case COND_ULT:
+      break;
+    case COND_OLE:
+      break;
+    case COND_ULE:
+      break;
+    case COND_SF:
+      break;
+    case COND_NGLE:
+      break;
+    case COND_SEQ:
+      break;
+    case COND_NGL:
+      break;
+
+    case COND_NGE:
+      break;
+    case COND_LE:
+      break;
+    case COND_NGT:
+      break;
+      */
+    default:
+      printf("unimplemented c = %u\n", cond);
+      exit(-1);
+      break;
+    }
+  s->pc += 4;
+}
+
+static void _bc1f(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  uint32_t cc = (inst >> 18) & 7;
+  bool takeBranch = getConditionCode(s,cc)==0;
+  s->pc += 4;
+  execMips(s);
+  if(takeBranch)
+    {
+      s->pc = imm+npc;
+    }
+}
+static void _bc1t(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  uint32_t cc = (inst >> 18) & 7;
+  bool takeBranch = getConditionCode(s,cc)==1;
+  //printf("pc=%x, takeBranch = %d\n", s->pc, (int)takeBranch);
+  //printf("s->gpr[R_v0] = %d, s->gpr[R_v1] = %u\n", 
+  //s->gpr[R_v0], s->gpr[R_v1]);
+  
+  s->pc += 4;
+  execMips(s);
+  
+
+  
+  if(takeBranch)
+    {
+      s->pc +=4;
+      execMips(s);
+      s->pc = (imm+npc);
+    }
+  else
+    {
+      s->pc += 8;
+    }
+}
+static void _bc1fl(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  uint32_t cc = (inst >> 18) & 7;
+  bool takeBranch = getConditionCode(s,cc)==0;
+  s->pc += 4;
+  execMips(s);
+  if(takeBranch)
+    {
+      s->pc +=4;
+      execMips(s);
+      s->pc = (imm+npc);
+    }
+  else
+    {
+      s->pc += 8;
+    }
+}
+
+static void _bc1tl(uint32_t inst, state_t *s)
+{
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = ((int32_t)himm) << 2;
+  int32_t npc = s->pc+4; 
+  uint32_t cc = (inst >> 18) & 7;
+  bool takeBranch = getConditionCode(s,cc)==1;
+
+  s->pc += 4;
+  execMips(s);
+  if(takeBranch)
+    {
+      s->pc +=4;
+      execMips(s);
+      s->pc = (imm+npc);
+    }
+  else
+    {
+      s->pc += 8;
+    }
+}
+
+static void _truncw(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  float f;
+  double d;
+  int32_t *ptr = ((int32_t*)(s->cpr1 + fd));
+  switch(fmt)
+    {
+    case FMT_S:
+      f = (*((float*)(s->cpr1 + fs)));
+      //printf("f=%g\n", f);
+      *ptr = (int32_t)f;
+      break;
+    case FMT_D:
+      d = (*((double*)(s->cpr1 + fs)));
+      //printf("d=%g\n", d);
+      *ptr = (int32_t)d;
+      //printf("id=%d\n", *ptr);
+      break;
+      break;
+    default:
+      break;
+    }
+    
+  s->pc += 4;
+}
+
+static void _truncl(uint32_t inst, state_t *s)
+{
+  printf("%s\n",__func__);
+  exit(-1);
 }

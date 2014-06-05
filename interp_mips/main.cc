@@ -86,12 +86,13 @@ int main(int argc, char *argv[])
       while((s->icnt < n) && (s->brk==0));
     }
   estop = timestamp();
-  printState(s);
+  //printState(s);
 
   FILE *fpl = fopen("log.txt", "w");
   fprintf(fpl, "%s", log.c_str());
   fclose(fpl);
   
+    
   double runtime = (estop-estart);
   printf("%g inst/sec (%g sec)\n", 
 	 s->icnt / runtime,
