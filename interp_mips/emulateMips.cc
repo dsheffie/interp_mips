@@ -1266,11 +1266,8 @@ static void _sw(uint32_t inst, state_t *s)
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  /* mem[s->gpr[rs] + imm] = s->gpr[rt] */
   
   uint32_t ea = s->gpr[rs] + imm;
-  if(s->pc == 0xa0020430)
-    printf("storing %x to %x\n", s->gpr[rt], ea);
 
   *((int32_t*)(s->mem + ea)) = accessBigEndian(s->gpr[rt]);
   s->pc += 4;
@@ -1890,13 +1887,7 @@ static void _cs(uint32_t inst, state_t *s)
       break;
       */
     case COND_EQ:
-      printf("EQ : f_fs = %g, f_ft = %g\n", f_fs, f_ft);
       v = (f_fs == f_ft);
-      setConditionCode(s,v,cc);
-      break;
-    case COND_LT:
-      v = (f_fs < f_ft);
-      //printf("LT : f_fs = %g, f_ft = %g, v = %d\n", f_fs, f_ft, v);
       setConditionCode(s,v,cc);
       break;
       /*
@@ -1918,7 +1909,12 @@ static void _cs(uint32_t inst, state_t *s)
       break;
     case COND_NGL:
       break;
-
+      */
+    case COND_LT:
+      v = (f_fs < f_ft);
+      setConditionCode(s,v,cc);
+      break;
+      /*
     case COND_NGE:
       break;
     case COND_LE:
@@ -1953,16 +1949,10 @@ static void _cd(uint32_t inst, state_t *s)
       break;
       */
     case COND_EQ:
-      printf("EQ : d_fs = %g, d_ft = %g\n", d_fs, d_ft);
       v = (d_fs == d_ft);
       setConditionCode(s,v,cc);
       break;
-    case COND_LT:
-      v = (d_fs < d_ft);
-      //printf("LT : d_fs = %g, d_ft = %g\n", d_fs, d_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
+       /*
     case COND_UEQ:
       break;
     case COND_OLT:
@@ -1981,7 +1971,12 @@ static void _cd(uint32_t inst, state_t *s)
       break;
     case COND_NGL:
       break;
-
+      */
+    case COND_LT:
+      v = (d_fs < d_ft);
+      setConditionCode(s,v,cc);
+      break;
+      /*
     case COND_NGE:
       break;
     case COND_LE:
