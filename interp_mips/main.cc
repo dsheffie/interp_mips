@@ -13,7 +13,7 @@
 #include "helper.h"
 #include "parseMips.h"
 #include "emulateMips.h"
-std::string log;
+std::string llog;
 
 
 int main(int argc, char *argv[])
@@ -89,7 +89,7 @@ int main(int argc, char *argv[])
   //printState(s);
 
   FILE *fpl = fopen("log.txt", "w");
-  fprintf(fpl, "%s", log.c_str());
+  fprintf(fpl, "%s", llog.c_str());
   fclose(fpl);
   
     

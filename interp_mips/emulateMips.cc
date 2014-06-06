@@ -14,6 +14,8 @@
 #include <sys/times.h>
 #include <errno.h>
 
+#include <cmath>
+
 typedef struct
 {
   uint32_t tv_sec;
@@ -30,7 +32,7 @@ typedef struct
 
 #define K1SIZE  (0x20000000)
 
-extern std::string log;
+extern std::string llog;
 
 void execRType(uint32_t inst, state_t *s);
 void execJType(uint32_t inst, state_t *s);
@@ -153,22 +155,36 @@ static void _lwc1(uint32_t inst, state_t *s);
 static void _swc1(uint32_t inst, state_t *s);
 static void _movci(uint32_t inst, state_t *s);
 
+static void _fabs(uint32_t inst, state_t *s);
 static void _fadd(uint32_t inst, state_t *s);
 static void _fsub(uint32_t inst, state_t *s);
 static void _fmul(uint32_t inst, state_t *s);
 static void _fdiv(uint32_t inst, state_t *s);
 static void _fmov(uint32_t inst, state_t *s);
+static void _fneg(uint32_t inst, state_t *s);
+static void _fsqrt(uint32_t inst, state_t *s);
+static void _frsqrt(uint32_t inst, state_t *s);
+static void _frecip(uint32_t inst, state_t *s);
 
+static void _abss(uint32_t inst, state_t *s);
 static void _adds(uint32_t inst, state_t *s);
 static void _subs(uint32_t inst, state_t *s);
 static void _muls(uint32_t inst, state_t *s);
 static void _divs(uint32_t inst, state_t *s);
+static void _sqrts(uint32_t inst, state_t *s);
+static void _rsqrts(uint32_t inst, state_t *s);
+static void _negs(uint32_t inst, state_t *s);
+static void _recips(uint32_t inst, state_t *s);
 
+static void _absd(uint32_t inst, state_t *s);
 static void _addd(uint32_t inst, state_t *s);
 static void _subd(uint32_t inst, state_t *s);
 static void _muld(uint32_t inst, state_t *s);
 static void _divd(uint32_t inst, state_t *s);
-
+static void _sqrtd(uint32_t inst, state_t *s);
+static void _rsqrtd(uint32_t inst, state_t *s);
+static void _negd(uint32_t inst, state_t *s);
+static void _recipd(uint32_t inst, state_t *s);
 
 static void _bc1f(uint32_t inst, state_t *s);
 static void _bc1t(uint32_t inst, state_t *s);
@@ -296,7 +312,7 @@ void execMips(state_t *s)
   //printf("%x: %s\n", s->pc, asmString.c_str());
 
   //std::string asmString = getAsmString(inst, s->pc);
-  //log += "0x" + toStringHex(s->pc) + "\n";
+  //llog += "0x" + toStringHex(s->pc) + "\n";
   
   //printf("pc=%x\n", s->pc);
 
@@ -532,15 +548,29 @@ void execCoproc1(uint32_t inst, state_t *s)
 	    case 0x3:
 	      _fdiv(inst, s);
 	      break;
+	    case 0x4:
+	      _fsqrt(inst, s);
+	      break;
+	    case 0x5:
+	      _fabs(inst, s);
+	      break;
 	    case 0x6:
-	      /* MOV.D */
 	      _fmov(inst, s);
+	      break;
+	    case 0x7:
+	      _fneg(inst, s);
 	      break;
 	    case 0x9:
 	      _truncl(inst, s);
 	      break;
 	    case 0xd:
 	      _truncw(inst, s);
+	      break;
+	    case 0x15:
+	      _frecip(inst, s);
+	      break;
+	    case 0x16:
+	      _frsqrt(inst, s);
 	      break;
 	    case 0x20:
 	      /* cvt.s */
@@ -1676,6 +1706,25 @@ static void _lwc1(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
+static void _fabs(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _abss(inst, s);
+      break;
+    case FMT_D:
+      _absd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+
 static void _fmov(uint32_t inst, state_t *s)
 {
  uint32_t fmt = (inst >> 21) & 31;
@@ -1693,6 +1742,26 @@ static void _fmov(uint32_t inst, state_t *s)
       break;
     }
 }
+
+static void _fneg(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _negs(inst, s);
+      break;
+    case FMT_D:
+      _negd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+
 
 static void _fadd(uint32_t inst, state_t *s)
 {
@@ -1729,6 +1798,61 @@ static void _fsub(uint32_t inst, state_t *s)
     }
 }
 
+static void _fsqrt(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _sqrts(inst, s);
+      break;
+    case FMT_D:
+      _sqrtd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+static void _frsqrt(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _rsqrts(inst, s);
+      break;
+    case FMT_D:
+      _rsqrtd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+static void _frecip(uint32_t inst, state_t *s)
+{
+  uint32_t fmt = (inst >> 21) & 31;
+  switch(fmt)
+    {
+    case FMT_S:
+      _recips(inst, s);
+      break;
+    case FMT_D:
+      _recipd(inst, s);
+      break;
+    default:
+      printf("unsupported %s\n", __func__);
+      exit(-1);
+      break;
+    }
+}
+
+
 static void _fmul(uint32_t inst, state_t *s)
 {
   uint32_t fmt = (inst >> 21) & 31;
@@ -1764,6 +1888,70 @@ static void _fdiv(uint32_t inst, state_t *s)
       break;
     }
 }
+
+static void _abss(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  *((float*)(s->cpr1 + fd)) = f_fs < 0.0f ? -f_fs : f_fs;
+  
+  s->pc += 4;
+}
+
+static void _absd(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  *((double*)(s->cpr1 + fd)) = d_fs < 0.0 ? -d_fs : d_fs;
+  s->pc += 4;
+}
+
+static void _recips(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  *((float*)(s->cpr1 + fd)) = 1.0 / f_fs;
+  
+  s->pc += 4;
+}
+
+static void _recipd(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  *((double*)(s->cpr1 + fd)) = 1.0 / d_fs;
+  s->pc += 4;
+}
+
+static void _negs(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  *((float*)(s->cpr1 + fd)) = -f_fs;
+  
+  s->pc += 4;
+}
+
+static void _negd(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  *((double*)(s->cpr1 + fd)) = -d_fs;
+  s->pc += 4;
+}
+
 
 static void _adds(uint32_t inst, state_t *s)
 {
@@ -1841,6 +2029,47 @@ static void _muld(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
+static void _sqrts(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  *((float*)(s->cpr1 + fd)) = sqrtf(f_fs);
+  
+  s->pc += 4;
+}
+
+static void _sqrtd(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  *((double*)(s->cpr1 + fd)) = sqrt(d_fs);
+  s->pc += 4;
+}
+
+static void _rsqrts(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  float f_fs = *((float*)(s->cpr1+fs));
+  *((float*)(s->cpr1 + fd)) = 1.0f / sqrtf(f_fs);
+  
+  s->pc += 4;
+}
+
+static void _rsqrtd(uint32_t inst, state_t *s)
+{
+  uint32_t fs = (inst >> 11) & 31;
+  uint32_t fd = (inst >> 6) & 31;
+
+  double d_fs = *((double*)(s->cpr1+fs));
+  *((double*)(s->cpr1 + fd)) = 1.0 / sqrt(d_fs);
+  s->pc += 4;
+}
 
 static void _divs(uint32_t inst, state_t *s)
 {
