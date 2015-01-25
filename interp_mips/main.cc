@@ -309,43 +309,14 @@ int main(int argc, char *argv[])
   
   estart = timestamp();
   totalCycles = rdtsc();
-  if(!(useJIT || useTraceJIT)) {
-    while(s->brk==0) 
-      {
-	execMips(s);
-      }
+  while(s->brk==0)  {
+    if(!cBB->execute(s))
+      execMips(s);
   }
-  else
-    {
-      while(s->brk==0) 
-	{
-#ifdef __USE_TIMING__
-	  uint64_t s0 = rdtsc();
-#endif
-
-	  bool ex = cBB->execute(s);	
-#ifdef __USE_TIMING__
-	  s0 = rdtsc() - s0;
-	  execCycles += s0;
-#endif
-	  if(!ex)
-	    {
-#ifdef __USE_TIMING__
-	      uint64_t s1 = rdtsc();
-#endif
-	      execMips(s);
-#ifdef __USE_TIMING__
-	      s1 = rdtsc() - s1;
-	      interpCycles += s1;
-#endif
-	    }
-	}
-    }
   totalCycles = rdtsc() - totalCycles;
   estop = timestamp();
     
   double runtime = (estop-estart);
-
 
   fprintf(stderr, "JIT: %g sec, %zu ins executed : %g megains / sec\n", 
 	  runtime,
