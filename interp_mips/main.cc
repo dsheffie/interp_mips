@@ -423,7 +423,9 @@ int buildArgcArgv(char *filename, char *sysArgs, char ***argv)
   char **largs = 0;
   args.push_back(std::string(filename));
 
-  char *ptr = strtok(sysArgs, " ");
+  char *ptr = 0;
+  if(sysArgs)
+    ptr =strtok(sysArgs, " ");
   while(ptr && (cnt<MARGS))
     {
       args.push_back(std::string(ptr));
