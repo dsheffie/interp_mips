@@ -1,5 +1,5 @@
 OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
-CXX = g++
+CXX = g++ -march=westmere
 EXE = interp_mips
 OPT = -O3
 CXXFLAGS = -std=c++11 -g $(OPT)
