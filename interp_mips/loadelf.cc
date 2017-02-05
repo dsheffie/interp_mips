@@ -55,7 +55,6 @@ void load_elf(const char* fn, state_t *ms)
   int fd,rc;
   char *buf = nullptr;
   uint8_t *mem = ms->mem;
-  bzero(mem, 1UL<<32);
 
   fd = open(fn, O_RDONLY);
   if(fd<0) {

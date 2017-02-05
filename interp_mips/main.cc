@@ -1,4 +1,5 @@
-#include <stdio.h>
+#include <cstdio>
+#include <iostream>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <fcntl.h>
@@ -69,13 +70,17 @@ int main(int argc, char *argv[]) {
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
   initState(s);
-  
-  rc = posix_memalign((void**)&(s->mem), pgSize, (1UL<<32));
-  if(rc != 0) {
-    fprintf(stderr, "INTERP : couldn't allocate backing memory!\n");
+
+  void* mempt = mmap(nullptr, 1UL<<32, PROT_READ | PROT_WRITE,
+		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  assert(mempt != reinterpret_cast<void*>(-1));
+  assert(madvise(mempt, 1UL<<32, MADV_DONTNEED)==0);
+  s->mem = reinterpret_cast<uint8_t*>(mempt);
+  if(s->mem == nullptr) {
+    std::cerr << "INTERP : couldn't allocate backing memory!\n";
     exit(-1);
   }
-
+  
   load_elf(filename, s);
   mkMonitorVectors(s);
 
@@ -85,8 +90,8 @@ int main(int argc, char *argv[]) {
   runtime = timestamp()-runtime;
   fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 
 	  KGRN, runtime, (size_t)s->icnt, s->icnt / (runtime*1e6), KNRM);
-
-  free(s->mem);
+  
+  munmap(mempt, 1UL<<32);
   if(sysArgs)
     free(sysArgs);
   if(sysArgv) {
