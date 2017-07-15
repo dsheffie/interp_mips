@@ -1,5 +1,5 @@
 OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
-CXX = g++ -march=native
+CXX = g++-7.1 -march=native
 EXE = interp_mips
 OPT = -O3 -D_GLIBCXX_PROFILE
 CXXFLAGS = -std=c++11 -g $(OPT)
