@@ -80,8 +80,6 @@ static void _cvts(uint32_t inst, state_t *s);
 static void _cvtd(uint32_t inst, state_t *s);
 
 static void _truncw(uint32_t inst, state_t *s);
-static void _truncl(uint32_t inst, state_t *s);
-
 
 static void _movci(uint32_t inst, state_t *s);
 
@@ -700,7 +698,8 @@ void execCoproc1(uint32_t inst, state_t *s)
 	      _fneg(inst, s);
 	      break;
 	    case 0x9:
-	      _truncl(inst, s);
+	      /* todo : implement _truncl */
+	      die();
 	      break;
 	    case 0xd:
 	      _truncw(inst, s);
@@ -1454,12 +1453,7 @@ static void _truncw(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _truncl(uint32_t inst, state_t *s) {
-  printf("%s\n",__func__);
-  exit(-1);
-}
-static void _movd(uint32_t inst, state_t *s)
-{
+static void _movd(uint32_t inst, state_t *s) {
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   s->cpr1[fd+0] = s->cpr1[fs+0];

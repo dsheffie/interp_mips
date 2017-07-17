@@ -1,8 +1,8 @@
 OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
-CXX = g++-7.1 -march=native
+CXX = clang++-3.8 -march=native
 EXE = interp_mips
-OPT = -O3 -D_GLIBCXX_PROFILE
-CXXFLAGS = -std=c++11 -g $(OPT)
+OPT = -O3
+CXXFLAGS = -std=c++11 -g $(OPT) -Wextra -Wno-unused-parameter
 DEP = $(OBJ:.o=.d)
 
 .PHONY: all clean
@@ -10,7 +10,7 @@ DEP = $(OBJ:.o=.d)
 all: $(EXE)
 
 $(EXE) : $(OBJ)
-	$(CXX) $(CXXFLAGS) $(OBJ) -lpthread -o $(EXE)
+	$(CXX) $(CXXFLAGS) $(OBJ) -lpthread -lunwind -o $(EXE)
 
 %.o: %.cc
 	$(CXX) -MMD $(CXXFLAGS) -c $< 

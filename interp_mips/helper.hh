@@ -4,6 +4,7 @@
 #include <sstream>
 #include <vector>
 #include <cstdint>
+#include <iostream>
 
 #define KNRM  "\x1B[0m"
 #define KRED  "\x1B[31m"
@@ -14,6 +15,16 @@
 #define KCYN  "\x1B[36m"
 #define KWHT  "\x1B[37m"
 
+void dbt_backtrace();
+
+#define die() {								\
+    std::cerr << __PRETTY_FUNCTION__ << " @ " << __FILE__ << ":"	\
+	      << __LINE__ << " called die\n";				\
+    dbt_backtrace();							\
+    abort();								\
+  }
+
+
 double timestamp();
 
 uint32_t update_crc(uint32_t crc, uint8_t *buf, size_t len);
@@ -21,19 +32,22 @@ uint32_t crc32(uint8_t *buf, size_t len);
 
 int32_t remapIOFlags(int32_t flags);
 
-template <class T> std::string toString(T x) {
+template <class T>
+std::string toString(T x) {
   std::stringstream ss;
   ss << x;
   return ss.str();
 }
 
-template <class T> std::string toStringHex(T x) {
+template <class T>
+std::string toStringHex(T x) {
   std::stringstream ss;
   ss << std::hex << x;
   return ss.str();
 }
 
-template <class T> T accessBigEndian(T x) {
+template <typename T>
+T accessBigEndian(T x) {
 #ifdef MIPSEL
    return x;
 #else
