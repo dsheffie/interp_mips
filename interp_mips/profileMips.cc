@@ -751,12 +751,16 @@ struct c1xExec {
     T &_fd = *reinterpret_cast<T*>(s->cpr1+insn.fd);  
     switch(insn.id)
       {
-      case 3:
+      case 4:
+	_fd = _fs*_ft + _fr;
+	break;
+      case 5:
 	_fd = _fs*_ft - _fr;
 	break;
       default:
 	std::cerr << "unhandled coproc1x insn @ 0x"
 		  << std::hex << s->pc << std::dec
+		  << ", id = " << insn.id
 		  <<"\n";
 	exit(-1);
       }
@@ -765,23 +769,43 @@ struct c1xExec {
 };
 
 
-
+template <typename T>
+void lxc1(uint32_t inst, state_t *s) {
+  mips_t mi(inst);
+  uint32_t ea = s->gpr[mi.lc1x.base] + s->gpr[mi.lc1x.index];
+  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = accessBigEndian(*reinterpret_cast<T*>(s->mem + ea));
+  s->pc += 4;
+}
 
 void execCoproc1x(uint32_t inst, state_t *s) {
   mips_t mi(inst);
-  //print_var(mi.c1x.fmt);
+
+  switch(mi.lc1x.id)
+    {
+    case 0:
+      //lwxc1
+      lxc1<int32_t>(inst, s);
+      return;
+    case 1:
+      //ldxc1
+      lxc1<int64_t>(inst, s);
+      return;
+    default:
+      break;
+    }
+  
   switch(mi.c1x.fmt)
    {
-   case 2: {
+   case 0: {
      c1xExec<float> e;
      e(mi.c1x, s);
-     break;
+     return;
    }
-     //case FMT_D: {
-     //c1xExec<double> e;
-     //e(mi.c1x, s);
-     //break;
-     //}
+   case 1: {
+     c1xExec<double> e;
+     e(mi.c1x, s);
+     return;
+   }
    default:
      std::cerr << "weird type in do_c1x_op @ 0x"
 	       << std::hex << s->pc << std::dec
@@ -789,6 +813,7 @@ void execCoproc1x(uint32_t inst, state_t *s) {
      exit(-1);
    }
 }
+
 
 static void _beq(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
