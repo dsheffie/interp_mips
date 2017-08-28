@@ -26,6 +26,7 @@ void execSpecial2(uint32_t inst, state_t *s);
 void execSpecial3(uint32_t inst, state_t *s);
 void execCoproc0(uint32_t inst, state_t *s);
 void execCoproc1(uint32_t inst, state_t *s);
+void execCoproc1x(uint32_t inst, state_t *s);
 void execCoproc2(uint32_t inst, state_t *s);
 
 static uint32_t getConditionCode(state_t *s, uint32_t cc);
@@ -164,11 +165,14 @@ void mkMonitorVectors(state_t *s) {
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
   uint32_t inst = accessBigEndian(*(uint32_t*)(mem + s->pc));
+  //std::cout << std::hex << s->pc << std::dec << " : "
+  //<< getAsmString(inst, s->pc) << "\n";
   uint32_t opcode = inst>>26;
   bool isRType = (opcode==0);
   bool isJType = ((opcode>>1)==1);
   bool isCoproc0 = (opcode == 0x10);
   bool isCoproc1 = (opcode == 0x11);
+  bool isCoproc1x = (opcode == 0x13);
   bool isCoproc2 = (opcode == 0x12);
   bool isSpecial2 = (opcode == 0x1c); 
   bool isSpecial3 = (opcode == 0x1f);
@@ -398,6 +402,8 @@ void execMips(state_t *s) {
   }
   else if(isCoproc1) 
     execCoproc1(inst,s);
+  else if(isCoproc1x)
+    execCoproc1x(inst,s);
   else if(isCoproc2) {
     printf("coproc2 unimplemented\n");  exit(-1);
   }
@@ -735,8 +741,56 @@ void execCoproc1(uint32_t inst, state_t *s)
     }
 }
 
-static void _beq(uint32_t inst, state_t *s)
-{
+
+template <typename T>
+struct c1xExec {
+  void operator()(coproc1x_t insn, state_t *s) {
+    T _fr = *reinterpret_cast<T*>(s->cpr1+insn.fr);
+    T _fs = *reinterpret_cast<T*>(s->cpr1+insn.fs);
+    T _ft = *reinterpret_cast<T*>(s->cpr1+insn.ft);
+    T &_fd = *reinterpret_cast<T*>(s->cpr1+insn.fd);  
+    switch(insn.id)
+      {
+      case 3:
+	_fd = _fs*_ft - _fr;
+	break;
+      default:
+	std::cerr << "unhandled coproc1x insn @ 0x"
+		  << std::hex << s->pc << std::dec
+		  <<"\n";
+	exit(-1);
+      }
+    s->pc += 4;
+  }
+};
+
+
+
+
+void execCoproc1x(uint32_t inst, state_t *s) {
+  mips_t mi(inst);
+  //print_var(mi.c1x.fmt);
+  switch(mi.c1x.fmt)
+   {
+   case 2: {
+     c1xExec<float> e;
+     e(mi.c1x, s);
+     break;
+   }
+     //case FMT_D: {
+     //c1xExec<double> e;
+     //e(mi.c1x, s);
+     //break;
+     //}
+   default:
+     std::cerr << "weird type in do_c1x_op @ 0x"
+	       << std::hex << s->pc << std::dec
+	       <<"\n";
+     exit(-1);
+   }
+}
+
+static void _beq(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   bool takeBranch = (s->gpr[rt] == s->gpr[rs]);
