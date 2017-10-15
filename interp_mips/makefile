@@ -1,16 +1,33 @@
-OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
-CXX = g++ -march=native
-EXE = interp_mips
-OPT = -O3
-CXXFLAGS = -std=c++11 -g $(OPT) -Wextra -Wno-unused-parameter
-DEP = $(OBJ:.o=.d)
+UNAME_S = $(shell uname -s)
 
-.PHONY: all clean
+ifeq ($(UNAME_S),Linux)
+     LLVM_CXXFLAGS = $(shell llvm-config-3.8 --cppflags)
+     LLVM_LDFLAGS = $(shell llvm-config-3.8 --ldflags --libs all)
+     CXX = g++ -march=native
+     EXTRA_LD = -ldl -lffi -lbfd
+endif
+
+ifeq ($(UNAME_S),FreeBSD)
+     LLVM_CXXFLAGS = $(shell /home/dsheffie/code/llvm38/bin/llvm-config --cppflags)
+     LLVM_LDFLAGS = $(shell /home/dsheffie/code/llvm38/bin/llvm-config --ldflags --libs all)
+     CXX = CC -march=native
+     EXTRA_LD = -L/usr/local/lib
+endif
+
+CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
+LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz -lunwind -lboost_system
+
+OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
+DEP = $(OBJ:.o=.d)
+OPT = -O3 -std=c++11
+EXE = interp_mips
+
+.PHONY : all clean
 
 all: $(EXE)
 
 $(EXE) : $(OBJ)
-	$(CXX) $(CXXFLAGS) $(OBJ) -lpthread -lunwind -o $(EXE)
+	$(CXX) $(CXXFLAGS) $(OBJ) $(LLVM_LDFLAGS) $(LIBS) -o $(EXE)
 
 %.o: %.cc
 	$(CXX) -MMD $(CXXFLAGS) -c $< 
