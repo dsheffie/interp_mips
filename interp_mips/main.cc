@@ -13,6 +13,7 @@
 #include <string>
 #include <cstring>
 #include <cassert>
+#include <boost/program_options.hpp>
 
 #include "loadelf.hh"
 #include "helper.hh"
@@ -24,11 +25,41 @@ char **sysArgv = nullptr;
 int sysArgc = 0;
 bool enClockFuncts = false;
 
+
 static state_t *s =0;
-int buildArgcArgv(char *filename, char *sysArgs, char ***argv);
+
+static int buildArgcArgv(const char *filename, const std::string &sysArgs, char **&argv){
+  int cnt = 0;
+  std::vector<std::string> args;
+  char **largs = 0;
+  args.push_back(std::string(filename));
+
+  char *ptr = nullptr;
+  char *c_str = strdup(sysArgs.c_str());
+  if(sysArgs.size() != 0)
+    ptr = strtok(c_str, " ");
+
+  while(ptr && (cnt<MARGS)) {
+    args.push_back(std::string(ptr));
+    ptr = strtok(nullptr, " ");
+    cnt++;
+  }
+  largs = new char*[args.size()];
+  for(size_t i = 0; i < args.size(); i++) {
+    const std::string & s = args[i];
+    size_t l = strlen(s.c_str());
+    largs[i] = new char[l+1];
+    memset(largs[i],0,sizeof(char)*(l+1));
+    memcpy(largs[i],s.c_str(),sizeof(char)*l);
+  }
+  argv = largs;
+  free(c_str);
+  return (int)args.size();
+}
 
 int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
+  namespace po = boost::program_options; 
 #ifdef MIPSEL
   bigEndianMips = false;
 #endif  
@@ -37,35 +68,33 @@ int main(int argc, char *argv[]) {
 	  __DATE__, __TIME__, KNRM);
 
 
-  int c;
   size_t pgSize = getpagesize();
-  char *filename = nullptr;
-  char *sysArgs = nullptr;
+  std::string sysArgs, filename;
 
-  while((c=getopt(argc,argv,"a:cf:hi:jo:rt"))!=-1) {
-    switch(c) {
-    case 'a':
-      sysArgs = strdup(optarg);
-      break;
-    case 'c':
-      enClockFuncts = true;
-      break;
-    case 'f':
-      filename = optarg;
-      break;
-    default:
-      break;
-    }
+  try {
+    po::options_description desc("Options");
+    desc.add_options() 
+      ("help", "Print help messages") 
+      ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
+      ("clock,c", po::value<bool>(&enClockFuncts), "enable wall-clock")
+      ("file,f", po::value<std::string>(&filename), "mips binary")
+      ; 
+    po::variables_map vm;
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+    po::notify(vm); 
+  }
+  catch(po::error &e) {
+    std::cerr << KRED << "command-line error : " << e.what() << KNRM << "\n";
+    return -1;
   }
 
-  if(filename==nullptr) {
+  if(filename.size()==0) {
     fprintf(stderr, "INTERP : no file\n");
     exit(-1);
   }
 
-
   /* Build argc and argv */
-  sysArgc = buildArgcArgv(filename,sysArgs,&sysArgv);
+  sysArgc = buildArgcArgv(filename.c_str(),sysArgs,sysArgv);
   initParseTables();
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
@@ -81,7 +110,7 @@ int main(int argc, char *argv[]) {
     exit(-1);
   }
   
-  load_elf(filename, s);
+  load_elf(filename.c_str(), s);
   mkMonitorVectors(s);
 
   double runtime = timestamp();
@@ -92,8 +121,6 @@ int main(int argc, char *argv[]) {
 	  KGRN, runtime, (size_t)s->icnt, s->icnt / (runtime*1e6), KNRM);
   
   munmap(mempt, 1UL<<32);
-  if(sysArgs)
-    free(sysArgs);
   if(sysArgv) {
     for(int i = 0; i < sysArgc; i++) {
       delete [] sysArgv[i];
@@ -104,32 +131,4 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-int buildArgcArgv(char *filename, char *sysArgs, char ***argv)
-{
-  int cnt = 0;
-  std::vector<std::string> args;
-  char **largs = 0;
-  args.push_back(std::string(filename));
 
-  char *ptr = 0;
-  if(sysArgs)
-    ptr = strtok(sysArgs, " ");
-
-  while(ptr && (cnt<MARGS))
-    {
-      args.push_back(std::string(ptr));
-      ptr = strtok(nullptr, " ");
-      cnt++;
-    }
-  largs = new char*[args.size()];
-  for(size_t i = 0; i < args.size(); i++)
-    {
-      std::string s = args[i];
-      size_t l = strlen(s.c_str());
-      largs[i] = new char[l+1];
-      memset(largs[i],0,sizeof(char)*(l+1));
-      memcpy(largs[i],s.c_str(),sizeof(char)*l);
-    }
-  *argv = largs;
-  return (int)args.size();
-}

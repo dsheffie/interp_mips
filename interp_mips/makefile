@@ -1,21 +1,17 @@
 UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S),Linux)
-     LLVM_CXXFLAGS = $(shell llvm-config-3.8 --cppflags)
-     LLVM_LDFLAGS = $(shell llvm-config-3.8 --ldflags --libs all)
-     CXX = g++ -march=native
+     CXX = g++ -flto -march=native
      EXTRA_LD = -ldl -lffi -lbfd
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
-     LLVM_CXXFLAGS = $(shell /home/dsheffie/code/llvm38/bin/llvm-config --cppflags)
-     LLVM_LDFLAGS = $(shell /home/dsheffie/code/llvm38/bin/llvm-config --ldflags --libs all)
      CXX = CC -march=native
      EXTRA_LD = -L/usr/local/lib
 endif
 
 CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
-LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz -lunwind -lboost_system
+LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz -lunwind -lboost_system -lboost_program_options
 
 OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
 DEP = $(OBJ:.o=.d)
