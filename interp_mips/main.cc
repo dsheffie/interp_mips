@@ -100,8 +100,13 @@ int main(int argc, char *argv[]) {
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
   initState(s);
 
+#ifdef __linux__
+  void* mempt = mmap(nullptr, 1UL<<32, PROT_READ | PROT_WRITE,
+		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+#else
   void* mempt = mmap(nullptr, 1UL<<32, PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS , -1, 0);
+#endif
   assert(mempt != reinterpret_cast<void*>(-1));
   assert(madvise(mempt, 1UL<<32, MADV_DONTNEED)==0);
   s->mem = reinterpret_cast<uint8_t*>(mempt);
