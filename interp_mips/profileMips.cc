@@ -163,6 +163,8 @@ void mkMonitorVectors(state_t *s) {
 }
 
 void execMips(state_t *s) {
+  s->brk = s->icnt >= s->maxicnt;
+
   uint8_t *mem = s->mem;
   uint32_t inst = accessBigEndian(*(uint32_t*)(mem + s->pc));
   std::cout << std::hex << s->pc << std::dec << " : " 

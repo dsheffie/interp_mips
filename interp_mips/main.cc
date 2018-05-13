@@ -70,7 +70,7 @@ int main(int argc, char *argv[]) {
 
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
-
+  uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("Options");
     desc.add_options() 
@@ -78,6 +78,7 @@ int main(int argc, char *argv[]) {
       ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
       ("clock,c", po::value<bool>(&enClockFuncts), "enable wall-clock")
       ("file,f", po::value<std::string>(&filename), "mips binary")
+      ("maxinsns,m", po::value<uint64_t>(&maxinsns), "max instructions to execute")
       ; 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -99,7 +100,7 @@ int main(int argc, char *argv[]) {
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
   initState(s);
-
+  s->maxicnt = maxinsns;
 #ifdef __linux__
   void* mempt = mmap(nullptr, 1UL<<32, PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);

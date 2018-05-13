@@ -59,6 +59,7 @@ typedef struct {
   uint64_t icnt;
   uint8_t *mem;
   uint8_t brk;
+  uint64_t maxicnt;
 } state_t;
 
 struct rtype_t {
