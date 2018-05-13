@@ -123,10 +123,14 @@ int main(int argc, char *argv[]) {
   while(s->brk==0)
     execMips(s);
 
+  uint32_t parity = 0;
   for(int i = 0; i < 32; i++) {
     std::cout << "reg " << getGPRName(i,false) << " : "
               << std::hex << s->gpr[i] << std::dec << "\n";
+    parity ^= s->gpr[i];
   }
+  std::cout << "parity = " << std::hex <<  parity << std::dec << "\n";
+  
 
   runtime = timestamp()-runtime;
   fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 
