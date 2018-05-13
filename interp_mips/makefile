@@ -1,21 +1,28 @@
 UNAME_S = $(shell uname -s)
 
+OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
+
 ifeq ($(UNAME_S),Linux)
-     CXX = g++ -flto -march=native
-     EXTRA_LD = -ldl -lffi -lbfd
+	CXX = clang++-4.0 -march=native
+	EXTRA_LD = -ldl -lffi -lbfd
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
-     CXX = CC -march=native
-     EXTRA_LD = -L/usr/local/lib
+	CXX = CC -march=native
+	EXTRA_LD = -L/usr/local/lib
+endif
+
+ifeq ($(UNAME_S),Darwin)
+	CXX = clang++ -march=native
+	EXTRA_LD = -L/opt/local/lib  -lboost_program_options-mt
 endif
 
 CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
-LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz -lunwind -lboost_system -lboost_program_options
+LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz #-lunwind -lboost_system
 
-OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
+
 DEP = $(OBJ:.o=.d)
-OPT = -O3 -std=c++11
+OPT = -O0 -g -fomit-frame-pointer -std=c++11
 EXE = interp_mips
 
 .PHONY : all clean
@@ -27,6 +34,9 @@ $(EXE) : $(OBJ)
 
 %.o: %.cc
 	$(CXX) -MMD $(CXXFLAGS) -c $< 
+
+%.o : %.s
+	as $< -o $@
 
 -include $(DEP)
 

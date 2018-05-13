@@ -165,6 +165,8 @@ void mkMonitorVectors(state_t *s) {
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
   uint32_t inst = accessBigEndian(*(uint32_t*)(mem + s->pc));
+  std::cout << std::hex << s->pc << std::dec << " : " 
+	    << getAsmString(inst, s->pc) << "\n";
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
   uint32_t opcode = inst>>26;
