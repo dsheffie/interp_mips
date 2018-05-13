@@ -122,6 +122,12 @@ int main(int argc, char *argv[]) {
   double runtime = timestamp();
   while(s->brk==0)
     execMips(s);
+
+  for(int i = 0; i < 32; i++) {
+    std::cout << "reg " << getGPRName(i,false) << " : "
+              << std::hex << s->gpr[i] << std::dec << "\n";
+  }
+
   runtime = timestamp()-runtime;
   fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 
 	  KGRN, runtime, (size_t)s->icnt, s->icnt / (runtime*1e6), KNRM);
