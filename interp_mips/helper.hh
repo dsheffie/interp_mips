@@ -25,6 +25,10 @@ void dbt_backtrace();
   }
 
 
+#ifndef print_var
+#define print_var(x) std::cout <<  #x << " = " << x << "\n";
+#endif
+
 double timestamp();
 
 uint32_t update_crc(uint32_t crc, uint8_t *buf, size_t len);

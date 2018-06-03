@@ -168,8 +168,8 @@ void execMips(state_t *s) {
   uint8_t *mem = s->mem;
   uint32_t inst = accessBigEndian(*(uint32_t*)(mem + s->pc));
 
-  std::cout << std::hex << s->pc << std::dec << " : " 
-	    << getAsmString(inst, s->pc) << "\n";
+  //std::cout << std::hex << s->pc << std::dec << " : " 
+  //<< getAsmString(inst, s->pc) << "\n";
 
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
@@ -241,6 +241,15 @@ void execMips(state_t *s) {
       }
       case 0x0C: /* syscall */
 	printf("syscall()\n");
+	std::cerr << "mem crc32=" << std::hex
+		  << crc32(s->mem, 1UL<<32)<<std::dec
+		  << "\n";
+	std::cerr << "gpr crc32=" << std::hex
+		  << crc32(reinterpret_cast<uint8_t*>(&s->gpr), 4*32)<<std::dec
+		  << "\n";
+	for(int i  = 0; i < 32; i++) {
+	  std::cerr << "gpr[" << i << "] = " << std::hex << s->gpr[i] << std::dec << "\n";
+	}
 	exit(-1);
 	break;
       case 0x0D: /* break */
