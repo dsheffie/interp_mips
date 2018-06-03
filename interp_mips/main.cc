@@ -71,12 +71,14 @@ int main(int argc, char *argv[]) {
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
   uint64_t maxinsns = ~(0UL);
+  bool hash = false;
   try {
     po::options_description desc("Options");
     desc.add_options() 
       ("help", "Print help messages") 
       ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
       ("clock,c", po::value<bool>(&enClockFuncts), "enable wall-clock")
+      ("hash,h", po::value<bool>(&hash), "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns), "max instructions to execute")
       ; 
@@ -123,14 +125,11 @@ int main(int argc, char *argv[]) {
   while(s->brk==0)
     execMips(s);
 
-  uint32_t parity = 0;
-  for(int i = 0; i < 32; i++) {
-    std::cout << "reg " << getGPRName(i,false) << " : "
-              << std::hex << s->gpr[i] << std::dec << "\n";
-    parity ^= s->gpr[i];
-  }
-  std::cout << "parity = " << std::hex <<  parity << std::dec << "\n";
-  
+  if(hash) {
+    std::cerr << "crc32=" << std::hex
+	      << crc32(s->mem, 1UL<<32)<<std::dec
+	      << "\n";
+  }  
 
   runtime = timestamp()-runtime;
   fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 

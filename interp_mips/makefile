@@ -21,7 +21,7 @@ CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
 LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz
 
 DEP = $(OBJ:.o=.d)
-OPT = -O0 -g -fomit-frame-pointer -std=c++11
+OPT = -O3 -g -fomit-frame-pointer -std=c++11
 EXE = interp_mips
 
 .PHONY : all clean
