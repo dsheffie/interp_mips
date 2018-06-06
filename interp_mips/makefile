@@ -18,7 +18,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
-LIBS =  $(EXTRA_LD) -lpthread -lffi -lcurses -lz
+LIBS =  $(EXTRA_LD) -lpthread
 
 DEP = $(OBJ:.o=.d)
 OPT = -O3 -g -fomit-frame-pointer -std=c++11
