@@ -86,27 +86,27 @@ void load_elf(const char* fn, state_t *ms)
     }
 #endif
     
-  if(accessBigEndian(eh32->e_machine) != 8) {
+  if(bswap(eh32->e_machine) != 8) {
     printf("INTERP : non-mips binary..goodbye\n");
     exit(-1);
   }
 
-  uint32_t lAddr = accessBigEndian(eh32->e_entry);
+  uint32_t lAddr = bswap(eh32->e_entry);
 
-  e_phnum = accessBigEndian(eh32->e_phnum);
-  ph32 = (Elf32_Phdr*)(buf + accessBigEndian(eh32->e_phoff));
-  e_shnum = accessBigEndian(eh32->e_shnum);
-  sh32 = (Elf32_Shdr*)(buf + accessBigEndian(eh32->e_shoff));
+  e_phnum = bswap(eh32->e_phnum);
+  ph32 = (Elf32_Phdr*)(buf + bswap(eh32->e_phoff));
+  e_shnum = bswap(eh32->e_shnum);
+  sh32 = (Elf32_Shdr*)(buf + bswap(eh32->e_shoff));
   ms->pc = lAddr;
 
   /* Find instruction segments and copy to
    * the memory buffer */
   for(int32_t i = 0; i < e_phnum; i++, ph32++) {
-    int32_t p_memsz = accessBigEndian(ph32->p_memsz);
-    int32_t p_offset = accessBigEndian(ph32->p_offset);
-    int32_t p_filesz = accessBigEndian(ph32->p_filesz);
-    int32_t p_type = accessBigEndian(ph32->p_type);
-    uint32_t p_vaddr = accessBigEndian(ph32->p_vaddr);
+    int32_t p_memsz = bswap(ph32->p_memsz);
+    int32_t p_offset = bswap(ph32->p_offset);
+    int32_t p_filesz = bswap(ph32->p_filesz);
+    int32_t p_type = bswap(ph32->p_type);
+    uint32_t p_vaddr = bswap(ph32->p_vaddr);
     if(p_type == SHT_PROGBITS && p_memsz) {
       if( (p_vaddr + p_memsz) > lAddr)
 	lAddr = (p_vaddr + p_memsz);
@@ -121,10 +121,10 @@ void load_elf(const char* fn, state_t *ms)
    * metadata (DBS_PROT_INSN) that these
    * are instructions */
   for(int32_t i = 0; i < e_shnum; i++, sh32++) {
-    int32_t f = accessBigEndian(sh32->sh_flags);
+    int32_t f = bswap(sh32->sh_flags);
     if(f & SHF_EXECINSTR) {
-      uint32_t addr = accessBigEndian(sh32->sh_addr);
-      int32_t size = accessBigEndian(sh32->sh_size);
+      uint32_t addr = bswap(sh32->sh_addr);
+      int32_t size = bswap(sh32->sh_size);
       bool pgAligned = ((addr & 4095) == 0);
       if(pgAligned) {
 	size = (size / pgSize) * pgSize;

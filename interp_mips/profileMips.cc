@@ -158,7 +158,7 @@ void mkMonitorVectors(state_t *s) {
       uint32_t insn = (RSVD_INSTRUCTION |
 		       (((loop >> 2) & RSVD_INSTRUCTION_ARG_MASK)
 			<< RSVD_INSTRUCTION_ARG_SHIFT));
-      *(uint32_t*)(s->mem+vaddr) = accessBigEndian(insn);
+      *(uint32_t*)(s->mem+vaddr) = bswap(insn);
   }
 }
 
@@ -166,7 +166,7 @@ void execMips(state_t *s) {
   s->brk = s->icnt >= s->maxicnt;
 
   uint8_t *mem = s->mem;
-  uint32_t inst = accessBigEndian(*(uint32_t*)(mem + s->pc));
+  uint32_t inst = bswap(*(uint32_t*)(mem + s->pc));
 
   //std::cout << std::hex << s->pc << std::dec << " : " 
   //<< getAsmString(inst, s->pc) << "\n";
@@ -788,7 +788,7 @@ template <typename T>
 void lxc1(uint32_t inst, state_t *s) {
   mips_t mi(inst);
   uint32_t ea = s->gpr[mi.lc1x.base] + s->gpr[mi.lc1x.index];
-  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = accessBigEndian(*reinterpret_cast<T*>(s->mem + ea));
+  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap(*reinterpret_cast<T*>(s->mem + ea));
   s->pc += 4;
 }
 
@@ -1026,7 +1026,7 @@ static void _lw(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
 
-  s->gpr[rt] = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  s->gpr[rt] = bswap(*((int32_t*)(s->mem + ea))); 
   s->pc += 4;
 }
 
@@ -1038,7 +1038,7 @@ static void _lh(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  int16_t mem = accessBigEndian(*((int16_t*)(s->mem + ea)));
+  int16_t mem = bswap(*((int16_t*)(s->mem + ea)));
   s->gpr[rt] = (int32_t)mem;
   s->pc +=4;
 }
@@ -1079,7 +1079,7 @@ static void _lhu(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t zExt = accessBigEndian(*((uint16_t*)(s->mem + ea)));
+  uint32_t zExt = bswap(*((uint16_t*)(s->mem + ea)));
   *((uint32_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
 }
@@ -1099,7 +1099,7 @@ static void _sw(uint32_t inst, state_t *s)
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int32_t*)(s->mem + ea)) = accessBigEndian(s->gpr[rt]);
+  *((int32_t*)(s->mem + ea)) = bswap(s->gpr[rt]);
   s->pc += 4;
 }
 
@@ -1111,7 +1111,7 @@ static void _sh(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
     
   uint32_t ea = s->gpr[rs] + imm;
-  *((int16_t*)(s->mem + ea)) = accessBigEndian(((int16_t)s->gpr[rt]));
+  *((int16_t*)(s->mem + ea)) = bswap(((int16_t)s->gpr[rt]));
   s->pc += 4;
 }
 
@@ -1163,13 +1163,13 @@ static void _swl(uint32_t inst, state_t *s)
 #ifdef MIPSEL
   ma = 3 - ma;
 #endif
-  uint32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = x >> (8*ma);
   uint32_t m = ~((1U << (8*(4 - ma))) - 1);
   xx = (r & m) | xs;
-  *((uint32_t*)(s->mem + ea)) = accessBigEndian(xx);
+  *((uint32_t*)(s->mem + ea)) = bswap(xx);
   s->pc += 4;
 }
 
@@ -1186,14 +1186,14 @@ static void _swr(uint32_t inst, state_t *s)
   ma = 3 - ma;
 #endif
   ea &= 0xfffffffc;
-  uint32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = 8*(3-ma);
   uint32_t rm = (1U << xs) - 1;
 
   xx = (x << xs) | (rm & r);
-  *((uint32_t*)(s->mem + ea)) = accessBigEndian(xx);
+  *((uint32_t*)(s->mem + ea)) = bswap(xx);
   s->pc += 4;
 }
 
@@ -1210,7 +1210,7 @@ static void _lwl(uint32_t inst, state_t *s)
 #ifdef MIPSEL
   ma = 3 - ma;
 #endif
-  int32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  int32_t r = bswap(*((int32_t*)(s->mem + ea))); 
   int32_t x =  s->gpr[rt];
   
   switch(ma)
@@ -1244,7 +1244,7 @@ static void _lwr(uint32_t inst, state_t *s)
 #ifdef MIPSEL
   ma = 3-ma;
 #endif
-  uint32_t r = accessBigEndian(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
   uint32_t x =  s->gpr[rt];
 
   switch(ma)
@@ -1318,25 +1318,25 @@ static void _monitorBody(uint32_t inst, state_t *s)
       s->gpr[R_v0] = fstat(fd, &native_stat);
       host_stat = (stat32_t*)(s->mem + (uint32_t)s->gpr[R_a1]); 
 
-      host_stat->st_dev = accessBigEndian((uint32_t)native_stat.st_dev);
-      host_stat->st_ino = accessBigEndian((uint16_t)native_stat.st_ino);
-      host_stat->st_mode = accessBigEndian((uint32_t)native_stat.st_mode);
-      host_stat->st_nlink = accessBigEndian((uint16_t)native_stat.st_nlink);
-      host_stat->st_uid = accessBigEndian((uint16_t)native_stat.st_uid);
-      host_stat->st_gid = accessBigEndian((uint16_t)native_stat.st_gid);
-      host_stat->st_size = accessBigEndian((uint32_t)native_stat.st_size);
-      host_stat->_st_atime = accessBigEndian((uint32_t)native_stat.st_atime);
+      host_stat->st_dev = bswap((uint32_t)native_stat.st_dev);
+      host_stat->st_ino = bswap((uint16_t)native_stat.st_ino);
+      host_stat->st_mode = bswap((uint32_t)native_stat.st_mode);
+      host_stat->st_nlink = bswap((uint16_t)native_stat.st_nlink);
+      host_stat->st_uid = bswap((uint16_t)native_stat.st_uid);
+      host_stat->st_gid = bswap((uint16_t)native_stat.st_gid);
+      host_stat->st_size = bswap((uint32_t)native_stat.st_size);
+      host_stat->_st_atime = bswap((uint32_t)native_stat.st_atime);
       host_stat->_st_mtime = 0;
       host_stat->_st_ctime = 0;
-      host_stat->st_blksize = accessBigEndian((uint32_t)native_stat.st_blksize);
-      host_stat->st_blocks = accessBigEndian((uint32_t)native_stat.st_blocks);
+      host_stat->st_blksize = bswap((uint32_t)native_stat.st_blksize);
+      host_stat->st_blocks = bswap((uint32_t)native_stat.st_blocks);
 
       break;
     case 33:
       if(enClockFuncts) {
 	gettimeofday(&tp, nullptr);
-	tp32.tv_sec = accessBigEndian((uint32_t)tp.tv_sec);
-	tp32.tv_usec = accessBigEndian((uint32_t)tp.tv_usec);
+	tp32.tv_sec = bswap((uint32_t)tp.tv_sec);
+	tp32.tv_usec = bswap((uint32_t)tp.tv_usec);
       } else {
 	memcpy(&tp32, &myTimeVal, sizeof(tp32));
 	myTimeVal.tv_usec++;
@@ -1352,10 +1352,10 @@ static void _monitorBody(uint32_t inst, state_t *s)
     case 34:
       if(enClockFuncts) {
 	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
-	tms32_buf.tms_utime = accessBigEndian((uint32_t)tms_buf.tms_utime);
-	tms32_buf.tms_stime = accessBigEndian((uint32_t)tms_buf.tms_stime);
-	tms32_buf.tms_cutime = accessBigEndian((uint32_t)tms_buf.tms_cutime);
-	tms32_buf.tms_cstime = accessBigEndian((uint32_t)tms_buf.tms_cstime);
+	tms32_buf.tms_utime = bswap((uint32_t)tms_buf.tms_utime);
+	tms32_buf.tms_stime = bswap((uint32_t)tms_buf.tms_stime);
+	tms32_buf.tms_cutime = bswap((uint32_t)tms_buf.tms_cutime);
+	tms32_buf.tms_cstime = bswap((uint32_t)tms_buf.tms_cstime);
       } else {
 	*((uint32_t*)(&s->gpr[R_v0])) = myTime;
 	myTime += 100;
@@ -1368,7 +1368,7 @@ static void _monitorBody(uint32_t inst, state_t *s)
       for(int i = 0; i < std::min(MARGS, sysArgc); i++)
 	{
 	  uint32_t arrayAddr = ((uint32_t)s->gpr[R_a0])+4*i;
-	  uint32_t ptr = accessBigEndian(*((uint32_t*)(s->mem + arrayAddr)));
+	  uint32_t ptr = bswap(*((uint32_t*)(s->mem + arrayAddr)));
 	  strcpy((char*)(s->mem + ptr), sysArgv[i]);
 	}
       s->gpr[R_v0] = sysArgc;
@@ -1392,7 +1392,7 @@ static void _monitorBody(uint32_t inst, state_t *s)
       /*      [A0 + 4] = instruction cache size */
       /*      [A0 + 8] = data cache size */
       /* 256 MBytes of DRAM */
-      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = accessBigEndian(K1SIZE);
+      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = bswap(K1SIZE);
       /* No Icache */
       *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 4)) = 0;
       /* No Dcache */
@@ -1415,7 +1415,7 @@ static void _ldc1(uint32_t inst, state_t *s)
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->cpr1 + ft)) = accessBigEndian(*((int64_t*)(s->mem + ea))); 
+  *((int64_t*)(s->cpr1 + ft)) = bswap(*((int64_t*)(s->mem + ea))); 
   s->pc += 4;
 }
 static void _sdc1(uint32_t inst, state_t *s)
@@ -1425,7 +1425,7 @@ static void _sdc1(uint32_t inst, state_t *s)
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->mem + ea)) = accessBigEndian((*(int64_t*)(s->cpr1 + ft)));
+  *((int64_t*)(s->mem + ea)) = bswap((*(int64_t*)(s->cpr1 + ft)));
   s->pc += 4;
 }
 static void _lwc1(uint32_t inst, state_t *s)
@@ -1435,7 +1435,7 @@ static void _lwc1(uint32_t inst, state_t *s)
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t v = accessBigEndian(*((uint32_t*)(s->mem + ea))); 
+  uint32_t v = bswap(*((uint32_t*)(s->mem + ea))); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
 }
@@ -1447,7 +1447,7 @@ static void _swc1(uint32_t inst, state_t *s)
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t v = *((uint32_t*)(s->cpr1+ft));
-  *((uint32_t*)(s->mem + ea)) = accessBigEndian(v);
+  *((uint32_t*)(s->mem + ea)) = bswap(v);
   s->pc += 4;
 }
 

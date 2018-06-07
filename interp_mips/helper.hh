@@ -51,12 +51,12 @@ std::string toStringHex(T x) {
 #define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
 
 template <typename T, INTEGRAL_ENABLE_IF(1,T)>
-T accessBigEndian(T x) {
+T bswap(T x) {
   return x;
 }
 
 template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
-T accessBigEndian(T x) {
+T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
 #ifdef MIPSEL
   return x;
@@ -66,7 +66,7 @@ T accessBigEndian(T x) {
 }
 
 template <typename T, INTEGRAL_ENABLE_IF(4,T)>
-T accessBigEndian(T x) {
+T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
 #ifdef MIPSEL
   return x;
@@ -76,7 +76,7 @@ T accessBigEndian(T x) {
 }
 
 template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
-T accessBigEndian(T x) {
+T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
 #ifdef MIPSEL
   return x;
