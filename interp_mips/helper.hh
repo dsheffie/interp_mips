@@ -38,9 +38,7 @@ int32_t remapIOFlags(int32_t flags);
 
 template <class T>
 std::string toString(T x) {
-  std::stringstream ss;
-  ss << x;
-  return ss.str();
+  return std::to_string(x);
 }
 
 template <class T>
@@ -50,25 +48,46 @@ std::string toStringHex(T x) {
   return ss.str();
 }
 
-template <typename T>
+#define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
+
+template <typename T, INTEGRAL_ENABLE_IF(1,T)>
 T accessBigEndian(T x) {
+  return x;
+}
+
+template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
+T accessBigEndian(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
 #ifdef MIPSEL
-   return x;
-#else
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  if(sizeof(x) == 1)
-    return x;
-  else if(sizeof(x) == 2)
-    return  __builtin_bswap16(x);
-  else if(sizeof(x) == 4)
-    return __builtin_bswap32(x);
-  else 
-    return __builtin_bswap64(x);
-#else
-   return x;
-#endif
+  return x;
+#else  
+  return  __builtin_bswap16(x);
 #endif
 }
+
+template <typename T, INTEGRAL_ENABLE_IF(4,T)>
+T accessBigEndian(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
+#ifdef MIPSEL
+  return x;
+#else
+  return  __builtin_bswap32(x);
+#endif
+}
+
+template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
+T accessBigEndian(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
+#ifdef MIPSEL
+  return x;
+#else
+  return  __builtin_bswap64(x);
+#endif
+}
+
+#undef INTEGRAL_ENABLE_IF
+
+
 
 template <class T> bool isPow2(T x) {
   return (((x-1)&x) == 0);
