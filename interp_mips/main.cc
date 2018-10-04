@@ -122,16 +122,19 @@ int main(int argc, char *argv[]) {
   mkMonitorVectors(s);
 
   double runtime = timestamp();
-  while(s->brk==0)
+  while(s->brk==0 and (s->icnt < s->maxicnt)) {
     execMips(s);
-
+  }
+  runtime = timestamp()-runtime;
+  //std::cerr << *s << "\n";
+  
   if(hash) {
     std::cerr << "crc32=" << std::hex
 	      << crc32(s->mem, 1UL<<32)<<std::dec
 	      << "\n";
   }  
 
-  runtime = timestamp()-runtime;
+
   fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 
 	  KGRN, runtime, (size_t)s->icnt, s->icnt / (runtime*1e6), KNRM);
   

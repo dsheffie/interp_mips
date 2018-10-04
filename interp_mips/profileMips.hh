@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <ostream>
 
 /* from gdb simulator */
 #define RSVD_INSTRUCTION           (0x00000005)
@@ -109,4 +110,5 @@ union mips_t {
 void initState(state_t *s);
 void execMips(state_t *s);
 void mkMonitorVectors(state_t *s);
+std::ostream &operator<<(std::ostream &out, const state_t & s);
 #endif

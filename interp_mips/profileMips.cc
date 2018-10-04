@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -28,6 +29,35 @@ void execCoproc0(uint32_t inst, state_t *s);
 void execCoproc1(uint32_t inst, state_t *s);
 void execCoproc1x(uint32_t inst, state_t *s);
 void execCoproc2(uint32_t inst, state_t *s);
+
+
+std::ostream &operator<<(std::ostream &out, const state_t & s) {
+  using namespace std;
+  out << "PC : " << hex << s.pc << dec << "\n";
+  for(int i = 0; i < 32; i++) {
+    out << getGPRName(i,0) << " : 0x"
+	<< hex << s.gpr[i] << dec
+	<< "(" << s.gpr[i] << ")\n";
+  }
+  for(int i = 0; i < 32; i++) {
+    out << "cpr0_" << i << " : "
+	<< hex << s.cpr0[i] << dec
+	<< "\n";
+  }
+  for(int i = 0; i < 32; i++) {
+    out << "cpr1_" << i << " : "
+	<< hex << s.cpr1[i] << dec
+	<< "\n";
+  }
+  for(int i = 0; i < 5; i++) {
+    out << "fcr" << i << " : "
+	<< hex << s.fcr1[i] << dec
+	<< "\n";
+  }
+  out << "icnt : " << s.icnt << "\n";
+  return out;
+}
+
 
 static uint32_t getConditionCode(state_t *s, uint32_t cc);
 static void setConditionCode(state_t *s, uint32_t v, uint32_t cc);
@@ -163,7 +193,6 @@ void mkMonitorVectors(state_t *s) {
 }
 
 void execMips(state_t *s) {
-  s->brk = s->icnt >= s->maxicnt;
 
   uint8_t *mem = s->mem;
   uint32_t inst = bswap(*(uint32_t*)(mem + s->pc));
