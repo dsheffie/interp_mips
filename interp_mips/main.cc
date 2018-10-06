@@ -129,6 +129,7 @@ int main(int argc, char *argv[]) {
   //std::cerr << *s << "\n";
   
   if(hash) {
+    std::cerr << *s << "\n";
     std::cerr << "crc32=" << std::hex
 	      << crc32(s->mem, 1UL<<32)<<std::dec
 	      << "\n";
