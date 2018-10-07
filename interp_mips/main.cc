@@ -62,12 +62,14 @@ int main(int argc, char *argv[]) {
   namespace po = boost::program_options; 
 #ifdef MIPSEL
   bigEndianMips = false;
-#endif  
-  fprintf(stderr, "%s%s INTERP: built %s %s%s\n",
-	  KGRN, bigEndianMips ? "MIPS" : "MIPSEL" ,
-	  __DATE__, __TIME__, KNRM);
+#endif
 
-
+  std::cerr << KGRN
+	    << std::string(bigEndianMips ? "MIPS" : "MIPSEL")
+	    << std::string(" INTERP : built ") << __DATE__ << " " << __TIME__
+	    << ",pid="<< getpid() << "\n"
+	    << KNRM << "\n";
+  
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
   uint64_t maxinsns = ~(0UL);
@@ -92,8 +94,8 @@ int main(int argc, char *argv[]) {
   }
 
   if(filename.size()==0) {
-    fprintf(stderr, "INTERP : no file\n");
-    exit(-1);
+    std::cerr << "INTERP : no file\n";
+    return -1;
   }
 
   /* Build argc and argv */
@@ -126,18 +128,19 @@ int main(int argc, char *argv[]) {
     execMips(s);
   }
   runtime = timestamp()-runtime;
-  //std::cerr << *s << "\n";
   
   if(hash) {
-    std::cerr << *s << "\n";
     std::cerr << "crc32=" << std::hex
 	      << crc32(s->mem, 1UL<<32)<<std::dec
 	      << "\n";
   }  
 
 
-  fprintf(stderr, "%sINTERP: %g sec, %zu ins executed, %g megains / sec%s\n", 
-	  KGRN, runtime, (size_t)s->icnt, s->icnt / (runtime*1e6), KNRM);
+  std::cerr << KGRN << "INTERP: "
+	    << runtime << " sec, "
+	    << s->icnt << " ins executed, "
+	    << (s->icnt/runtime)*1e-6 << "  megains / sec"
+	    << KNRM  << "\n", 
   
   munmap(mempt, 1UL<<32);
   if(sysArgv) {

@@ -217,7 +217,17 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
-  
+
+  if(s->icnt > 1845) {
+    std::cerr << s->icnt
+	      << " : "
+	      << getAsmString(inst, s->pc)
+	      << " "
+	      << std::hex
+	      << crc32(s->mem, 1UL<<32)<<std::dec
+	      << "\n";
+  }
+    
   if(isRType) {
     uint32_t funct = inst & 63;
     uint32_t sa = (inst >> 6) & 31;
@@ -1121,19 +1131,31 @@ static void _sc(uint32_t inst, state_t *s)
 }
 
 
-static void _sw(uint32_t inst, state_t *s)
-{
+static void _sw(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
   *((int32_t*)(s->mem + ea)) = bswap(s->gpr[rt]);
+
+#if 0
+  if(s->gpr[rt] != 0) {
+    std::cerr << "store @ icnt "
+	      << s->icnt
+	      << " : "
+	      << getAsmString(inst, s->pc)
+	      << " "
+	      << std::hex
+	      << crc32(s->mem, 1UL<<32)<<std::dec
+	      << "\n";
+  }
+#endif
+  
   s->pc += 4;
 }
 
-static void _sh(uint32_t inst, state_t *s)
-{
+static void _sh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -1141,11 +1163,24 @@ static void _sh(uint32_t inst, state_t *s)
     
   uint32_t ea = s->gpr[rs] + imm;
   *((int16_t*)(s->mem + ea)) = bswap(((int16_t)s->gpr[rt]));
+
+#if 0
+  if(s->gpr[rt] != 0) {
+    std::cerr << "store @ icnt "
+	      << s->icnt
+	      << " : "
+	      << getAsmString(inst, s->pc)
+	      << " "
+	      << std::hex
+	      << crc32(s->mem, 1UL<<32)<<std::dec
+	      << "\n";
+  }
+#endif
+  
   s->pc += 4;
 }
 
-static void _sb(uint32_t inst, state_t *s)
-{
+static void _sb(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -1153,11 +1188,24 @@ static void _sb(uint32_t inst, state_t *s)
     
   uint32_t ea = s->gpr[rs] + imm;
   s->mem[ea] = (uint8_t)s->gpr[rt];
+
+#if 0
+  if(s->gpr[rt] != 0) {
+    std::cerr << "store @ icnt "
+	      << s->icnt
+	      << " : "
+	      << getAsmString(inst, s->pc)
+	      << " "
+	      << std::hex
+	      << crc32(s->mem, 1UL<<32)<<std::dec
+	      << "\n";
+  }
+#endif
+  
   s->pc +=4;
 }
 
-static void _mtc1(uint32_t inst, state_t *s)
-{
+static void _mtc1(uint32_t inst, state_t *s) {
   uint32_t rd = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
   s->cpr1[rd] = s->gpr[rt];
