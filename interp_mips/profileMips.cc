@@ -217,16 +217,6 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
-
-  if(s->icnt > 1845) {
-    std::cerr << s->icnt
-	      << " : "
-	      << getAsmString(inst, s->pc)
-	      << " "
-	      << std::hex
-	      << crc32(s->mem, 1UL<<32)<<std::dec
-	      << "\n";
-  }
     
   if(isRType) {
     uint32_t funct = inst & 63;
