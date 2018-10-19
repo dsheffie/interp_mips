@@ -622,7 +622,7 @@ void execSpecial2(uint32_t inst,state_t *s)
       acc = ((int64_t)s->hi) << 32;
       acc |= ((int64_t)s->lo);
       y = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
-      y -= acc;
+      y = acc - y;
       s->lo = (int32_t)(y & 0xffffffff);
       s->hi = (int32_t)(y >> 32);
       break;
