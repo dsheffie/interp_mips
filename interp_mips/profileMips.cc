@@ -617,6 +617,17 @@ void execSpecial2(uint32_t inst,state_t *s)
       s->gpr[rd] = (int32_t)y;
       break;
     }
+    case(0x4): /* msub */ {
+      int64_t y,acc;
+      acc = ((int64_t)s->hi) << 32;
+      acc |= ((int64_t)s->lo);
+      y = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
+      y -= acc;
+      s->lo = (int32_t)(y & 0xffffffff);
+      s->hi = (int32_t)(y >> 32);
+      break;
+    }
+
     case(0x20): /* clz */
       s->gpr[rd] = (s->gpr[rs]==0) ? 32 : __builtin_clz(s->gpr[rs]);
       break;
