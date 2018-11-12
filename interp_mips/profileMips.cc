@@ -33,27 +33,31 @@ void execCoproc2(uint32_t inst, state_t *s);
 
 std::ostream &operator<<(std::ostream &out, const state_t & s) {
   using namespace std;
-  out << "PC : " << hex << s.pc << dec << "\n";
+  out << "PC : " << hex << s.last_pc << dec << "\n";
   for(int i = 0; i < 32; i++) {
     out << getGPRName(i,0) << " : 0x"
 	<< hex << s.gpr[i] << dec
 	<< "(" << s.gpr[i] << ")\n";
   }
+#if 0
   for(int i = 0; i < 32; i++) {
-    out << "cpr0_" << i << " : "
+    out << "cpr0_" << i << " : 0x"
 	<< hex << s.cpr0[i] << dec
 	<< "\n";
   }
+#endif
   for(int i = 0; i < 32; i++) {
-    out << "cpr1_" << i << " : "
+    out << "cpr1_" << i << " : 0x"
 	<< hex << s.cpr1[i] << dec
 	<< "\n";
   }
+#if 0
   for(int i = 0; i < 5; i++) {
-    out << "fcr" << i << " : "
+    out << "fcr" << i << " : 0x"
 	<< hex << s.fcr1[i] << dec
 	<< "\n";
   }
+#endif
   out << "icnt : " << s.icnt << "\n";
   return out;
 }
@@ -196,7 +200,7 @@ void execMips(state_t *s) {
 
   uint8_t *mem = s->mem;
   uint32_t inst = bswap(*(uint32_t*)(mem + s->pc));
-
+  s->last_pc = s->pc;
   //std::cout << std::hex << s->pc << std::dec << " : " 
   //<< getAsmString(inst, s->pc) << "\n";
 
@@ -1382,6 +1386,9 @@ static void _monitorBody(uint32_t inst, state_t *s)
     case 9:
       /* off_t lseek(int fd, off_t offset, int whence); */
       s->gpr[R_v0] = lseek(s->gpr[R_a0], s->gpr[R_a1], s->gpr[R_a2]);
+      std::cout << "icnt " << s->icnt << " : " 
+		<< "lseek(" << s->gpr[R_a0] << "," << s->gpr[R_a1] << "," << s->gpr[R_a2]
+		<< ") = " << s->gpr[R_v0] << "\n"; 
       break;
     case 10:
       fd = s->gpr[R_a0];
@@ -1411,11 +1418,12 @@ static void _monitorBody(uint32_t inst, state_t *s)
 
       break;
     case 33:
-      if(enClockFuncts) {
+      if(globals::enClockFuncts) {
 	gettimeofday(&tp, nullptr);
 	tp32.tv_sec = bswap((uint32_t)tp.tv_sec);
 	tp32.tv_usec = bswap((uint32_t)tp.tv_usec);
-      } else {
+      }
+      else {
 	memcpy(&tp32, &myTimeVal, sizeof(tp32));
 	myTimeVal.tv_usec++;
 	if(myTimeVal.tv_usec == (1<<20))
@@ -1428,7 +1436,7 @@ static void _monitorBody(uint32_t inst, state_t *s)
       s->gpr[R_v0] = 0;
       break;
     case 34:
-      if(enClockFuncts) {
+      if(globals::enClockFuncts) {
 	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
 	tms32_buf.tms_utime = bswap((uint32_t)tms_buf.tms_utime);
 	tms32_buf.tms_stime = bswap((uint32_t)tms_buf.tms_stime);
@@ -1443,13 +1451,12 @@ static void _monitorBody(uint32_t inst, state_t *s)
       break;
     case 35:
       /* int getargs(char **argv) */
-      for(int i = 0; i < std::min(MARGS, sysArgc); i++)
-	{
+      for(int i = 0; i < std::min(MARGS, globals::sysArgc); i++) {
 	  uint32_t arrayAddr = ((uint32_t)s->gpr[R_a0])+4*i;
 	  uint32_t ptr = bswap(*((uint32_t*)(s->mem + arrayAddr)));
-	  strcpy((char*)(s->mem + ptr), sysArgv[i]);
+	  strcpy((char*)(s->mem + ptr), globals::sysArgv[i]);
 	}
-      s->gpr[R_v0] = sysArgc;
+      s->gpr[R_v0] = globals::sysArgc;
       break;
     case 37:
       /*char *getcwd(char *buf, uint32_t size) */

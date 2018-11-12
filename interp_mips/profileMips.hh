@@ -51,6 +51,7 @@ typedef struct {
 
 typedef struct {
   uint32_t pc;
+  uint32_t last_pc;
   int32_t gpr[32];
   int32_t lo;
   int32_t hi;
