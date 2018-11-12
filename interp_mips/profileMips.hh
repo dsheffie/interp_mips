@@ -109,6 +109,7 @@ union mips_t {
 };
 
 void initState(state_t *s);
+void execMipsEL(state_t *s);
 void execMips(state_t *s);
 void mkMonitorVectors(state_t *s);
 std::ostream &operator<<(std::ostream &out, const state_t & s);

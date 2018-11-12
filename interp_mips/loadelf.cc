@@ -15,6 +15,7 @@
 
 #include "helper.hh"
 #include "profileMips.hh"
+#include "globals.hh"
 
 #ifdef __APPLE__
 #include "TargetConditionals.h"
@@ -76,15 +77,16 @@ void load_elf(const char* fn, state_t *ms)
   }
 
   /* Check for a MIPS machine */
-#ifdef MIPSEL
-    if(!checkLittleEndian(eh32)) {
-      printf("INTERP : not little endian\n");
-    }
-#else
-    if(!checkBigEndian(eh32)) {
-      printf("INTERP : not big endian\n");
-    }
-#endif
+  if(checkLittleEndian(eh32)) {
+    globals::isMipsEL = true;
+  }
+  else if(checkBigEndian(eh32)) {
+    globals::isMipsEL = false;
+  }
+  else {
+    std::cerr << "not big or little little endian?\n";
+    die();
+  }
     
   if(bswap(eh32->e_machine) != 8) {
     printf("INTERP : non-mips binary..goodbye\n");

@@ -5,6 +5,7 @@ namespace globals {
   extern bool enClockFuncts;
   extern int sysArgc;
   extern char **sysArgv;
+  extern bool isMipsEL;
 };
 
 #endif

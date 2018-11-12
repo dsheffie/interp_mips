@@ -24,6 +24,7 @@
 char **globals::sysArgv = nullptr;
 int globals::sysArgc = 0;
 bool globals::enClockFuncts = false;
+bool globals::isMipsEL = false;
 
 static state_t *s =0;
 
@@ -59,13 +60,10 @@ static int buildArgcArgv(const char *filename, const std::string &sysArgs, char 
 int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
   namespace po = boost::program_options; 
-#ifdef MIPSEL
-  bigEndianMips = false;
-#endif
 
   std::cerr << KGRN
-	    << std::string(bigEndianMips ? "MIPS" : "MIPSEL")
-	    << std::string(" INTERP : built ") << __DATE__ << " " << __TIME__
+	    << "MIPS INTERP : built "
+	    << __DATE__ << " " << __TIME__
 	    << ",pid="<< getpid() << "\n"
 	    << KNRM << "\n";
   
@@ -123,8 +121,15 @@ int main(int argc, char *argv[]) {
   mkMonitorVectors(s);
 
   double runtime = timestamp();
-  while(s->brk==0 and (s->icnt < s->maxicnt)) {
-    execMips(s);
+  if(globals::isMipsEL) {
+    while(s->brk==0 and (s->icnt < s->maxicnt)) {
+      execMipsEL(s);
+    }
+  }
+  else {
+    while(s->brk==0 and (s->icnt < s->maxicnt)) {
+      execMips(s);
+    }
   }
   runtime = timestamp()-runtime;
   
