@@ -51,6 +51,7 @@ typedef struct {
 
 typedef struct {
   uint32_t pc;
+  uint32_t last_pc;
   int32_t gpr[32];
   int32_t lo;
   int32_t hi;
@@ -108,6 +109,7 @@ union mips_t {
 };
 
 void initState(state_t *s);
+void execMipsEL(state_t *s);
 void execMips(state_t *s);
 void mkMonitorVectors(state_t *s);
 std::ostream &operator<<(std::ostream &out, const state_t & s);

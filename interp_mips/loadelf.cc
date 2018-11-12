@@ -15,6 +15,7 @@
 
 #include "helper.hh"
 #include "profileMips.hh"
+#include "globals.hh"
 
 #ifdef __APPLE__
 #include "TargetConditionals.h"
@@ -24,6 +25,43 @@
 #else
 #include <elf.h>
 #endif
+
+#define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
+
+template <typename T, INTEGRAL_ENABLE_IF(1,T)>
+T bswap_(T x) {
+  return x;
+}
+
+template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
+T bswap_(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
+  if(globals::isMipsEL) 
+    return x;
+  else
+  return  __builtin_bswap16(x);
+}
+
+template <typename T, INTEGRAL_ENABLE_IF(4,T)>
+T bswap_(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
+  if(globals::isMipsEL)
+    return x;
+  else 
+    return  __builtin_bswap32(x);
+}
+
+template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
+T bswap_(T x) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
+  if(globals::isMipsEL)
+    return x;
+  else 
+    return  __builtin_bswap64(x);
+}
+
+#undef INTEGRAL_ENABLE_IF
+
 
 static const uint8_t magicArr[4] = {0x7f, 'E', 'L', 'F'};
 bool checkElf(const Elf32_Ehdr *eh32) {
@@ -43,9 +81,7 @@ bool checkLittleEndian(const Elf32_Ehdr *eh32) {
   return (eh32->e_ident[EI_DATA] == ELFDATA2LSB);
 }
 
-
-void load_elf(const char* fn, state_t *ms)
-{
+void load_elf(const char* fn, state_t *ms) {
   struct stat s;
   Elf32_Ehdr *eh32 = nullptr;
   Elf32_Phdr* ph32 = nullptr;
@@ -76,37 +112,37 @@ void load_elf(const char* fn, state_t *ms)
   }
 
   /* Check for a MIPS machine */
-#ifdef MIPSEL
-    if(!checkLittleEndian(eh32)) {
-      printf("INTERP : not little endian\n");
-    }
-#else
-    if(!checkBigEndian(eh32)) {
-      printf("INTERP : not big endian\n");
-    }
-#endif
-    
-  if(bswap(eh32->e_machine) != 8) {
+  if(checkLittleEndian(eh32)) {
+    globals::isMipsEL = true;
+  }
+  else if(checkBigEndian(eh32)) {
+    globals::isMipsEL = false;
+  }
+  else {
+    std::cerr << "not big or little little endian?\n";
+    die();
+  }
+  if(bswap_(eh32->e_machine) != 8) {
     printf("INTERP : non-mips binary..goodbye\n");
     exit(-1);
   }
 
-  uint32_t lAddr = bswap(eh32->e_entry);
+  uint32_t lAddr = bswap_(eh32->e_entry);
 
-  e_phnum = bswap(eh32->e_phnum);
-  ph32 = (Elf32_Phdr*)(buf + bswap(eh32->e_phoff));
-  e_shnum = bswap(eh32->e_shnum);
-  sh32 = (Elf32_Shdr*)(buf + bswap(eh32->e_shoff));
+  e_phnum = bswap_(eh32->e_phnum);
+  ph32 = (Elf32_Phdr*)(buf + bswap_(eh32->e_phoff));
+  e_shnum = bswap_(eh32->e_shnum);
+  sh32 = (Elf32_Shdr*)(buf + bswap_(eh32->e_shoff));
   ms->pc = lAddr;
 
   /* Find instruction segments and copy to
    * the memory buffer */
   for(int32_t i = 0; i < e_phnum; i++, ph32++) {
-    int32_t p_memsz = bswap(ph32->p_memsz);
-    int32_t p_offset = bswap(ph32->p_offset);
-    int32_t p_filesz = bswap(ph32->p_filesz);
-    int32_t p_type = bswap(ph32->p_type);
-    uint32_t p_vaddr = bswap(ph32->p_vaddr);
+    int32_t p_memsz = bswap_(ph32->p_memsz);
+    int32_t p_offset = bswap_(ph32->p_offset);
+    int32_t p_filesz = bswap_(ph32->p_filesz);
+    int32_t p_type = bswap_(ph32->p_type);
+    uint32_t p_vaddr = bswap_(ph32->p_vaddr);
     if(p_type == SHT_PROGBITS && p_memsz) {
       if( (p_vaddr + p_memsz) > lAddr)
 	lAddr = (p_vaddr + p_memsz);
@@ -121,10 +157,10 @@ void load_elf(const char* fn, state_t *ms)
    * metadata (DBS_PROT_INSN) that these
    * are instructions */
   for(int32_t i = 0; i < e_shnum; i++, sh32++) {
-    int32_t f = bswap(sh32->sh_flags);
+    int32_t f = bswap_(sh32->sh_flags);
     if(f & SHF_EXECINSTR) {
-      uint32_t addr = bswap(sh32->sh_addr);
-      int32_t size = bswap(sh32->sh_size);
+      uint32_t addr = bswap_(sh32->sh_addr);
+      int32_t size = bswap_(sh32->sh_size);
       bool pgAligned = ((addr & 4095) == 0);
       if(pgAligned) {
 	size = (size / pgSize) * pgSize;
@@ -139,4 +175,5 @@ void load_elf(const char* fn, state_t *ms)
   }
 
   munmap(buf, s.st_size);
+
 }

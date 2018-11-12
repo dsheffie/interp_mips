@@ -21,10 +21,10 @@
 #include "profileMips.hh"
 #include "globals.hh"
 
-char **sysArgv = nullptr;
-int sysArgc = 0;
-bool enClockFuncts = false;
-
+char **globals::sysArgv = nullptr;
+int globals::sysArgc = 0;
+bool globals::enClockFuncts = false;
+bool globals::isMipsEL = false;
 
 static state_t *s =0;
 
@@ -60,13 +60,10 @@ static int buildArgcArgv(const char *filename, const std::string &sysArgs, char 
 int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
   namespace po = boost::program_options; 
-#ifdef MIPSEL
-  bigEndianMips = false;
-#endif
 
   std::cerr << KGRN
-	    << std::string(bigEndianMips ? "MIPS" : "MIPSEL")
-	    << std::string(" INTERP : built ") << __DATE__ << " " << __TIME__
+	    << "MIPS INTERP : built "
+	    << __DATE__ << " " << __TIME__
 	    << ",pid="<< getpid() << "\n"
 	    << KNRM << "\n";
   
@@ -79,7 +76,7 @@ int main(int argc, char *argv[]) {
     desc.add_options() 
       ("help", "Print help messages") 
       ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
-      ("clock,c", po::value<bool>(&enClockFuncts), "enable wall-clock")
+      ("clock,c", po::value<bool>(&globals::enClockFuncts), "enable wall-clock")
       ("hash,h", po::value<bool>(&hash), "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns), "max instructions to execute")
@@ -99,7 +96,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* Build argc and argv */
-  sysArgc = buildArgcArgv(filename.c_str(),sysArgs,sysArgv);
+  globals::sysArgc = buildArgcArgv(filename.c_str(),sysArgs,globals::sysArgv);
   initParseTables();
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
@@ -124,12 +121,21 @@ int main(int argc, char *argv[]) {
   mkMonitorVectors(s);
 
   double runtime = timestamp();
-  while(s->brk==0 and (s->icnt < s->maxicnt)) {
-    execMips(s);
+  if(globals::isMipsEL) {
+    while(s->brk==0 and (s->icnt < s->maxicnt)) {
+      execMipsEL(s);
+    }
+  }
+  else {
+    while(s->brk==0 and (s->icnt < s->maxicnt)) {
+      execMips(s);
+    }
   }
   runtime = timestamp()-runtime;
   
   if(hash) {
+    std::fflush(nullptr);
+    std::cerr << *s << "\n";
     std::cerr << "crc32=" << std::hex
 	      << crc32(s->mem, 1UL<<32)<<std::dec
 	      << "\n";
@@ -143,11 +149,11 @@ int main(int argc, char *argv[]) {
 	    << KNRM  << "\n", 
   
   munmap(mempt, 1UL<<32);
-  if(sysArgv) {
-    for(int i = 0; i < sysArgc; i++) {
-      delete [] sysArgv[i];
+  if(globals::sysArgv) {
+    for(int i = 0; i < globals::sysArgc; i++) {
+      delete [] globals::sysArgv[i];
     }
-    delete [] sysArgv;
+    delete [] globals::sysArgv;
   }
   free(s);
   return 0;
