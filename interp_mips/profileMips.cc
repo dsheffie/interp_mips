@@ -26,10 +26,9 @@ void execIType(uint32_t inst, state_t *s);
 void execSpecial2(uint32_t inst, state_t *s);
 void execSpecial3(uint32_t inst, state_t *s);
 void execCoproc0(uint32_t inst, state_t *s);
-void execCoproc1x(uint32_t inst, state_t *s);
 void execCoproc2(uint32_t inst, state_t *s);
 
-template <bool MIPSEL> void execMips(state_t *s);
+template <bool EL> void execMips(state_t *s);
 
 void execMipsEL(state_t *s) {
   execMips<true>(s);
@@ -72,10 +71,6 @@ std::ostream &operator<<(std::ostream &out, const state_t & s) {
 
 static uint32_t getConditionCode(state_t *s, uint32_t cc);
 static void setConditionCode(state_t *s, uint32_t v, uint32_t cc);
-
-/* RType instructions */
-static void _monitor(uint32_t inst, state_t *s);
-static void _monitorBody(uint32_t inst, state_t *s);
 
 
 /* IType instructions */
@@ -194,7 +189,9 @@ void mkMonitorVectors(state_t *s) {
       uint32_t insn = (RSVD_INSTRUCTION |
 		       (((loop >> 2) & RSVD_INSTRUCTION_ARG_MASK)
 			<< RSVD_INSTRUCTION_ARG_SHIFT));
-      *(uint32_t*)(s->mem+vaddr) = bswap(insn);
+      *(uint32_t*)(s->mem+vaddr) = globals::isMipsEL ?
+	bswap<true,uint32_t>(insn) :
+	bswap<false,uint32_t>(insn);
   }
 }
 
@@ -330,14 +327,15 @@ struct c1xExec {
 };
 
 
-template <typename T>
+template <bool EL, typename T>
 void lxc1(uint32_t inst, state_t *s) {
   mips_t mi(inst);
   uint32_t ea = s->gpr[mi.lc1x.base] + s->gpr[mi.lc1x.index];
-  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap(*reinterpret_cast<T*>(s->mem + ea));
+  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap<EL>(*reinterpret_cast<T*>(s->mem + ea));
   s->pc += 4;
 }
 
+template <bool EL>
 void execCoproc1x(uint32_t inst, state_t *s) {
   mips_t mi(inst);
 
@@ -345,11 +343,11 @@ void execCoproc1x(uint32_t inst, state_t *s) {
     {
     case 0:
       //lwxc1
-      lxc1<int32_t>(inst, s);
+      lxc1<EL,int32_t>(inst, s);
       return;
     case 1:
       //ldxc1
-      lxc1<int64_t>(inst, s);
+      lxc1<EL,int64_t>(inst, s);
       return;
     default:
       break;
@@ -375,7 +373,7 @@ void execCoproc1x(uint32_t inst, state_t *s) {
    }
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _beq(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -387,14 +385,14 @@ void _beq(uint32_t inst, state_t *s) {
 
   /* execute branch delay */
   s->pc +=4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
   if(takeBranch)
     {
       s->pc = (imm+npc);
     }
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _beql(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -407,14 +405,14 @@ void _beql(uint32_t inst, state_t *s) {
   /* execute branch delay */
   if(takeBranch)
     {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = (imm+npc);
     }
   else
     s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bne(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -426,14 +424,14 @@ void _bne(uint32_t inst, state_t *s) {
   
   /* execute branch delay */
   s->pc +=4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
 
   if(takeBranch)
     s->pc = (imm+npc);
 }
 
 
-template <bool MIPSEL>
+template <bool EL>
 void _bnel(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -446,14 +444,14 @@ void _bnel(uint32_t inst, state_t *s) {
   /* execute branch delay */
   if(takeBranch)
     {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = (imm+npc);
     }
   else
     s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bgtz(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -461,12 +459,12 @@ void _bgtz(uint32_t inst, state_t *s) {
   int32_t npc = s->pc+4; 
   bool takeBranch = (s->gpr[rs]>0);
   s->pc += 4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
   if(takeBranch)
     s->pc = imm+npc;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bgtzl(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -476,14 +474,14 @@ void _bgtzl(uint32_t inst, state_t *s) {
   s->pc +=4;
 
   if(takeBranch) {
-    execMips<MIPSEL>(s);
+    execMips<EL>(s);
     s->pc = (imm+npc);
   }
   else 
     s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _blezl(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -494,7 +492,7 @@ void _blezl(uint32_t inst, state_t *s) {
 
   if(takeBranch)
     {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = (imm+npc);
     }
   else
@@ -502,7 +500,7 @@ void _blezl(uint32_t inst, state_t *s) {
   
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _blez(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -510,12 +508,12 @@ void _blez(uint32_t inst, state_t *s) {
   int32_t npc = s->pc+4; 
   bool takeBranch = (s->gpr[rs]<=0);
   s->pc += 4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
   if(takeBranch)
     s->pc = imm+npc;  
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bgez_bltz(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -527,7 +525,7 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
     /* bltz : less than zero */
     takeBranch = (s->gpr[rs] < 0);
     s->pc += 4;
-    execMips<MIPSEL>(s);
+    execMips<EL>(s);
     if(takeBranch)
       s->pc = imm+npc;
   }
@@ -535,7 +533,7 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
     /* bgez : greater than or equal to zero */
     takeBranch = (s->gpr[rs] >= 0);
     s->pc += 4;
-    execMips<MIPSEL>(s);
+    execMips<EL>(s);
     if(takeBranch)
       s->pc = imm+npc;
   }
@@ -543,7 +541,7 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
     takeBranch = (s->gpr[rs] < 0);
     s->pc += 4;
     if(takeBranch) {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = imm+npc;
     }
     else 
@@ -554,7 +552,7 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
     takeBranch = (s->gpr[rs] >=0);
     s->pc += 4;
     if(takeBranch) {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = imm+npc;
     }
     else 
@@ -563,35 +561,33 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
 }
 
 
-
-static void _lw(uint32_t inst, state_t *s)
-{
+template <bool EL>
+void _lw(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
 
-  s->gpr[rt] = bswap(*((int32_t*)(s->mem + ea))); 
+  s->gpr[rt] = bswap<EL>(*((int32_t*)(s->mem + ea))); 
   s->pc += 4;
 }
 
-static void _lh(uint32_t inst, state_t *s)
-{
+template <bool EL>
+void _lh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  int16_t mem = bswap(*((int16_t*)(s->mem + ea)));
+  int16_t mem = bswap<EL>(*((int16_t*)(s->mem + ea)));
   s->gpr[rt] = (int32_t)mem;
   s->pc +=4;
 }
 
 
-static void _lb(uint32_t inst, state_t *s)
-{
+static void _lb(uint32_t inst, state_t *s){
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -603,8 +599,7 @@ static void _lb(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _lbu(uint32_t inst, state_t *s)
-{
+static void _lbu(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
@@ -616,74 +611,49 @@ static void _lbu(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-
-static void _lhu(uint32_t inst, state_t *s)
-{
+template <bool EL>
+void _lhu(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t zExt = bswap(*((uint16_t*)(s->mem + ea)));
+  uint32_t zExt = bswap<EL>(*((uint16_t*)(s->mem + ea)));
   *((uint32_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
 }
 
-static void _sc(uint32_t inst, state_t *s)
-{
-  uint32_t rt = (inst >> 16) & 31;
-  _sw(inst, s);
-  s->gpr[rt] = 1;
-}
 
-
-static void _sw(uint32_t inst, state_t *s) {
+template <bool EL>
+void _sw(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int32_t*)(s->mem + ea)) = bswap(s->gpr[rt]);
-
-#if 0
-  if(s->gpr[rt] != 0) {
-    std::cerr << "store @ icnt "
-	      << s->icnt
-	      << " : "
-	      << getAsmString(inst, s->pc)
-	      << " "
-	      << std::hex
-	      << crc32(s->mem, 1UL<<32)<<std::dec
-	      << "\n";
-  }
-#endif
+  *((int32_t*)(s->mem + ea)) = bswap<EL>(s->gpr[rt]);
   
   s->pc += 4;
 }
 
-static void _sh(uint32_t inst, state_t *s) {
+template <bool EL>
+void _sc(uint32_t inst, state_t *s) {
+  uint32_t rt = (inst >> 16) & 31;
+  _sw<EL>(inst, s);
+  s->gpr[rt] = 1;
+}
+
+
+template <bool EL>
+void _sh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
     
   uint32_t ea = s->gpr[rs] + imm;
-  *((int16_t*)(s->mem + ea)) = bswap(((int16_t)s->gpr[rt]));
-
-#if 0
-  if(s->gpr[rt] != 0) {
-    std::cerr << "store @ icnt "
-	      << s->icnt
-	      << " : "
-	      << getAsmString(inst, s->pc)
-	      << " "
-	      << std::hex
-	      << crc32(s->mem, 1UL<<32)<<std::dec
-	      << "\n";
-  }
-#endif
-  
+  *((int16_t*)(s->mem + ea)) = bswap<EL>(((int16_t)s->gpr[rt]));
   s->pc += 4;
 }
 
@@ -695,19 +665,6 @@ static void _sb(uint32_t inst, state_t *s) {
     
   uint32_t ea = s->gpr[rs] + imm;
   s->mem[ea] = (uint8_t)s->gpr[rt];
-
-#if 0
-  if(s->gpr[rt] != 0) {
-    std::cerr << "store @ icnt "
-	      << s->icnt
-	      << " : "
-	      << getAsmString(inst, s->pc)
-	      << " "
-	      << std::hex
-	      << crc32(s->mem, 1UL<<32)<<std::dec
-	      << "\n";
-  }
-#endif
   
   s->pc +=4;
 }
@@ -727,13 +684,7 @@ static void _mfc1(uint32_t inst, state_t *s) {
 }
 
 
-
-
-static void _monitor(uint32_t inst, state_t *s){
-  _monitorBody(inst, s);
-}
-
-template <bool MIPSEL>
+template <bool EL>
 void _swl(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -743,19 +694,19 @@ void _swl(uint32_t inst, state_t *s) {
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
-  if(MIPSEL)
+  if(EL)
     ma = 3 - ma;
-  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = x >> (8*ma);
   uint32_t m = ~((1U << (8*(4 - ma))) - 1);
   xx = (r & m) | xs;
-  *((uint32_t*)(s->mem + ea)) = bswap(xx);
+  *((uint32_t*)(s->mem + ea)) = bswap<EL>(xx);
   s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _swr(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -764,21 +715,21 @@ void _swr(uint32_t inst, state_t *s) {
    
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t ma = ea & 3;
-  if(MIPSEL)
+  if(EL)
     ma = 3 - ma;
   ea &= 0xfffffffc;
-  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = 8*(3-ma);
   uint32_t rm = (1U << xs) - 1;
 
   xx = (x << xs) | (rm & r);
-  *((uint32_t*)(s->mem + ea)) = bswap(xx);
+  *((uint32_t*)(s->mem + ea)) = bswap<EL>(xx);
   s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _lwl(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -788,9 +739,9 @@ void _lwl(uint32_t inst, state_t *s) {
   uint32_t ea = ((uint32_t)s->gpr[rs] + imm);
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
-  if(MIPSEL)
+  if(EL)
     ma = 3 - ma;
-  int32_t r = bswap(*((int32_t*)(s->mem + ea))); 
+  int32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
   int32_t x =  s->gpr[rt];
   
   switch(ma)
@@ -811,7 +762,7 @@ void _lwl(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
-template<bool MIPSEL>
+template<bool EL>
 void _lwr(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -821,9 +772,9 @@ void _lwr(uint32_t inst, state_t *s) {
   uint32_t ea = ((uint32_t)s->gpr[rs] + imm);
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
-  if(MIPSEL)
+  if(EL)
     ma = 3-ma;
-  uint32_t r = bswap(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
   uint32_t x =  s->gpr[rt];
 
   switch(ma)
@@ -844,8 +795,8 @@ void _lwr(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
-static void _monitorBody(uint32_t inst, state_t *s)
-{
+template <bool EL>
+void _monitorBody(uint32_t inst, state_t *s) {
  uint32_t reason = (inst >> RSVD_INSTRUCTION_ARG_SHIFT) & RSVD_INSTRUCTION_ARG_MASK;
   reason >>= 1;
   int32_t fd=-1,nr=-1,flags=-1;
@@ -900,25 +851,25 @@ static void _monitorBody(uint32_t inst, state_t *s)
       s->gpr[R_v0] = fstat(fd, &native_stat);
       host_stat = (stat32_t*)(s->mem + (uint32_t)s->gpr[R_a1]); 
 
-      host_stat->st_dev = bswap((uint32_t)native_stat.st_dev);
-      host_stat->st_ino = bswap((uint16_t)native_stat.st_ino);
-      host_stat->st_mode = bswap((uint32_t)native_stat.st_mode);
-      host_stat->st_nlink = bswap((uint16_t)native_stat.st_nlink);
-      host_stat->st_uid = bswap((uint16_t)native_stat.st_uid);
-      host_stat->st_gid = bswap((uint16_t)native_stat.st_gid);
-      host_stat->st_size = bswap((uint32_t)native_stat.st_size);
-      host_stat->_st_atime = bswap((uint32_t)native_stat.st_atime);
+      host_stat->st_dev = bswap<EL>((uint32_t)native_stat.st_dev);
+      host_stat->st_ino = bswap<EL>((uint16_t)native_stat.st_ino);
+      host_stat->st_mode = bswap<EL>((uint32_t)native_stat.st_mode);
+      host_stat->st_nlink = bswap<EL>((uint16_t)native_stat.st_nlink);
+      host_stat->st_uid = bswap<EL>((uint16_t)native_stat.st_uid);
+      host_stat->st_gid = bswap<EL>((uint16_t)native_stat.st_gid);
+      host_stat->st_size = bswap<EL>((uint32_t)native_stat.st_size);
+      host_stat->_st_atime = bswap<EL>((uint32_t)native_stat.st_atime);
       host_stat->_st_mtime = 0;
       host_stat->_st_ctime = 0;
-      host_stat->st_blksize = bswap((uint32_t)native_stat.st_blksize);
-      host_stat->st_blocks = bswap((uint32_t)native_stat.st_blocks);
+      host_stat->st_blksize = bswap<EL>((uint32_t)native_stat.st_blksize);
+      host_stat->st_blocks = bswap<EL>((uint32_t)native_stat.st_blocks);
 
       break;
     case 33:
       if(globals::enClockFuncts) {
 	gettimeofday(&tp, nullptr);
-	tp32.tv_sec = bswap((uint32_t)tp.tv_sec);
-	tp32.tv_usec = bswap((uint32_t)tp.tv_usec);
+	tp32.tv_sec = bswap<EL>((uint32_t)tp.tv_sec);
+	tp32.tv_usec = bswap<EL>((uint32_t)tp.tv_usec);
       }
       else {
 	memcpy(&tp32, &myTimeVal, sizeof(tp32));
@@ -935,10 +886,10 @@ static void _monitorBody(uint32_t inst, state_t *s)
     case 34:
       if(globals::enClockFuncts) {
 	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
-	tms32_buf.tms_utime = bswap((uint32_t)tms_buf.tms_utime);
-	tms32_buf.tms_stime = bswap((uint32_t)tms_buf.tms_stime);
-	tms32_buf.tms_cutime = bswap((uint32_t)tms_buf.tms_cutime);
-	tms32_buf.tms_cstime = bswap((uint32_t)tms_buf.tms_cstime);
+	tms32_buf.tms_utime = bswap<EL>((uint32_t)tms_buf.tms_utime);
+	tms32_buf.tms_stime = bswap<EL>((uint32_t)tms_buf.tms_stime);
+	tms32_buf.tms_cutime = bswap<EL>((uint32_t)tms_buf.tms_cutime);
+	tms32_buf.tms_cstime = bswap<EL>((uint32_t)tms_buf.tms_cstime);
       } else {
 	*((uint32_t*)(&s->gpr[R_v0])) = myTime;
 	myTime += 100;
@@ -950,7 +901,7 @@ static void _monitorBody(uint32_t inst, state_t *s)
       /* int getargs(char **argv) */
       for(int i = 0; i < std::min(MARGS, globals::sysArgc); i++) {
 	  uint32_t arrayAddr = ((uint32_t)s->gpr[R_a0])+4*i;
-	  uint32_t ptr = bswap(*((uint32_t*)(s->mem + arrayAddr)));
+	  uint32_t ptr = bswap<EL>(*((uint32_t*)(s->mem + arrayAddr)));
 	  strcpy((char*)(s->mem + ptr), globals::sysArgv[i]);
 	}
       s->gpr[R_v0] = globals::sysArgc;
@@ -974,7 +925,7 @@ static void _monitorBody(uint32_t inst, state_t *s)
       /*      [A0 + 4] = instruction cache size */
       /*      [A0 + 8] = data cache size */
       /* 256 MBytes of DRAM */
-      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = bswap(K1SIZE);
+      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = bswap<EL>(K1SIZE);
       /* No Icache */
       *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 4)) = 0;
       /* No Dcache */
@@ -990,51 +941,54 @@ static void _monitorBody(uint32_t inst, state_t *s)
 
 
 
-static void _ldc1(uint32_t inst, state_t *s)
-{
+template <bool EL>
+void _ldc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->cpr1 + ft)) = bswap(*((int64_t*)(s->mem + ea))); 
+  *((int64_t*)(s->cpr1 + ft)) = bswap<EL>(*((int64_t*)(s->mem + ea))); 
   s->pc += 4;
 }
-static void _sdc1(uint32_t inst, state_t *s)
-{
+
+template <bool EL>
+void _sdc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->mem + ea)) = bswap((*(int64_t*)(s->cpr1 + ft)));
+  *((int64_t*)(s->mem + ea)) = bswap<EL>((*(int64_t*)(s->cpr1 + ft)));
   s->pc += 4;
 }
-static void _lwc1(uint32_t inst, state_t *s)
-{
+
+template <bool EL>
+void _lwc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t v = bswap(*((uint32_t*)(s->mem + ea))); 
+  uint32_t v = bswap<EL>(*((uint32_t*)(s->mem + ea))); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
 }
-static void _swc1(uint32_t inst, state_t *s)
-{
+
+template <bool EL>
+void _swc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t v = *((uint32_t*)(s->cpr1+ft));
-  *((uint32_t*)(s->mem + ea)) = bswap(v);
+  *((uint32_t*)(s->mem + ea)) = bswap<EL>(v);
   s->pc += 4;
 }
 
 /* normal versions */
-template <bool MIPSEL>
+template <bool EL>
 void _bc1f(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
@@ -1042,13 +996,13 @@ void _bc1f(uint32_t inst, state_t *s) {
   uint32_t cc = (inst >> 18) & 7;
   bool takeBranch = getConditionCode(s,cc)==0;
   s->pc += 4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
   if(takeBranch)
     s->pc = imm+npc;
   
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bc1t(uint32_t inst, state_t *s) { 
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
@@ -1056,13 +1010,13 @@ void _bc1t(uint32_t inst, state_t *s) {
   uint32_t cc = (inst >> 18) & 7;
   bool takeBranch = getConditionCode(s,cc)==1;
   s->pc += 4;
-  execMips<MIPSEL>(s);
+  execMips<EL>(s);
   if(takeBranch)
     s->pc = (imm+npc);
   
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bc1fl(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
@@ -1074,14 +1028,14 @@ void _bc1fl(uint32_t inst, state_t *s) {
 
   if(takeBranch)
     {
-      execMips<MIPSEL>(s);
+      execMips<EL>(s);
       s->pc = (imm+npc);
     }
   else
     s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void _bc1tl(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
@@ -1091,7 +1045,7 @@ void _bc1tl(uint32_t inst, state_t *s) {
   s->pc +=4;
 
   if(takeBranch) {
-    execMips<MIPSEL>(s);
+    execMips<EL>(s);
     s->pc = (imm+npc);
   }
   else
@@ -1905,7 +1859,7 @@ static void _cd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void execCoproc1(uint32_t inst, state_t *s) {
   uint32_t opcode = inst>>26;
   uint32_t functField = (inst>>21) & 31;
@@ -1921,16 +1875,16 @@ void execCoproc1(uint32_t inst, state_t *s) {
       switch(nd_tf)
 	{
 	case 0x0:
-	  _bc1f<MIPSEL>(inst, s);
+	  _bc1f<EL>(inst, s);
 	  break;
 	case 0x1:
-	  _bc1t<MIPSEL>(inst, s);
+	  _bc1t<EL>(inst, s);
 	  break;
 	case 0x2:
-	  _bc1fl<MIPSEL>(inst, s);
+	  _bc1fl<EL>(inst, s);
 	  break;
 	case 0x3:
-	  _bc1tl<MIPSEL>(inst, s);
+	  _bc1tl<EL>(inst, s);
 	  break;
 	}
       /*BRANCH*/
@@ -2020,11 +1974,10 @@ void execCoproc1(uint32_t inst, state_t *s) {
     }
 }
 
-template <bool MIPSEL>
+template <bool EL>
 void execMips(state_t *s) {
-
   uint8_t *mem = s->mem;
-  uint32_t inst = bswap(*(uint32_t*)(mem + s->pc));
+  uint32_t inst = bswap<EL>(*(uint32_t*)(mem + s->pc));
   s->last_pc = s->pc;
   //std::cout << std::hex << s->pc << std::dec << " : " 
   //<< getAsmString(inst, s->pc) << "\n";
@@ -2072,7 +2025,7 @@ void execMips(state_t *s) {
 	s->pc += 4;
 	break;
       case 0x05:
-	_monitor(inst,s);
+	_monitorBody<EL>(inst, s);
 	break;
       case 0x06:  
 	s->gpr[rd] = ((uint32_t)s->gpr[rt]) >> (s->gpr[rs] & 0x1f);
@@ -2085,7 +2038,7 @@ void execMips(state_t *s) {
       case 0x08: { /* jr */
 	uint32_t jaddr = s->gpr[rs];
 	s->pc += 4;
-	execMips<MIPSEL>(s);
+	execMips<EL>(s);
 	s->pc = jaddr;
 	break;
       }
@@ -2093,7 +2046,7 @@ void execMips(state_t *s) {
 	uint32_t jaddr = s->gpr[rs];
 	s->gpr[31] = s->pc+8;
 	s->pc += 4;
-	execMips<MIPSEL>(s);
+	execMips<EL>(s);
 	s->pc = jaddr;
 	break;
       }
@@ -2255,7 +2208,7 @@ void execMips(state_t *s) {
       exit(-1);
     }
     jaddr |= (s->pc & (~((1<<28)-1)));
-    execMips<MIPSEL>(s);
+    execMips<EL>(s);
     s->pc = jaddr;
   }
   else if(isCoproc0) {  
@@ -2274,16 +2227,16 @@ void execMips(state_t *s) {
     s->pc += 4;
   }
   else if(isCoproc1) 
-    execCoproc1<MIPSEL>(inst,s);
+    execCoproc1<EL>(inst,s);
   else if(isCoproc1x)
-    execCoproc1x(inst,s);
+    execCoproc1x<EL>(inst,s);
   else if(isCoproc2) {
     printf("coproc2 unimplemented\n");  exit(-1);
   }
   else if(isLoadLinked)
-    _lw(inst, s);
+    _lw<EL>(inst, s);
   else if(isStoreCond)
-    _sc(inst, s);
+    _sc<EL>(inst, s);
   else { /* itype */
     uint32_t uimm32 = inst & ((1<<16) - 1);
     int16_t simm16 = (int16_t)uimm32;
@@ -2291,19 +2244,19 @@ void execMips(state_t *s) {
     switch(opcode) 
       {
       case 0x01:
-	_bgez_bltz<MIPSEL>(inst, s); 
+	_bgez_bltz<EL>(inst, s); 
 	break;
       case 0x04:
-	_beq<MIPSEL>(inst, s); 
+	_beq<EL>(inst, s); 
 	break;
       case 0x05:
-	_bne<MIPSEL>(inst, s); 
+	_bne<EL>(inst, s); 
 	break;
       case 0x06:
-	_blez<MIPSEL>(inst, s); 
+	_blez<EL>(inst, s); 
 	break;
       case 0x07:
-	_bgtz<MIPSEL>(inst, s); 
+	_bgtz<EL>(inst, s); 
 	break;
       case 0x08: /* addi */
 	s->gpr[rt] = s->gpr[rs] + simm32;  
@@ -2339,64 +2292,64 @@ void execMips(state_t *s) {
 	s->pc += 4;
 	break;
       case 0x14:
-	_beql<MIPSEL>(inst, s); 
+	_beql<EL>(inst, s); 
 	break;
       case 0x16:
-	_blezl<MIPSEL>(inst, s);
+	_blezl<EL>(inst, s);
 	break;
       case 0x15:
-	_bnel<MIPSEL>(inst, s); 
+	_bnel<EL>(inst, s); 
 	break;
       case 0x17:
-	_bgtzl<MIPSEL>(inst, s); 
+	_bgtzl<EL>(inst, s); 
 	break;
       case 0x20:
 	_lb(inst, s);
 	break;
       case 0x21:
-	_lh(inst, s);
+	_lh<EL>(inst, s);
 	break;
       case 0x22: 
-	_lwl<MIPSEL>(inst, s);
+	_lwl<EL>(inst, s);
 	break;
       case 0x23:
-	_lw(inst, s); 
+	_lw<EL>(inst, s); 
 	break;
       case 0x24:
 	_lbu(inst, s);
 	break;
       case 0x25:
-	_lhu(inst, s);
+	_lhu<EL>(inst, s);
 	break;
       case 0x26:
-	_lwr<MIPSEL>(inst, s);
+	_lwr<EL>(inst, s);
 	break;
       case 0x28:
 	_sb(inst, s); 
 	break;
       case 0x29:
-	_sh(inst, s); 
+	_sh<EL>(inst, s); 
 	break;
       case 0x2a:
-	_swl<MIPSEL>(inst, s); 
+	_swl<EL>(inst, s); 
 	break;
       case 0x2B:
-	_sw(inst, s); 
+	_sw<EL>(inst, s); 
 	break;
       case 0x2e:
-	_swr<MIPSEL>(inst, s); 
+	_swr<EL>(inst, s); 
 	break;
       case 0x31:
-	_lwc1(inst, s);
+	_lwc1<EL>(inst, s);
 	break;  
       case 0x35:
-	_ldc1(inst, s);
+	_ldc1<EL>(inst, s);
 	break;
       case 0x39:
-	_swc1(inst, s);
+	_swc1<EL>(inst, s);
 	break;
       case 0x3D:
-	_sdc1(inst, s);
+	_sdc1<EL>(inst, s);
 	break;
       default:
 	printf("%s: Unknown IType instruction (bits=%x) @ pc=0x%08x\n", 
