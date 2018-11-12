@@ -55,34 +55,31 @@ T bswap(T x) {
   return x;
 }
 
-template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
+template <bool EL, typename T, INTEGRAL_ENABLE_IF(2,T)> 
 T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-#ifdef MIPSEL
-  return x;
-#else  
+  if(EL) 
+    return x;
+  else
   return  __builtin_bswap16(x);
-#endif
 }
 
-template <typename T, INTEGRAL_ENABLE_IF(4,T)>
+template <bool EL, typename T, INTEGRAL_ENABLE_IF(4,T)>
 T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-#ifdef MIPSEL
-  return x;
-#else
-  return  __builtin_bswap32(x);
-#endif
+  if(EL)
+    return x;
+  else 
+    return  __builtin_bswap32(x);
 }
 
-template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
+template <bool EL, typename T, INTEGRAL_ENABLE_IF(8,T)> 
 T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-#ifdef MIPSEL
-  return x;
-#else
-  return  __builtin_bswap64(x);
-#endif
+  if(EL)
+    return x;
+  else 
+    return  __builtin_bswap64(x);
 }
 
 #undef INTEGRAL_ENABLE_IF
