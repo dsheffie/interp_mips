@@ -74,37 +74,13 @@ static void setConditionCode(state_t *s, uint32_t v, uint32_t cc);
 
 
 /* IType instructions */
-static void _beq(uint32_t inst, state_t *s);
-static void _beql(uint32_t inst, state_t *s);
-static void _bne(uint32_t inst, state_t *s);
-static void _bnel(uint32_t inst, state_t *s);
-static void _bgtz(uint32_t inst, state_t *s);
-static void _bgtzl(uint32_t inst, state_t *s);
-static void _blez(uint32_t inst, state_t *s);
-static void _blezl(uint32_t inst, state_t *s);
-static void _bgez_bltz(uint32_t inst, state_t *s);
-static void _lw(uint32_t inst, state_t *s);
-static void _lh(uint32_t inst, state_t *s);
 static void _lb(uint32_t inst, state_t *s);
 static void _lbu(uint32_t inst, state_t *s);
-static void _lhu(uint32_t inst, state_t *s);
-static void _ldc1(uint32_t inst, state_t *s);
-static void _lwc1(uint32_t inst, state_t *s);
-
-static void _sw(uint32_t inst, state_t *s);
-static void _sh(uint32_t inst, state_t *s);
 static void _sb(uint32_t inst, state_t *s);
-static void _sdc1(uint32_t inst, state_t *s);
-static void _swc1(uint32_t inst, state_t *s);
+
 
 static void _mtc1(uint32_t inst, state_t *s);
 static void _mfc1(uint32_t inst, state_t *s);
-
-
-static void _lwl(uint32_t inst, state_t *s);
-static void _lwr(uint32_t inst, state_t *s);
-static void _swl(uint32_t inst, state_t *s);
-static void _swr(uint32_t inst, state_t *s);
 
 static void _sc(uint32_t inst, state_t *s);
 
@@ -257,8 +233,7 @@ void execSpecial2(uint32_t inst,state_t *s)
   s->pc += 4;
 }
 
-void execSpecial3(uint32_t inst,state_t *s)
-{
+void execSpecial3(uint32_t inst,state_t *s) {
   uint32_t funct = inst & 63;
   uint32_t op = (inst>>6) & 31;
   uint32_t rt = (inst >> 16) & 31; 
@@ -373,144 +348,74 @@ void execCoproc1x(uint32_t inst, state_t *s) {
    }
 }
 
-template <bool EL>
-void _beq(uint32_t inst, state_t *s) {
+enum class branch_type {
+  beq, bne, blez, bgtz,
+  beql, bnel, blezl, bgtzl,
+  bgez, bgezl, bltz, bltzl,
+  bc1f, bc1t, bc1fl, bc1tl
+};
+
+template <bool EL, branch_type bt>
+void branch(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
-  bool takeBranch = (s->gpr[rt] == s->gpr[rs]);
-
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
   uint32_t npc = s->pc+4; 
-
-  /* execute branch delay */
-  s->pc +=4;
-  execMips<EL>(s);
-  if(takeBranch)
+  bool isLikely = false;
+  bool takeBranch = false;
+  switch(bt)
     {
-      s->pc = (imm+npc);
+    case branch_type::beql:
+      isLikely = true;
+    case branch_type::beq:
+      takeBranch = (s->gpr[rt] == s->gpr[rs]);
+      break;
+    case branch_type::bnel:
+      isLikely = true;
+    case branch_type::bne:
+      takeBranch = (s->gpr[rt] != s->gpr[rs]);
+      break;
+    case branch_type::blezl:
+      isLikely = true;
+    case branch_type::blez:
+      takeBranch = (s->gpr[rs] <= 0);
+      break;
+    case branch_type::bgtzl:
+      isLikely = true;
+    case branch_type::bgtz:
+      takeBranch = (s->gpr[rs] > 0);
+      break;
+    case branch_type::bc1tl:
+      isLikely = true;
+    case branch_type::bc1t:
+      takeBranch = getConditionCode(s,((inst>>18)&7))==1;
+      break;
+    case branch_type::bc1fl:
+      isLikely = true;
+    case branch_type::bc1f:
+      takeBranch = getConditionCode(s,((inst>>18)&7))==0;
+      break;
+    default:
+      die();
     }
-}
 
-template <bool EL>
-void _beql(uint32_t inst, state_t *s) {
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  bool takeBranch = (s->gpr[rt] == s->gpr[rs]);
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  uint32_t npc = s->pc+4; 
-  s->pc +=4;
-
-  /* execute branch delay */
-  if(takeBranch)
-    {
-      execMips<EL>(s);
-      s->pc = (imm+npc);
-    }
-  else
-    s->pc += 4;
-}
-
-template <bool EL>
-void _bne(uint32_t inst, state_t *s) {
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  bool takeBranch = (s->gpr[rt] != s->gpr[rs]);
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-
-  uint32_t npc = s->pc+4; 
-  
-  /* execute branch delay */
-  s->pc +=4;
-  execMips<EL>(s);
-
-  if(takeBranch)
-    s->pc = (imm+npc);
-}
-
-
-template <bool EL>
-void _bnel(uint32_t inst, state_t *s) {
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  bool takeBranch = (s->gpr[rt] != s->gpr[rs]);
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  uint32_t npc = s->pc+4; 
-  s->pc +=4;
-  
-  /* execute branch delay */
-  if(takeBranch)
-    {
-      execMips<EL>(s);
-      s->pc = (imm+npc);
-    }
-  else
-    s->pc += 4;
-}
-
-template <bool EL>
-void _bgtz(uint32_t inst, state_t *s) {
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  bool takeBranch = (s->gpr[rs]>0);
   s->pc += 4;
-  execMips<EL>(s);
-  if(takeBranch)
-    s->pc = imm+npc;
-}
-
-template <bool EL>
-void _bgtzl(uint32_t inst, state_t *s) {
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  bool takeBranch = (s->gpr[rs]>0);
-  s->pc +=4;
-
-  if(takeBranch) {
-    execMips<EL>(s);
-    s->pc = (imm+npc);
+  if(isLikely) {
+    if(takeBranch) {
+      execMips<EL>(s);
+      s->pc = (imm+npc);
+    }
+    else {
+      s->pc += 4;
+    }
   }
-  else 
-    s->pc += 4;
-}
-
-template <bool EL>
-void _blezl(uint32_t inst, state_t *s) {
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  bool takeBranch = (s->gpr[rs]<=0);
-  s->pc +=4;
-
-  if(takeBranch)
-    {
-      execMips<EL>(s);
+  else {
+    execMips<EL>(s);
+    if(takeBranch){
       s->pc = (imm+npc);
     }
-  else
-    s->pc += 4;
-  
-}
-
-template <bool EL>
-void _blez(uint32_t inst, state_t *s) {
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  bool takeBranch = (s->gpr[rs]<=0);
-  s->pc += 4;
-  execMips<EL>(s);
-  if(takeBranch)
-    s->pc = imm+npc;  
+  }
 }
 
 template <bool EL>
@@ -832,11 +737,7 @@ void _monitorBody(uint32_t inst, state_t *s) {
 	fflush(stderr);
       break;
     case 9:
-      /* off_t lseek(int fd, off_t offset, int whence); */
       s->gpr[R_v0] = lseek(s->gpr[R_a0], s->gpr[R_a1], s->gpr[R_a2]);
-      std::cout << "icnt " << s->icnt << " : " 
-		<< "lseek(" << s->gpr[R_a0] << "," << s->gpr[R_a1] << "," << s->gpr[R_a2]
-		<< ") = " << s->gpr[R_v0] << "\n"; 
       break;
     case 10:
       fd = s->gpr[R_a0];
@@ -874,11 +775,10 @@ void _monitorBody(uint32_t inst, state_t *s) {
       else {
 	memcpy(&tp32, &myTimeVal, sizeof(tp32));
 	myTimeVal.tv_usec++;
-	if(myTimeVal.tv_usec == (1<<20))
-	  {
-	    myTimeVal.tv_usec = 0;
-	    myTimeVal.tv_sec++;
-	  }
+	if(myTimeVal.tv_usec == (1<<20)) {
+	  myTimeVal.tv_usec = 0;
+	  myTimeVal.tv_sec++;
+	}
       }
       *((timeval32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tp32;
       s->gpr[R_v0] = 0;
@@ -987,74 +887,7 @@ void _swc1(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
-/* normal versions */
-template <bool EL>
-void _bc1f(uint32_t inst, state_t *s) {
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  uint32_t cc = (inst >> 18) & 7;
-  bool takeBranch = getConditionCode(s,cc)==0;
-  s->pc += 4;
-  execMips<EL>(s);
-  if(takeBranch)
-    s->pc = imm+npc;
-  
-}
-
-template <bool EL>
-void _bc1t(uint32_t inst, state_t *s) { 
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  uint32_t cc = (inst >> 18) & 7;
-  bool takeBranch = getConditionCode(s,cc)==1;
-  s->pc += 4;
-  execMips<EL>(s);
-  if(takeBranch)
-    s->pc = (imm+npc);
-  
-}
-
-template <bool EL>
-void _bc1fl(uint32_t inst, state_t *s) {
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  uint32_t cc = (inst >> 18) & 7;
-  bool takeBranch = getConditionCode(s,cc)==0;
-
-  s->pc +=4;
-
-  if(takeBranch)
-    {
-      execMips<EL>(s);
-      s->pc = (imm+npc);
-    }
-  else
-    s->pc += 4;
-}
-
-template <bool EL>
-void _bc1tl(uint32_t inst, state_t *s) {
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  uint32_t cc = (inst >> 18) & 7;
-  bool takeBranch = getConditionCode(s,cc)==1; 
-  s->pc +=4;
-
-  if(takeBranch) {
-    execMips<EL>(s);
-    s->pc = (imm+npc);
-  }
-  else
-    s->pc += 4;
-}
-
-
-static void _truncw(uint32_t inst, state_t *s)
-{
+static void _truncw(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
@@ -1875,16 +1708,16 @@ void execCoproc1(uint32_t inst, state_t *s) {
       switch(nd_tf)
 	{
 	case 0x0:
-	  _bc1f<EL>(inst, s);
+	  branch<EL,branch_type::bc1f>(inst, s);
 	  break;
 	case 0x1:
-	  _bc1t<EL>(inst, s);
+	  branch<EL,branch_type::bc1t>(inst, s);
 	  break;
 	case 0x2:
-	  _bc1fl<EL>(inst, s);
+	  branch<EL,branch_type::bc1fl>(inst, s);
 	  break;
 	case 0x3:
-	  _bc1tl<EL>(inst, s);
+	  branch<EL,branch_type::bc1tl>(inst, s);
 	  break;
 	}
       /*BRANCH*/
@@ -2247,16 +2080,16 @@ void execMips(state_t *s) {
 	_bgez_bltz<EL>(inst, s); 
 	break;
       case 0x04:
-	_beq<EL>(inst, s); 
+	branch<EL,branch_type::beq>(inst, s); 
 	break;
       case 0x05:
-	_bne<EL>(inst, s); 
+	branch<EL,branch_type::bne>(inst, s); 
 	break;
       case 0x06:
-	_blez<EL>(inst, s); 
+	branch<EL,branch_type::blez>(inst, s); 
 	break;
       case 0x07:
-	_bgtz<EL>(inst, s); 
+	branch<EL,branch_type::bgtz>(inst, s); 
 	break;
       case 0x08: /* addi */
 	s->gpr[rt] = s->gpr[rs] + simm32;  
@@ -2292,16 +2125,16 @@ void execMips(state_t *s) {
 	s->pc += 4;
 	break;
       case 0x14:
-	_beql<EL>(inst, s); 
+	branch<EL,branch_type::beql>(inst, s); 
 	break;
       case 0x16:
-	_blezl<EL>(inst, s);
+	branch<EL,branch_type::blezl>(inst, s); 
 	break;
       case 0x15:
-	_bnel<EL>(inst, s); 
+	branch<EL,branch_type::bnel>(inst, s); 
 	break;
       case 0x17:
-	_bgtzl<EL>(inst, s); 
+	branch<EL,branch_type::bgtzl>(inst, s); 
 	break;
       case 0x20:
 	_lb(inst, s);
