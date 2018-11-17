@@ -17,23 +17,18 @@
 #include "helper.hh"
 #include "globals.hh"
 
-#define __operation_item(m) m,
-#define __fp_operation_list(m)						\
-  m(abs)								\
-  m(neg)								\
-  m(mov)								\
-  m(add)								\
-  m(sub)								\
-  m(mul)								\
-  m(div)								\
-  m(sqrt)								\
-  m(rsqrt)								\
-  m(recip)
+enum class fpOperation {
+  abs,neg,mov,add,
+  sub,mul,div,sqrt,
+  rsqrt,recip
+};
 
-enum class fpOperation {__fp_operation_list(__operation_item)};
-#undef __operation_item
-#undef __fp_operation_list
-
+enum class branch_type {
+  beq, bne, blez, bgtz,
+  beql, bnel, blezl, bgtzl,
+  bgez, bgezl, bltz, bltzl,
+  bc1f, bc1t, bc1fl, bc1tl
+};
 
 static timeval32_t myTimeVal = {0,0};
 static uint32_t myTime = 1<<20;
@@ -339,12 +334,7 @@ void execCoproc1x(uint32_t inst, state_t *s) {
    }
 }
 
-enum class branch_type {
-  beq, bne, blez, bgtz,
-  beql, bnel, blezl, bgtzl,
-  bgez, bgezl, bltz, bltzl,
-  bc1f, bc1t, bc1fl, bc1tl
-};
+
 
 template <bool EL, branch_type bt>
 void branch(uint32_t inst, state_t *s) {
@@ -376,6 +366,16 @@ void branch(uint32_t inst, state_t *s) {
       isLikely = true;
     case branch_type::bgtz:
       takeBranch = (s->gpr[rs] > 0);
+      break;
+    case branch_type::bgezl:
+      isLikely = true;
+    case branch_type::bgez:
+      takeBranch = (s->gpr[rs] >= 0);
+      break;
+    case branch_type::bltzl:
+      isLikely = true;
+    case branch_type::bltz:
+      takeBranch = (s->gpr[rs] < 0);
       break;
     case branch_type::bc1tl:
       isLikely = true;
@@ -412,48 +412,21 @@ void branch(uint32_t inst, state_t *s) {
 template <bool EL>
 void _bgez_bltz(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
-  int32_t npc = s->pc+4; 
-  bool takeBranch = false;
-  if(rt==0) {
-    /* bltz : less than zero */
-    takeBranch = (s->gpr[rs] < 0);
-    s->pc += 4;
-    execMips<EL>(s);
-    if(takeBranch)
-      s->pc = imm+npc;
-  }
-  else if(rt==1) {
-    /* bgez : greater than or equal to zero */
-    takeBranch = (s->gpr[rs] >= 0);
-    s->pc += 4;
-    execMips<EL>(s);
-    if(takeBranch)
-      s->pc = imm+npc;
-  }
-  else if(rt==2) {
-    takeBranch = (s->gpr[rs] < 0);
-    s->pc += 4;
-    if(takeBranch) {
-      execMips<EL>(s);
-      s->pc = imm+npc;
+  switch(rt&3)
+    {
+    case 0:
+      branch<EL,branch_type::bltz>(inst, s);
+      break;
+    case 1:
+      branch<EL,branch_type::bgez>(inst, s);
+      break;
+    case 2:
+      branch<EL,branch_type::bltzl>(inst, s);
+      break;
+    case 3:
+      branch<EL,branch_type::bgezl>(inst, s);
+      break;
     }
-    else 
-      s->pc += 4;
-  }
-  else if(rt == 3) {
-    /* greater than zero likely */
-    takeBranch = (s->gpr[rs] >=0);
-    s->pc += 4;
-    if(takeBranch) {
-      execMips<EL>(s);
-      s->pc = imm+npc;
-    }
-    else 
-      s->pc += 4;
-  }
 }
 
 
