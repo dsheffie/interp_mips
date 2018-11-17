@@ -1105,16 +1105,52 @@ static void _fmovc(uint32_t inst, state_t *s)
 }
 
 
-static void _c(uint32_t inst, state_t *s)
-{
+
+template <typename T>
+static void fpCmp(uint32_t inst, state_t *s) {
+  uint32_t cond = inst & 15;
+  uint32_t cc = (inst >> 8) & 7;
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t fs = (inst >> 11) & 31;
+  T Tfs = *((T*)(s->cpr1+fs));
+  T Tft = *((T*)(s->cpr1+ft));
+  uint32_t v = 0;
+
+  switch(cond)
+    {
+    case COND_UN:
+      v = (Tfs == Tft);
+      s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
+      break;
+    case COND_EQ:
+      v = (Tfs == Tft);
+      s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
+      break;
+    case COND_LT:
+      v = (Tfs < Tft);
+      s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
+      break;
+    case COND_LE:
+      v = (Tfs <= Tft);
+      s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
+      break;
+    default:
+      printf("unimplemented %s = %s\n", __func__, getCondName(cond).c_str());
+      exit(-1);
+      break;
+    }
+  s->pc += 4;
+}
+
+static void _c(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   switch(fmt)
     {
     case FMT_S:
-      _cs(inst, s);
+      fpCmp<float>(inst,s);
       break;
     case FMT_D:
-      _cd(inst, s);
+      fpCmp<double>(inst,s);
       break;
     default:
       printf("unsupported comparison\n");
@@ -1122,153 +1158,6 @@ static void _c(uint32_t inst, state_t *s)
       break;
     }
 }
-
-
-static void _cs(uint32_t inst, state_t *s)
-{
-  uint32_t cond = inst & 15;
-  uint32_t cc = (inst >> 8) & 7;
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  float f_fs = *((float*)(s->cpr1+fs));
-  float f_ft = *((float*)(s->cpr1+ft));
-  uint32_t v = 0;
-
-  switch(cond)
-    {
-      /*
-    case COND_F:
-      break;
-      */
-    case COND_UN:
-      v = (f_fs == f_ft);
-      setConditionCode(s,v,cc);
-      break;
-    case COND_EQ:
-      v = (f_fs == f_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
-    case COND_UEQ:
-      break;
-    case COND_OLT:
-      break;
-    case COND_ULT:
-      break;
-    case COND_OLE:
-      break;
-    case COND_ULE:
-      break;
-    case COND_SF:
-      break;
-    case COND_NGLE:
-      break;
-    case COND_SEQ:
-      break;
-    case COND_NGL:
-      break;
-      */
-    case COND_LT:
-      v = (f_fs < f_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
-    case COND_NGE:
-      break;
-      */
-    case COND_LE:
-      v = (f_fs <= f_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
-    case COND_NGT:
-      break;
-      */
-    default:
-      printf("unimplemented %s = %s\n", __func__, getCondName(cond).c_str());
-      exit(-1);
-      break;
-    }
-  s->pc += 4;
-}
-
-static void _cd(uint32_t inst, state_t *s)
-{
-  uint32_t cond = inst & 15;
-  uint32_t cc = (inst >> 8) & 7;
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  double d_fs = *((double*)(s->cpr1+fs));
-  double d_ft = *((double*)(s->cpr1+ft));
-  uint32_t v = 0;
-  
-  //printf("c.%d.d @ %x\n", cond, s->pc);
-
-  switch(cond)
-    {
-      /*
-    case COND_F:
-      break;
-      */
-    case COND_UN:
-      v = (d_fs == d_ft);
-      setConditionCode(s,v,cc);
-      //printf("pc = %x : d_fs = %g, d_ft = %g, eq=%d\n", 
-      //s->pc, d_fs, d_ft, v); 
-      //exit(-1);
- 
-      break;
-
-    case COND_EQ:
-      v = (d_fs == d_ft);
-      //printf("pc = %x : d_fs = %g, d_ft = %g, eq=%d\n", 
-      //s->pc, d_fs, d_ft, v); 
-      setConditionCode(s,v,cc);
-      break;
-       /*
-    case COND_UEQ:
-      break;
-    case COND_OLT:
-      break;
-    case COND_ULT:
-      break;
-    case COND_OLE:
-      break;
-    case COND_ULE:
-      break;
-    case COND_SF:
-      break;
-    case COND_NGLE:
-      break;
-    case COND_SEQ:
-      break;
-    case COND_NGL:
-      break;
-      */
-    case COND_LT:
-      v = (d_fs < d_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
-    case COND_NGE:
-      break;
-      */
-    case COND_LE:
-      v = (d_fs <= d_ft);
-      setConditionCode(s,v,cc);
-      break;
-      /*
-    case COND_NGT:
-      break;
-      */
-    default:
-      printf("unimplemented %s = %s\n", __func__, getCondName(cond).c_str());
-      exit(-1);
-      break;
-    }
-  s->pc += 4;
-}
-
 
 template< typename T, fpOperation op>
 void execFP(uint32_t inst, state_t *s) {
