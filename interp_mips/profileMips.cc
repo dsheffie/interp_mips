@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
+#include <limits>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -16,6 +16,24 @@
 #include "parseMips.hh"
 #include "helper.hh"
 #include "globals.hh"
+
+#define __operation_item(m) m,
+#define __fp_operation_list(m)						\
+  m(abs)								\
+  m(neg)								\
+  m(mov)								\
+  m(add)								\
+  m(sub)								\
+  m(mul)								\
+  m(div)								\
+  m(sqrt)								\
+  m(rsqrt)								\
+  m(recip)
+
+enum class fpOperation {__fp_operation_list(__operation_item)};
+#undef __operation_item
+#undef __fp_operation_list
+
 
 static timeval32_t myTimeVal = {0,0};
 static uint32_t myTime = 1<<20;
@@ -93,43 +111,16 @@ static void _cvts(uint32_t inst, state_t *s);
 static void _cvtd(uint32_t inst, state_t *s);
 
 static void _truncw(uint32_t inst, state_t *s);
+static void _truncl(uint32_t inst, state_t *s);
 
 static void _movci(uint32_t inst, state_t *s);
 
-static void _fabs(uint32_t inst, state_t *s);
-static void _fadd(uint32_t inst, state_t *s);
-static void _fsub(uint32_t inst, state_t *s);
-static void _fmul(uint32_t inst, state_t *s);
-static void _fdiv(uint32_t inst, state_t *s);
-static void _fmov(uint32_t inst, state_t *s);
-static void _fneg(uint32_t inst, state_t *s);
-static void _fsqrt(uint32_t inst, state_t *s);
-static void _frsqrt(uint32_t inst, state_t *s);
-static void _frecip(uint32_t inst, state_t *s);
 static void _fmovc(uint32_t inst, state_t *s);
 static void _fmovn(uint32_t inst, state_t *s);
 static void _fmovz(uint32_t inst, state_t *s);
 
-static void _abss(uint32_t inst, state_t *s);
-static void _adds(uint32_t inst, state_t *s);
-static void _subs(uint32_t inst, state_t *s);
-static void _muls(uint32_t inst, state_t *s);
-static void _divs(uint32_t inst, state_t *s);
-static void _sqrts(uint32_t inst, state_t *s);
-static void _rsqrts(uint32_t inst, state_t *s);
-static void _negs(uint32_t inst, state_t *s);
-static void _recips(uint32_t inst, state_t *s);
-static void _movcs(uint32_t inst, state_t *s);
 
-static void _absd(uint32_t inst, state_t *s);
-static void _addd(uint32_t inst, state_t *s);
-static void _subd(uint32_t inst, state_t *s);
-static void _muld(uint32_t inst, state_t *s);
-static void _divd(uint32_t inst, state_t *s);
-static void _sqrtd(uint32_t inst, state_t *s);
-static void _rsqrtd(uint32_t inst, state_t *s);
-static void _negd(uint32_t inst, state_t *s);
-static void _recipd(uint32_t inst, state_t *s);
+static void _movcs(uint32_t inst, state_t *s);
 static void _movcd(uint32_t inst, state_t *s);
 
 static void _movd(uint32_t inst, state_t *s);
@@ -887,6 +878,11 @@ void _swc1(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
+static void _truncl(uint32_t inst, state_t *s) {
+  printf("%s\n",__func__);
+  exit(-1);
+}
+
 static void _truncw(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   uint32_t fd = (inst>>6) & 31;
@@ -1080,45 +1076,6 @@ static void _cvtd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-
-
-static void _fabs(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _abss(inst, s);
-      break;
-    case FMT_D:
-      _absd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-
-static void _fmov(uint32_t inst, state_t *s)
-{
- uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _movs(inst, s);
-      break;
-    case FMT_D:
-      _movd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
 static void _fmovn(uint32_t inst, state_t *s)
 {
  uint32_t fmt = (inst >> 21) & 31;
@@ -1156,115 +1113,6 @@ static void _fmovz(uint32_t inst, state_t *s)
     }
 }
 
-static void _fneg(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _negs(inst, s);
-      break;
-    case FMT_D:
-      _negd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-
-
-static void _fadd(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _adds(inst, s);
-      break;
-    case FMT_D:
-      _addd(inst, s);
-      break;
-    default:
-      printf("unsupported add\n");
-      exit(-1);
-      break;
-    }
-}
-static void _fsub(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _subs(inst, s);
-      break;
-    case FMT_D:
-      _subd(inst, s);
-      break;
-    default:
-      printf("unsupported sub\n");
-      exit(-1);
-      break;
-    }
-}
-
-static void _fsqrt(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _sqrts(inst, s);
-      break;
-    case FMT_D:
-      _sqrtd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-static void _frsqrt(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _rsqrts(inst, s);
-      break;
-    case FMT_D:
-      _rsqrtd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-static void _frecip(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _recips(inst, s);
-      break;
-    case FMT_D:
-      _recipd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
 static void _fmovc(uint32_t inst, state_t *s)
 {
   uint32_t fmt = (inst >> 21) & 31;
@@ -1282,250 +1130,6 @@ static void _fmovc(uint32_t inst, state_t *s)
       break;
     }
 }
-
-static void _fmul(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _muls(inst, s);
-      break;
-    case FMT_D:
-      _muld(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-static void _fdiv(uint32_t inst, state_t *s)
-{
-  uint32_t fmt = (inst >> 21) & 31;
-  switch(fmt)
-    {
-    case FMT_S:
-      _divs(inst, s);
-      break;
-    case FMT_D:
-      _divd(inst, s);
-      break;
-    default:
-      printf("unsupported %s\n", __func__);
-      exit(-1);
-      break;
-    }
-}
-
-static void _abss(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  *((float*)(s->cpr1 + fd)) = f_fs < 0.0f ? -f_fs : f_fs;
-  
-  s->pc += 4;
-}
-
-static void _absd(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  *((double*)(s->cpr1 + fd)) = d_fs < 0.0 ? -d_fs : d_fs;
-  s->pc += 4;
-}
-
-static void _recips(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  *((float*)(s->cpr1 + fd)) = 1.0 / f_fs;
-  
-  s->pc += 4;
-}
-
-static void _recipd(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  *((double*)(s->cpr1 + fd)) = 1.0 / d_fs;
-  s->pc += 4;
-}
-
-static void _negs(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  *((float*)(s->cpr1 + fd)) = -f_fs;
-  
-  s->pc += 4;
-}
-
-static void _negd(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  *((double*)(s->cpr1 + fd)) = -d_fs;
-  s->pc += 4;
-}
-
-
-static void _adds(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  float f_ft = *((float*)(s->cpr1+ft));
-  *((float*)(s->cpr1 + fd)) = f_fs + f_ft;
-  s->pc += 4;
-}
-
-static void _addd(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  double d_ft = *((double*)(s->cpr1+ft));
-  *((double*)(s->cpr1 + fd)) = d_fs + d_ft;
-  //printf("d_fs = %g, d_ft = %g, result = %g\n", d_fs, d_ft,
-  //*((double*)(s->cpr1 + fd)) );
-  s->pc += 4;
-}
-
-static void _subs(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  float f_ft = *((float*)(s->cpr1+ft));
-  *((float*)(s->cpr1 + fd)) = f_fs - f_ft;
-  
-  s->pc += 4;
-}
-
-static void _subd(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  double d_ft = *((double*)(s->cpr1+ft));
-  *((double*)(s->cpr1 + fd)) = d_fs - d_ft;
-  s->pc += 4;
-}
-
-static void _muls(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  float f_ft = *((float*)(s->cpr1+ft));
-  *((float*)(s->cpr1 + fd)) = f_fs * f_ft;
-  
-  s->pc += 4;
-}
-
-static void _muld(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  double d_ft = *((double*)(s->cpr1+ft));
-  *((double*)(s->cpr1 + fd)) = d_fs * d_ft;
-  s->pc += 4;
-}
-
-static void _sqrts(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  *((float*)(s->cpr1 + fd)) = sqrtf(f_fs);
-  
-  s->pc += 4;
-}
-
-static void _sqrtd(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  *((double*)(s->cpr1 + fd)) = sqrt(d_fs);
-  s->pc += 4;
-}
-
-static void _rsqrts(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  *((float*)(s->cpr1 + fd)) = 1.0f / sqrtf(f_fs);
-  
-  s->pc += 4;
-}
-
-static void _rsqrtd(uint32_t inst, state_t *s)
-{
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  *((double*)(s->cpr1 + fd)) = 1.0 / sqrt(d_fs);
-  s->pc += 4;
-}
-
-static void _divs(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  float f_fs = *((float*)(s->cpr1+fs));
-  float f_ft = *((float*)(s->cpr1+ft));
-  *((float*)(s->cpr1 + fd)) = f_fs / f_ft;
-  
-  s->pc += 4;
-}
-
-static void _divd(uint32_t inst, state_t *s)
-{
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t fs = (inst >> 11) & 31;
-  uint32_t fd = (inst >> 6) & 31;
-
-  double d_fs = *((double*)(s->cpr1+fs));
-  double d_ft = *((double*)(s->cpr1+ft));
-  *((double*)(s->cpr1 + fd)) = d_fs / d_ft;
-  s->pc += 4;
-}
-
 
 
 static void _c(uint32_t inst, state_t *s)
@@ -1692,6 +1296,73 @@ static void _cd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
+
+template< typename T, fpOperation op>
+void execFP(uint32_t inst, state_t *s) {
+  uint32_t ft = (inst>>16)&31, fs=(inst>>11)&31, fd=(inst>>6)&31;
+  T _fs = *reinterpret_cast<T*>(s->cpr1+fs);
+  T _ft = *reinterpret_cast<T*>(s->cpr1+ft);
+  T &_fd = *reinterpret_cast<T*>(s->cpr1+fd);
+
+  switch(op)
+    {
+    case fpOperation::abs:
+      _fd = std::abs(_fs);
+      break;
+    case fpOperation::neg:
+      _fd = -_fs;
+      break;
+    case fpOperation::mov:
+      _fd = _fs;
+      break;
+    case fpOperation::add:
+      _fd = _fs + _ft;
+      break;
+    case fpOperation::sub:
+      _fd = _fs - _ft;
+      break;
+    case fpOperation::mul:
+      _fd = _fs * _ft;
+      break;
+    case fpOperation::div:
+      if(_ft==0.0) {
+	_fd = std::numeric_limits<T>::max();
+      }
+      else {
+	_fd = _fs / _ft;
+      }
+      break;
+    case fpOperation::sqrt:
+      _fd = std::sqrt(_fs);
+      break;
+    case fpOperation::rsqrt:
+      _fd = static_cast<T>(1.0) / std::sqrt(_fs);
+      break;
+    case fpOperation::recip:
+      _fd = static_cast<T>(1.0) / _fs;
+      break;
+    default:
+      die();
+      break;
+    }
+  s->pc+=4;
+}
+
+template <fpOperation op>
+void do_fp_op(uint32_t inst, state_t *s) {
+  switch((inst>>21)&31) {
+  case FMT_S:
+    execFP<float,op>(inst,s);
+    break;
+  case FMT_D:
+    execFP<double,op>(inst,s);
+    break;
+  default:
+    die();
+  }
+}
+
+
 template <bool EL>
 void execCoproc1(uint32_t inst, state_t *s) {
   uint32_t opcode = inst>>26;
@@ -1741,69 +1412,68 @@ void execCoproc1(uint32_t inst, state_t *s) {
 	{
 	  _c(inst, s);
 	}
-      else
-	{
-	  switch(lowop)
-	    {
-	    case 0x0:
-	      _fadd(inst, s);
-	      break;
-	    case 0x1:
-	      _fsub(inst, s);
-	      break;
-	    case 0x2:
-	      _fmul(inst, s);
-	      break;
-	    case 0x3:
-	      _fdiv(inst, s);
-	      break;
-	    case 0x4:
-	      _fsqrt(inst, s);
-	      break;
-	    case 0x5:
-	      _fabs(inst, s);
-	      break;
-	    case 0x6:
-	      _fmov(inst, s);
-	      break;
-	    case 0x7:
-	      _fneg(inst, s);
-	      break;
-	    case 0x9:
-	      /* todo : implement _truncl */
-	      die();
-	      break;
-	    case 0xd:
-	      _truncw(inst, s);
-	      break;
-	    case 0x11:
-	      _fmovc(inst, s);
-	      break;
-	    case 0x12:
-	      _fmovz(inst, s);
-	      break;
-	    case 0x13:
-	      _fmovn(inst, s);
-	      break;
-	    case 0x15:
-	      _frecip(inst, s);
-	      break;
-	    case 0x16:
-	      _frsqrt(inst, s);
-	      break;
-	    case 0x20:
-	      /* cvt.s */
-	      _cvts(inst, s);
-	      break;
-	    case 0x21:
-	      _cvtd(inst, s);
-	      break;
-	    default:
-	      printf("unhandled coproc1 instruction (%x) @ %08x\n", inst, s->pc);
-	      exit(-1);
-	      break;
-	    }
-	}
+      else{
+	switch(lowop)
+	  {
+	  case 0x0:
+	    do_fp_op<fpOperation::add>(inst, s);
+	    break;
+	  case 0x1:
+	    do_fp_op<fpOperation::sub>(inst, s);
+	    break;
+	  case 0x2:
+	    do_fp_op<fpOperation::mul>(inst, s);
+	    break;
+	  case 0x3:
+	    do_fp_op<fpOperation::div>(inst, s);
+	    break;
+	  case 0x4:
+	    do_fp_op<fpOperation::sqrt>(inst, s);
+	    break;
+	  case 0x5:
+	    do_fp_op<fpOperation::abs>(inst, s);
+	    break;
+	  case 0x6:
+	    do_fp_op<fpOperation::mov>(inst, s);
+	    break;
+	  case 0x7:
+	    do_fp_op<fpOperation::neg>(inst, s);
+	    break;
+	  case 0x9:
+	    _truncl(inst, s);
+	    break;
+	  case 0xd:
+	    _truncw(inst, s);
+	    break;
+	  case 0x11:
+	    _fmovc(inst, s);
+	    break;
+	  case 0x12:
+	    _fmovz(inst, s);
+	    break;
+	  case 0x13:
+	    _fmovn(inst, s);
+	    break;
+	  case 0x15:
+	    do_fp_op<fpOperation::recip>(inst, s);
+	    break;
+	  case 0x16:
+	    do_fp_op<fpOperation::rsqrt>(inst, s);
+	    break;
+	  case 0x20:
+	    /* cvt.s */
+	    _cvts(inst, s);
+	    break;
+	  case 0x21:
+	    _cvtd(inst, s);
+	    break;
+	  default:
+	    printf("unhandled coproc1 instruction (%x) @ %08x\n",
+		   inst, s->pc);
+	    exit(-1);
+	    break;
+	  }
+      }
     }
 }
 
