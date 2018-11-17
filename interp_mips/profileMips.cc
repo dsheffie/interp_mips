@@ -99,8 +99,6 @@ static void _sc(uint32_t inst, state_t *s);
 
 /* FLOATING-POINT */
 static void _c(uint32_t inst, state_t *s);
-static void _cs(uint32_t inst, state_t *s);
-static void _cd(uint32_t inst, state_t *s);
 
 static void _cvts(uint32_t inst, state_t *s);
 static void _cvtd(uint32_t inst, state_t *s);
@@ -118,8 +116,6 @@ static void _fmovz(uint32_t inst, state_t *s);
 static void _movcs(uint32_t inst, state_t *s);
 static void _movcd(uint32_t inst, state_t *s);
 
-static void _movd(uint32_t inst, state_t *s);
-static void _movs(uint32_t inst, state_t *s);
 static void _movnd(uint32_t inst, state_t *s);
 static void _movns(uint32_t inst, state_t *s);
 static void _movzd(uint32_t inst, state_t *s);
@@ -343,8 +339,7 @@ void branch(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = ((int32_t)himm) << 2;
   uint32_t npc = s->pc+4; 
-  bool isLikely = false;
-  bool takeBranch = false;
+  bool isLikely = false, takeBranch = false;
   switch(bt)
     {
     case branch_type::beql:
@@ -885,24 +880,7 @@ static void _truncw(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
-static void _movd(uint32_t inst, state_t *s) {
-  uint32_t fd = (inst>>6) & 31;
-  uint32_t fs = (inst>>11) & 31;
-  s->cpr1[fd+0] = s->cpr1[fs+0];
-  s->cpr1[fd+1] = s->cpr1[fs+1];
-  s->pc += 4;
-}
-
-static void _movs(uint32_t inst, state_t *s)
-{
-  uint32_t fd = (inst>>6) & 31;
-  uint32_t fs = (inst>>11) & 31;
-  s->cpr1[fd+0] = s->cpr1[fs+0];
-  s->pc += 4;
-}
-
-static void _movnd(uint32_t inst, state_t *s)
-{
+static void _movnd(uint32_t inst, state_t *s) {
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
@@ -912,8 +890,7 @@ static void _movnd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _movns(uint32_t inst, state_t *s)
-{
+static void _movns(uint32_t inst, state_t *s) {
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
@@ -922,8 +899,7 @@ static void _movns(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _movzd(uint32_t inst, state_t *s)
-{
+static void _movzd(uint32_t inst, state_t *s) {
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
@@ -933,8 +909,7 @@ static void _movzd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _movzs(uint32_t inst, state_t *s)
-{
+static void _movzs(uint32_t inst, state_t *s) {
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
@@ -943,72 +918,59 @@ static void _movzs(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _movcd(uint32_t inst, state_t *s)
-{
+static void _movcd(uint32_t inst, state_t *s) {
   uint32_t cc = (inst >> 18) & 7;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t tf = (inst>>16) & 1;
 
-  if(tf==0)
-    {
-      if(getConditionCode(s,cc)==0) {
-	s->cpr1[fd+0] = s->cpr1[fs+0];
-	s->cpr1[fd+1] = s->cpr1[fs+1];
-      }
+  if(tf==0) {
+    if(getConditionCode(s,cc)==0) {
+      s->cpr1[fd+0] = s->cpr1[fs+0];
+      s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-  else
-    {
-      if(getConditionCode(s,cc)==1) {
-	s->cpr1[fd+0] = s->cpr1[fs+0];
-	s->cpr1[fd+1] = s->cpr1[fs+1];
-      }
+  }
+  else {
+    if(getConditionCode(s,cc)==1) {
+      s->cpr1[fd+0] = s->cpr1[fs+0];
+      s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-
+  }
   s->pc += 4;
 }
 
-static void _movcs(uint32_t inst, state_t *s)
-{
+static void _movcs(uint32_t inst, state_t *s) {
   uint32_t cc = (inst >> 18) & 7;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
   uint32_t tf = (inst>>16) & 1;
-  if(tf==0)
-    {
-      s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fd+0] : s->cpr1[fs+0];
-    }
-  else
-    {
-      s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fs+0] : s->cpr1[fd+0];
-    }
+  if(tf==0) {
+    s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fd+0] : s->cpr1[fs+0];
+  }
+  else {
+    s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fs+0] : s->cpr1[fd+0];
+  }
   s->pc += 4;
 }
 
 
-static void _movci(uint32_t inst, state_t *s)
-{
+static void _movci(uint32_t inst, state_t *s) {
   uint32_t cc = (inst >> 18) & 7;
   uint32_t tf = (inst>>16) & 1;
   uint32_t rd = (inst>>11) & 31;
   uint32_t rs = (inst >> 21) & 31;
-
-  if(tf==0)
-    {
-      /* movf */
-      s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rd] : s->gpr[rs];
-    }
-  else
-    {
-      /* movt */
-      s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rs] : s->gpr[rd];
-    }
-
+  if(tf==0) {
+    /* movf */
+    s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rd] : s->gpr[rs];
+  }
+  else {
+    /* movt */
+    s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rs] : s->gpr[rd];
+  }
   s->pc += 4;
 }
 
-static void _cvts(uint32_t inst, state_t *s)
-{
+static void _cvts(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
@@ -1028,8 +990,7 @@ static void _cvts(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _cvtd(uint32_t inst, state_t *s)
-{
+static void _cvtd(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
@@ -1049,9 +1010,8 @@ static void _cvtd(uint32_t inst, state_t *s)
   s->pc += 4;
 }
 
-static void _fmovn(uint32_t inst, state_t *s)
-{
- uint32_t fmt = (inst >> 21) & 31;
+static void _fmovn(uint32_t inst, state_t *s) {
+  uint32_t fmt = (inst >> 21) & 31;
   switch(fmt)
     {
     case FMT_S:
@@ -1068,9 +1028,8 @@ static void _fmovn(uint32_t inst, state_t *s)
 }
 
 
-static void _fmovz(uint32_t inst, state_t *s)
-{
- uint32_t fmt = (inst >> 21) & 31;
+static void _fmovz(uint32_t inst, state_t *s) {
+  uint32_t fmt = (inst >> 21) & 31;
   switch(fmt)
     {
     case FMT_S:
@@ -1086,8 +1045,7 @@ static void _fmovz(uint32_t inst, state_t *s)
     }
 }
 
-static void _fmovc(uint32_t inst, state_t *s)
-{
+static void _fmovc(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   switch(fmt)
     {
