@@ -1,6 +1,6 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o
+OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o githash.o
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native -flto
@@ -30,6 +30,9 @@ all: $(EXE)
 
 $(EXE) : $(OBJ)
 	$(CXX) $(CXXFLAGS) $(OBJ) $(LLVM_LDFLAGS) $(LIBS) -o $(EXE)
+
+githash.cc : ../.git/HEAD ../.git/index
+	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
 
 %.o: %.cc
 	$(CXX) -MMD $(CXXFLAGS) -c $< 
