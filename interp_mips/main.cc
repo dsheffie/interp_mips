@@ -21,6 +21,8 @@
 #include "profileMips.hh"
 #include "globals.hh"
 
+extern const char* githash;
+
 char **globals::sysArgv = nullptr;
 int globals::sysArgc = 0;
 bool globals::enClockFuncts = false;
@@ -65,6 +67,7 @@ int main(int argc, char *argv[]) {
 	    << "MIPS INTERP : built "
 	    << __DATE__ << " " << __TIME__
 	    << ",pid="<< getpid() << "\n"
+    	    << "git hash=" << githash
 	    << KNRM << "\n";
   
   size_t pgSize = getpagesize();

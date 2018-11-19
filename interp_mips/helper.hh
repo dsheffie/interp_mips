@@ -48,6 +48,19 @@ std::string toStringHex(T x) {
   return ss.str();
 }
 
+template <typename T, typename std::enable_if<std::is_integral<T>::value, T>::type* = nullptr>
+bool extractBit(T x, uint32_t b) {
+  return (x >> b) & 0x1;
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value, T>::type* = nullptr>
+T setBit(T x, T v, uint32_t b) {
+  T t = static_cast<T>(1) << b;
+  T tt = (~t) & x;
+  t  &= ~(v-1);
+  return (tt | t);
+}
+
 #define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
 
 template <typename T, INTEGRAL_ENABLE_IF(1,T)>
