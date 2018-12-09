@@ -1,0 +1,11 @@
+*.o
+*.d
+*~
+githash.cc
+bpred_mips/bpred_mips
+dbt-mips/cfg_mips
+interp_mips/interp_mips
+jit-mips/jit_mips
+sim_network/sim_network
+sim_ooo/sim_ooo
+sim_points/sim_points
