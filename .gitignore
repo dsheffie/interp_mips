@@ -1,5 +1,6 @@
 *.o
 *.d
+\#*
 *~
 githash.cc
 bpred_mips/bpred_mips
