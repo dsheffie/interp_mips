@@ -13,7 +13,7 @@ ifeq ($(UNAME_S),FreeBSD)
 endif
 
 ifeq ($(UNAME_S),Darwin)
-	CXX = clang++ -march=native
+	CXX = clang++ -march=native -I/opt/local/include
 	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt
 endif
 
