@@ -383,7 +383,7 @@ void branch(uint32_t inst, state_t *s) {
       takeBranch = getConditionCode(s,((inst>>18)&7))==0;
       break;
     default:
-      die();
+      UNREACHABLE();
     }
 
   s->pc += 4;
@@ -1162,8 +1162,7 @@ void execFP(uint32_t inst, state_t *s) {
       _fd = static_cast<T>(1.0) / _fs;
       break;
     default:
-      die();
-      break;
+      UNREACHABLE();
     }
   s->pc+=4;
 }
@@ -1178,7 +1177,7 @@ void do_fp_op(uint32_t inst, state_t *s) {
     execFP<double,op>(inst,s);
     break;
   default:
-    die();
+    UNREACHABLE();
   }
 }
 

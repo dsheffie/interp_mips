@@ -17,6 +17,12 @@
 
 void dbt_backtrace();
 
+#ifndef UNREACHABLE
+#define UNREACHABLE() {				\
+    __builtin_unreachable();			\
+  }
+#endif
+
 #define die() {								\
     std::cerr << __PRETTY_FUNCTION__ << " @ " << __FILE__ << ":"	\
 	      << __LINE__ << " called die\n";				\
