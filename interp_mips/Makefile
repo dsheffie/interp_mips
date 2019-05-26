@@ -1,6 +1,6 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o githash.o
+OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o saveState.o githash.o 
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native -flto

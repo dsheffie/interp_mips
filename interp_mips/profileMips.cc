@@ -752,6 +752,7 @@ void _monitorBody(uint32_t inst, state_t *s) {
       } else {
 	*((uint32_t*)(&s->gpr[R_v0])) = myTime;
 	myTime += 100;
+	//*((uint32_t*)(&s->gpr[R_v0])) = 0;
 	memset(&tms32_buf, 0, sizeof(tms32_buf));
       }
       *((tms32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tms32_buf;

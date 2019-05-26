@@ -19,6 +19,7 @@
 #include "helper.hh"
 #include "parseMips.hh"
 #include "profileMips.hh"
+#include "saveState.hh"
 #include "globals.hh"
 
 extern const char* githash;
@@ -73,16 +74,17 @@ int main(int argc, char *argv[]) {
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
   uint64_t maxinsns = ~(0UL);
-  bool hash = false;
+  bool hash = false, isDump = false;
   try {
     po::options_description desc("Options");
     desc.add_options() 
       ("help", "Print help messages") 
       ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
-      ("clock,c", po::value<bool>(&globals::enClockFuncts), "enable wall-clock")
-      ("hash,h", po::value<bool>(&hash), "hash memory at end of execution")
+      ("clock,c", po::value<bool>(&globals::enClockFuncts)->default_value(false), "enable wall-clock")
+      ("hash,h", po::value<bool>(&hash)->default_value(false), "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
-      ("maxinsns,m", po::value<uint64_t>(&maxinsns), "max instructions to execute")
+      ("isdump,'d", po::value<bool>(&isDump)->default_value(false), "is a dump")
+      ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
       ; 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -120,8 +122,14 @@ int main(int argc, char *argv[]) {
     exit(-1);
   }
   
-  load_elf(filename.c_str(), s);
-  mkMonitorVectors(s);
+  if(isDump) {
+    loadState(*s,filename);
+  }
+  else {
+    load_elf(filename.c_str(), s);
+    mkMonitorVectors(s);
+  }
+
 
   double runtime = timestamp();
   if(globals::isMipsEL) {
