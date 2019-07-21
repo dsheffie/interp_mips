@@ -4,12 +4,12 @@ OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o saveState.o githash.o
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native -flto
-	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_system -lboost_program_options
+	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
 	CXX = CC -march=native
-	EXTRA_LD = -L/usr/local/lib -lunwind -lboost_system -lboost_program_options
+	EXTRA_LD = -L/usr/local/lib -lunwind -lboost_program_options
 endif
 
 ifeq ($(UNAME_S),Darwin)
