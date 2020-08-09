@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
   
   if(hash) {
     std::fflush(nullptr);
-    std::cerr << *s << "\n";
+    /* std::cerr << *s << "\n"; */
     std::cerr << "crc32=" << std::hex
 	      << crc32(s->mem, 1UL<<32)<<std::dec
 	      << "\n";
@@ -156,7 +156,7 @@ int main(int argc, char *argv[]) {
   std::cerr << KGRN << "INTERP: "
 	    << runtime << " sec, "
 	    << s->icnt << " ins executed, "
-	    << (s->icnt/runtime)*1e-6 << "  megains / sec"
+	    << std::round((s->icnt/runtime)*1e-6) << " megains / sec"
 	    << KNRM  << "\n", 
   
   munmap(mempt, 1UL<<32);

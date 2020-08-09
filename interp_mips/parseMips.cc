@@ -25,105 +25,6 @@ static const std::string condNames[16] =
     "lt", "nge", "le", "ngt"
   };
 
-static const std::string instNames[] = 
-  {
-    "monitor", 
-    "add", 
-    "addu", 
-    "and",
-    "break",
-    "div",
-    "divu",
-    "jalr",
-    "jr",
-    "movn",
-    "movz",
-    "mfhi",
-    "mflo",
-    "mthi",
-    "mtlo",
-    "mult",
-    "multu",
-    "madd",
-    "maddu",
-    "mul",
-    "nor",
-    "or",
-    "sll",
-    "sllv",
-    "slt",
-    "sltu",
-    "sra",
-    "srav", 
-    "srl",
-    "srlv",
-    "sub",
-    "subu",
-    "syscall",
-    "xor",
-    "tge",
-    "teq",
-    "j",
-    "jal",
-    "addi",
-    "addiu",
-    "andi",
-    "ori",
-    "xori",
-    "beq",
-    "beql",
-    "bne",
-    "bnel",
-    "bgtzl",
-    "bgtz",
-    "blez",
-    "blezl",
-    "bgez_bltz",
-    "lui",
-    "lh",
-    "lb",
-    "lbu",
-    "lhu",
-    "slti",
-    "sltiu",
-    "sw",
-    "sh",
-    "sb",
-    "lwl",
-    "lw",
-    "ext",
-    "seh",
-    "ins",
-    "clz",
-    "swl",
-    "swr",
-    "sdc1",
-    "ldc1",
-    "bc1f",
-    "bc1t",
-    "bc1fl",
-    "bc1tl",
-    "lwc1",
-    "swc1",
-    "movci",
-    "mfc1",
-    "mtc1",
-    "cvtd",
-    "cvts",
-    "truncl",
-    "truncw",
-    "lwr",
-    "seb",
-    "mfc0",
-    "mtc0",
-    "unknown"
-  };
-
-
-std::string getInstTypeStr(uint32_t idx)
-{
-  return instNames[idx];
-}
 
 std::string getGPRName(uint32_t r, bool spaces)
 {
@@ -260,6 +161,7 @@ static void _truncl(uint32_t inst, uint32_t addr, std::string &s);
 static void _truncw(uint32_t inst, uint32_t addr, std::string &s);
 
 static void _ext(uint32_t inst, uint32_t addr, std::string &s);
+static void _seb(uint32_t inst, uint32_t addr, std::string &s);
 static void _seh(uint32_t inst, uint32_t addr, std::string &s);
 static void _ins(uint32_t inst, uint32_t addr, std::string &s);
 static void _clz(uint32_t inst, uint32_t addr, std::string &s);
@@ -498,12 +400,15 @@ static std::string decodeSpecial3(uint32_t inst,uint32_t addr)
     {
       switch(op)
 	{
+	case 0x10:
+	  _seb(inst, addr, s);
+	  break;
 	case 0x18:
 	  _seh(inst, addr, s);
 	  break;
 	default:
-	  printf("unhandled special3 instruction @ 0x%08x\n", addr); 
-	  exit(-1);    
+	  printf("unhandled special3 instruction @ 0x%08x, op=%x\n", addr, op);
+	  exit(-1);
 	  break;
 	}
     }
@@ -1309,8 +1214,13 @@ static void _ins(uint32_t inst, uint32_t addr,std::string &s)
   /* store in rt */
 }
 
-static void _seh(uint32_t inst, uint32_t addr,std::string &s)
-{
+static void _seb(uint32_t inst, uint32_t addr,std::string &s) {
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s += "seb " + regNames[rd] + "," + regNames[rt];
+}
+
+static void _seh(uint32_t inst, uint32_t addr,std::string &s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s += "seh " + regNames[rd] + "," + regNames[rt];

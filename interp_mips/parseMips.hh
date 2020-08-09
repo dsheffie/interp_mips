@@ -76,6 +76,4 @@ std::string getAsmString(uint32_t inst,uint32_t addr);
 std::string getGPRName(uint32_t r, bool spaces);
 std::string getCondName(uint32_t c);
 
-std::string getInstTypeStr(uint32_t idx);
-
 #endif
