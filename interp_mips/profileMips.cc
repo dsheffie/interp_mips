@@ -30,8 +30,6 @@ enum class branch_type {
   bc1f, bc1t, bc1fl, bc1tl
 };
 
-static timeval32_t myTimeVal = {0,0};
-static uint32_t myTime = 1<<20;
 
 void execRType(uint32_t inst, state_t *s);
 void execJType(uint32_t inst, state_t *s);
@@ -723,40 +721,43 @@ void _monitorBody(uint32_t inst, state_t *s) {
       host_stat->_st_ctime = 0;
       host_stat->st_blksize = bswap<EL>((uint32_t)native_stat.st_blksize);
       host_stat->st_blocks = bswap<EL>((uint32_t)native_stat.st_blocks);
-
       break;
-    case 33:
+    case 33: {
+      uint32_t uptr = *(uint32_t*)(s->gpr + R_a0);
       if(globals::enClockFuncts) {
 	gettimeofday(&tp, nullptr);
 	tp32.tv_sec = bswap<EL>((uint32_t)tp.tv_sec);
 	tp32.tv_usec = bswap<EL>((uint32_t)tp.tv_usec);
       }
       else {
-	memcpy(&tp32, &myTimeVal, sizeof(tp32));
-	myTimeVal.tv_usec++;
-	if(myTimeVal.tv_usec == (1<<20)) {
-	  myTimeVal.tv_usec = 0;
-	  myTimeVal.tv_sec++;
-	}
+	uint64_t mips = globals::icountMIPS*1000000;
+	tp.tv_sec = s->icnt / mips;
+	tp.tv_usec = ((s->icnt % mips) * 1000000)/ mips;
       }
-      *((timeval32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tp32;
+      tp32.tv_sec = bswap<EL>((uint32_t)tp.tv_sec);
+      tp32.tv_usec = bswap<EL>((uint32_t)tp.tv_usec);      
+      *((timeval32_t*)(s->mem + uptr)) = tp32;
       s->gpr[R_v0] = 0;
       break;
-    case 34:
+    }
+    case 34: {
+      uint32_t uptr = *(uint32_t*)(s->gpr + R_a0);
       if(globals::enClockFuncts) {
 	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
-	tms32_buf.tms_utime = bswap<EL>((uint32_t)tms_buf.tms_utime);
-	tms32_buf.tms_stime = bswap<EL>((uint32_t)tms_buf.tms_stime);
-	tms32_buf.tms_cutime = bswap<EL>((uint32_t)tms_buf.tms_cutime);
-	tms32_buf.tms_cstime = bswap<EL>((uint32_t)tms_buf.tms_cstime);
-      } else {
-	*((uint32_t*)(&s->gpr[R_v0])) = myTime;
-	myTime += 100;
-	//*((uint32_t*)(&s->gpr[R_v0])) = 0;
-	memset(&tms32_buf, 0, sizeof(tms32_buf));
       }
-      *((tms32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = tms32_buf;
+      else {
+	tms_buf.tms_utime = s->icnt;
+	tms_buf.tms_stime = 0;
+	tms_buf.tms_cutime = 0;
+	tms_buf.tms_cstime = 0;	
+      }
+      tms32_buf.tms_utime = bswap<EL>((uint32_t)tms_buf.tms_utime);
+      tms32_buf.tms_stime = bswap<EL>((uint32_t)tms_buf.tms_stime);
+      tms32_buf.tms_cutime = bswap<EL>((uint32_t)tms_buf.tms_cutime);
+      tms32_buf.tms_cstime = bswap<EL>((uint32_t)tms_buf.tms_cstime);      
+      *((tms32_t*)(s->mem + uptr)) = tms32_buf;
       break;
+    }
     case 35:
       /* int getargs(char **argv) */
       for(int i = 0; i < std::min(MARGS, globals::sysArgc); i++) {

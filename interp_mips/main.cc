@@ -28,6 +28,7 @@ char **globals::sysArgv = nullptr;
 int globals::sysArgc = 0;
 bool globals::enClockFuncts = false;
 bool globals::isMipsEL = false;
+uint64_t globals::icountMIPS = 500;
 
 static state_t *s =0;
 
@@ -85,6 +86,7 @@ int main(int argc, char *argv[]) {
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("isdump,'d", po::value<bool>(&isDump)->default_value(false), "is a dump")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
+      ("icountMIPS", po::value<uint64_t>(&globals::icountMIPS)->default_value(500), "millions of of instructions per second for time calculation")
       ; 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);

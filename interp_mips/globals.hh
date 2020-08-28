@@ -6,6 +6,7 @@ namespace globals {
   extern int sysArgc;
   extern char **sysArgv;
   extern bool isMipsEL;
+  extern uint64_t icountMIPS;
 };
 
 #endif
