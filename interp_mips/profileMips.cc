@@ -746,7 +746,8 @@ void _monitorBody(uint32_t inst, state_t *s) {
 	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
       }
       else {
-	tms_buf.tms_utime = s->icnt;
+	uint64_t mips = globals::icountMIPS*1000000;
+        tms_buf.tms_utime = (s->icnt/mips)*100;
 	tms_buf.tms_stime = 0;
 	tms_buf.tms_cutime = 0;
 	tms_buf.tms_cstime = 0;	
