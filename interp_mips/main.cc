@@ -17,7 +17,7 @@
 
 #include "loadelf.hh"
 #include "helper.hh"
-#include "parseMips.hh"
+#include "disassemble.hh"
 #include "profileMips.hh"
 #include "saveState.hh"
 #include "globals.hh"
@@ -104,7 +104,6 @@ int main(int argc, char *argv[]) {
 
   /* Build argc and argv */
   globals::sysArgc = buildArgcArgv(filename.c_str(),sysArgs,globals::sysArgv);
-  initParseTables();
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
   initState(s);
@@ -131,7 +130,8 @@ int main(int argc, char *argv[]) {
     load_elf(filename.c_str(), s);
     mkMonitorVectors(s);
   }
-
+  
+  initCapstone();
 
   double runtime = timestamp();
   if(globals::isMipsEL) {
@@ -169,6 +169,7 @@ int main(int argc, char *argv[]) {
     delete [] globals::sysArgv;
   }
   free(s);
+  stopCapstone();
   return 0;
 }
 

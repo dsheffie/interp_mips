@@ -16,7 +16,7 @@
 
 #include "helper.hh"
 #include "profileMips.hh"
-#include "parseMips.hh"
+#include "disassemble.hh"
 
 
 #define	_SIM_FOPEN		(-1)	

@@ -13,7 +13,7 @@
 #include <sys/stat.h>
 
 #include "profileMips.hh"
-#include "parseMips.hh"
+#include "disassemble.hh"
 #include "helper.hh"
 #include "globals.hh"
 
@@ -52,7 +52,7 @@ std::ostream &operator<<(std::ostream &out, const state_t & s) {
   using namespace std;
   out << "PC : " << hex << s.last_pc << dec << "\n";
   for(int i = 0; i < 32; i++) {
-    out << getGPRName(i,0) << " : 0x"
+    out << getGPRName(i) << " : 0x"
 	<< hex << s.gpr[i] << dec
 	<< "(" << s.gpr[i] << ")\n";
   }
@@ -257,7 +257,7 @@ void execSpecial3(uint32_t inst,state_t *s) {
 
 template <typename T>
 struct c1xExec {
-  void operator()(coproc1x_t insn, state_t *s) {
+  void operator()(const coproc1x_t& insn, state_t *s) {
     T _fr = *reinterpret_cast<T*>(s->cpr1+insn.fr);
     T _fs = *reinterpret_cast<T*>(s->cpr1+insn.fs);
     T _ft = *reinterpret_cast<T*>(s->cpr1+insn.ft);

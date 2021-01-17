@@ -67,13 +67,14 @@
 #define CP1_CR26 3
 #define CP1_CR28 4
 
-void initParseTables();
-bool isBranchOrJump(uint32_t inst);
-bool isFloatingPoint(uint32_t inst);
-bool isMonitor(uint32_t inst);
+const std::string &getCondName(uint32_t c);
+const std::string &getGPRName(uint32_t r);
+
+void initCapstone();
+void stopCapstone();
 
 std::string getAsmString(uint32_t inst,uint32_t addr);
-std::string getGPRName(uint32_t r, bool spaces);
-std::string getCondName(uint32_t c);
+void disassemble(std::ostream &out, uint32_t inst, uint32_t addr);
+
 
 #endif

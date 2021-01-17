@@ -1,20 +1,20 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o loadelf.o parseMips.o helper.o profileMips.o saveState.o githash.o 
+OBJ = main.o loadelf.o disassemble.o helper.o profileMips.o saveState.o githash.o 
 
 ifeq ($(UNAME_S),Linux)
-	CXX = g++ -march=native -flto
-	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options
+	CXX = g++-9 -march=native -flto
+	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options -lcapstone
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
 	CXX = CC -march=native
-	EXTRA_LD = -L/usr/local/lib -lunwind -lboost_program_options
+	EXTRA_LD = -L/usr/local/lib -lunwind -lboost_program_options -lcapstone
 endif
 
 ifeq ($(UNAME_S),Darwin)
 	CXX = clang++ -march=native -I/opt/local/include
-	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt
+	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt -lcapstone
 endif
 
 CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)

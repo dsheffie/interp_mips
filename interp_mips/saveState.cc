@@ -81,7 +81,7 @@ void loadState(state_t &s, const std::string &filename) {
   memcpy(&s.cpr0,&h.cpr0,sizeof(s.cpr0));
   memcpy(&s.cpr1,&h.cpr1,sizeof(s.cpr1));
   memcpy(&s.fcr1,&h.fcr1,sizeof(s.fcr1));
-  s.icnt = h.icnt;
+  s.icnt = 0;//h.icnt;
   
   for(uint32_t i = 0; i < h.num_nz_pages; i++) {
     page p;
