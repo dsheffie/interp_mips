@@ -1,6 +1,6 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o loadelf.o disassemble.o helper.o profileMips.o saveState.o githash.o 
+OBJ = main.o loadelf.o disassemble.o helper.o interpret.o saveState.o githash.o 
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++-9 -march=native -flto

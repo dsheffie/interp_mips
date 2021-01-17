@@ -15,7 +15,7 @@
 #endif
 
 #include "helper.hh"
-#include "profileMips.hh"
+#include "interpret.hh"
 #include "disassemble.hh"
 
 

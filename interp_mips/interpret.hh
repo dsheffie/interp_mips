@@ -1,5 +1,5 @@
-#ifndef __PROFILEMIPS__
-#define __PROFILEMIPS__
+#ifndef __INTERPRET_HH__
+#define __INTERPRET_HH__
 
 #include <cstdint>
 #include <cstdlib>
@@ -17,19 +17,19 @@
 
 #define K1SIZE  (0x80000000)
 
-typedef struct {
+struct timeval32_t {
   uint32_t tv_sec;
   uint32_t tv_usec;
-} timeval32_t;
+};
 
-typedef struct {
+struct tms32_t { 
   uint32_t tms_utime;
   uint32_t tms_stime;
   uint32_t tms_cutime;
   uint32_t tms_cstime;
-} tms32_t;
+};
 
-typedef struct {
+struct stat32_t {
   uint16_t st_dev;
   uint16_t st_ino;
   uint32_t st_mode;
@@ -47,9 +47,9 @@ typedef struct {
   uint32_t st_blksize;
   uint32_t st_blocks;
   uint32_t st_spare4[2];
-} stat32_t;
+};
 
-typedef struct {
+struct state_t{
   uint32_t pc;
   uint32_t last_pc;
   int32_t gpr[32];
@@ -62,7 +62,7 @@ typedef struct {
   uint8_t *mem;
   uint8_t brk;
   uint64_t maxicnt;
-} state_t;
+};
 
 struct rtype_t {
   uint32_t opcode : 6;

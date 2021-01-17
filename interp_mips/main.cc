@@ -18,7 +18,7 @@
 #include "loadelf.hh"
 #include "helper.hh"
 #include "disassemble.hh"
-#include "profileMips.hh"
+#include "interpret.hh"
 #include "saveState.hh"
 #include "globals.hh"
 

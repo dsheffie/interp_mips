@@ -1,8 +1,8 @@
 #include <string>
 #include <cstdint>
 
-#ifndef __PARSE_MIPS__
-#define __PARSE_MIPS__
+#ifndef __DISASSEMBLE_HH__
+#define __DISASSEMBLE_HH__
 
 #define R_zero 0
 #define R_at 1

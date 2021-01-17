@@ -1,5 +1,5 @@
 #include <list>
-#include "profileMips.hh"
+#include "interpret.hh"
 
 #ifndef __LOAD_ELF_H__
 #define __LOAD_ELF_H__

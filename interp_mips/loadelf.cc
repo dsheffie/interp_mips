@@ -14,7 +14,7 @@
 
 
 #include "helper.hh"
-#include "profileMips.hh"
+#include "interpret.hh"
 #include "globals.hh"
 
 #ifdef __APPLE__
