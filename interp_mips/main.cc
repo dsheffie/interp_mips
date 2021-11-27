@@ -29,6 +29,7 @@ int globals::sysArgc = 0;
 bool globals::enClockFuncts = false;
 bool globals::isMipsEL = false;
 uint64_t globals::icountMIPS = 500;
+bool globals::silent = true;
 
 static state_t *s =0;
 
@@ -65,12 +66,6 @@ int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
   namespace po = boost::program_options; 
 
-  std::cerr << KGRN
-	    << "MIPS INTERP : built "
-	    << __DATE__ << " " << __TIME__
-	    << ",pid="<< getpid() << "\n"
-    	    << "git hash=" << githash
-	    << KNRM << "\n";
   
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
@@ -86,6 +81,7 @@ int main(int argc, char *argv[]) {
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("isdump,'d", po::value<bool>(&isDump)->default_value(false), "is a dump")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
+      ("silent,s", po::value<bool>(&globals::silent)->default_value(true), "no interpret messages")
       ("icountMIPS", po::value<uint64_t>(&globals::icountMIPS)->default_value(500), "millions of of instructions per second for time calculation")
       ; 
     po::variables_map vm;
@@ -97,6 +93,15 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  if(not(globals::silent)) {
+    std::cerr << KGRN
+	      << "MIPS INTERP : built "
+	      << __DATE__ << " " << __TIME__
+	      << ",pid="<< getpid() << "\n"
+	      << "git hash=" << githash
+	      << KNRM << "\n";
+  }
+  
   if(filename.size()==0) {
     std::cerr << "INTERP : no file\n";
     return -1;
@@ -155,11 +160,13 @@ int main(int argc, char *argv[]) {
   }  
 
 
-  std::cerr << KGRN << "INTERP: "
-	    << runtime << " sec, "
-	    << s->icnt << " ins executed, "
-	    << std::round((s->icnt/runtime)*1e-6) << " megains / sec"
-	    << KNRM  << "\n", 
+  if(not(globals::silent)) {
+    std::cerr << KGRN << "INTERP: "
+	      << runtime << " sec, "
+	      << s->icnt << " ins executed, "
+	      << std::round((s->icnt/runtime)*1e-6) << " megains / sec"
+	      << KNRM  << "\n";
+  }
   
   munmap(mempt, 1UL<<32);
   if(globals::sysArgv) {
