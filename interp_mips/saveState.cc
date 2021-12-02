@@ -1,11 +1,10 @@
 #include <boost/dynamic_bitset.hpp>
-#include <iostream>
 #include <cstdint>
 #include <cassert>
 #include <cstring>
-
+#include <unistd.h>
 #include <fcntl.h>
-#include "saveState.hh"
+#include "interpret.hh"
 
 struct page {
   uint32_t va;
@@ -13,7 +12,7 @@ struct page {
 } __attribute__((packed));
 
 struct header {
-  uint64_t magic;
+  static const uint64_t magic = 0xbeefcafefacebabe;
   uint32_t pc;
   int32_t gpr[32];
   int32_t lo;
@@ -23,7 +22,7 @@ struct header {
   uint32_t fcr1[5];
   uint64_t icnt;
   uint32_t num_nz_pages;
-  header() : magic(0xbeefcafefacebabe) {}
+  header() {}
 } __attribute__((packed));
 
 void dumpState(const state_t &s, const std::string &filename) {
@@ -81,7 +80,7 @@ void loadState(state_t &s, const std::string &filename) {
   memcpy(&s.cpr0,&h.cpr0,sizeof(s.cpr0));
   memcpy(&s.cpr1,&h.cpr1,sizeof(s.cpr1));
   memcpy(&s.fcr1,&h.fcr1,sizeof(s.fcr1));
-  s.icnt = 0;//h.icnt;
+  s.icnt = h.icnt;
   
   for(uint32_t i = 0; i < h.num_nz_pages; i++) {
     page p;

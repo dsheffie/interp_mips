@@ -66,7 +66,7 @@ int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
   namespace po = boost::program_options; 
 
-  
+  int64_t dumpIcnt = -1L;
   size_t pgSize = getpagesize();
   std::string sysArgs, filename;
   uint64_t maxinsns = ~(0UL);
@@ -80,6 +80,7 @@ int main(int argc, char *argv[]) {
       ("hash,h", po::value<bool>(&hash)->default_value(false), "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("isdump,'d", po::value<bool>(&isDump)->default_value(false), "is a dump")
+      ("dumpicnt", po::value<int64_t>(&dumpIcnt)->default_value(-1L), "dump after n instructions")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
       ("silent,s", po::value<bool>(&globals::silent)->default_value(true), "no interpret messages")
       ("icountMIPS", po::value<uint64_t>(&globals::icountMIPS)->default_value(500), "millions of of instructions per second for time calculation")
@@ -145,8 +146,19 @@ int main(int argc, char *argv[]) {
     }
   }
   else {
-    while(s->brk==0 and (s->icnt < s->maxicnt)) {
-      execMips(s);
+    if(dumpIcnt != -1L) {
+      while(s->brk==0 and (s->icnt < s->maxicnt)) {
+	if(s->icnt >= dumpIcnt) {
+	  dumpState(*s, "foodump.bin");
+	  s->brk = 1;
+	}
+	execMips(s);
+      }
+    }
+    else {
+      while(s->brk==0 and (s->icnt < s->maxicnt)) {
+	execMips(s);
+      }
     }
   }
   runtime = timestamp()-runtime;
