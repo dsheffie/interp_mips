@@ -31,7 +31,7 @@ all: $(EXE)
 $(EXE) : $(OBJ)
 	$(CXX) $(CXXFLAGS) $(OBJ) $(LLVM_LDFLAGS) $(LIBS) -o $(EXE)
 
-githash.cc : ../.git/HEAD ../.git/index
+githash.cc : .git/HEAD .git/index
 	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
 
 %.o: %.cc
