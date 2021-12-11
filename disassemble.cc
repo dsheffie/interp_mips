@@ -77,7 +77,9 @@ std::string getAsmString(uint32_t inst, uint32_t addr) {
 
   size_t count = cs_disasm(handle,reinterpret_cast<const uint8_t *>(&inst),
 			   sizeof(inst), addr, 0, &insn);
-  assert(count == 1);
+  if(count != 1) {
+    return "huh?";
+  }
   ss << insn[0].mnemonic << " " << insn[0].op_str;
   cs_free(insn, count);
   return ss.str();

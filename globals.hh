@@ -8,6 +8,7 @@ namespace globals {
   extern bool isMipsEL;
   extern uint64_t icountMIPS;
   extern bool silent;
+  extern std::map<uint32_t, uint64_t> execHisto;
 };
 
 #endif

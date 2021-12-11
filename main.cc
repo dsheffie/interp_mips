@@ -13,6 +13,8 @@
 #include <string>
 #include <cstring>
 #include <cassert>
+#include <map>
+#include <fstream>
 #include <boost/program_options.hpp>
 
 #include "loadelf.hh"
@@ -30,8 +32,34 @@ bool globals::enClockFuncts = false;
 bool globals::isMipsEL = false;
 uint64_t globals::icountMIPS = 500;
 bool globals::silent = true;
+std::map<uint32_t, uint64_t> globals::execHisto;
 
 static state_t *s =0;
+
+template<typename X, typename Y>
+static inline void dump_histo(const std::string &fname,
+			      const std::map<X,Y> &histo) {
+  if(histo.empty())
+    return;
+  
+  std::vector<std::pair<X,Y>> sorted_by_cnt;
+  for(auto &p : histo) {
+    sorted_by_cnt.emplace_back(p.second, p.first);
+  }
+  std::ofstream out(fname);
+  std::sort(sorted_by_cnt.begin(), sorted_by_cnt.end());
+  for(auto it = sorted_by_cnt.rbegin(), E = sorted_by_cnt.rend(); it != E; ++it) {
+    uint32_t pc = it->second;
+    uint32_t r_inst = *reinterpret_cast<uint32_t*>(s->mem+pc);
+    r_inst = bswap<false>(r_inst);	
+    auto s = getAsmString(r_inst, it->second);
+    out << std::hex << it->second << ":"
+  	      << s << ","
+  	      << std::dec << it->first << "\n";
+  }
+  out.close();
+}
+
 
 static int buildArgcArgv(const char *filename, const std::string &sysArgs, char **&argv){
   int cnt = 0;
@@ -71,6 +99,7 @@ int main(int argc, char *argv[]) {
   std::string sysArgs, filename;
   uint64_t maxinsns = ~(0UL);
   bool hash = false, isDump = false;
+
   try {
     po::options_description desc("Options");
     desc.add_options() 
@@ -141,6 +170,7 @@ int main(int argc, char *argv[]) {
   initCapstone();
 
   double runtime = timestamp();
+  
   if(globals::isMipsEL) {
     while(s->brk==0 and (s->icnt < s->maxicnt)) {
       execMipsEL(s);
@@ -163,6 +193,7 @@ int main(int argc, char *argv[]) {
     }
   }
   runtime = timestamp()-runtime;
+  dump_histo("exec.txt", globals::execHisto);
   
   if(hash) {
     std::fflush(nullptr);
@@ -180,6 +211,7 @@ int main(int argc, char *argv[]) {
 	      << std::round((s->icnt/runtime)*1e-6) << " megains / sec"
 	      << KNRM  << "\n";
   }
+
   
   munmap(mempt, 1UL<<32);
   if(globals::sysArgv) {
@@ -190,6 +222,7 @@ int main(int argc, char *argv[]) {
   }
   free(s);
   stopCapstone();
+
   return 0;
 }
 

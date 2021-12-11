@@ -17,7 +17,7 @@ ifeq ($(UNAME_S),Darwin)
 	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt -lcapstone
 endif
 
-CXXFLAGS = -std=c++11 -g $(OPT) $(LLVM_CXXFLAGS)
+CXXFLAGS = -std=c++11 -g $(OPT)
 LIBS =  $(EXTRA_LD) -lpthread
 
 DEP = $(OBJ:.o=.d)
@@ -29,7 +29,7 @@ EXE = interp_mips
 all: $(EXE)
 
 $(EXE) : $(OBJ)
-	$(CXX) $(CXXFLAGS) $(OBJ) $(LLVM_LDFLAGS) $(LIBS) -o $(EXE)
+	$(CXX) $(CXXFLAGS) $(OBJ) $(LIBS) -o $(EXE)
 
 githash.cc : .git/HEAD .git/index
 	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
@@ -37,8 +37,6 @@ githash.cc : .git/HEAD .git/index
 %.o: %.cc
 	$(CXX) -MMD $(CXXFLAGS) -c $< 
 
-%.o : %.s
-	as $< -o $@
 
 -include $(DEP)
 

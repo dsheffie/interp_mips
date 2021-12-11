@@ -11,7 +11,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-
+#include <map>
 #include "interpret.hh"
 #include "disassemble.hh"
 #include "helper.hh"
@@ -470,6 +470,7 @@ static void _lbu(uint32_t inst, state_t *s) {
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t zExt = (uint32_t)s->mem[ea];
   *((uint32_t*)&(s->gpr[rt])) = zExt;
+
   s->pc += 4;
 }
 
@@ -669,24 +670,32 @@ void _monitorBody(uint32_t inst, state_t *s) {
   tms32_t tms32_buf;
   struct stat native_stat;
   stat32_t *host_stat = nullptr;
-
+  //std::cout << "monitor reason " << reason << " at icnt " << s->icnt << "\n";
   switch(reason)
     {
     case 6: /* int open(char *path, int flags) */
       path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
       flags = remapIOFlags(s->gpr[R_a1]);
       fd = open(path, flags, S_IRUSR|S_IWUSR);
+      //std::cout << s->icnt << " open " << path << ", fd = " << fd << "\n";
       s->gpr[R_v0] = fd;
       break;
     case 7: /* int read(int file,char *ptr,int len) */
       fd = s->gpr[R_a0];
       nr = s->gpr[R_a2];
       s->gpr[R_v0] = read(fd, (char*)(s->mem + (uint32_t)s->gpr[R_a1]), nr);
+      // std::cout << s->icnt << " read " << fd << ","
+      // 		<< std::hex << s->gpr[R_a1] << std::dec
+      // 		<< "," << nr
+      // 		<< " = "
+      // 		<< s->gpr[R_v0]
+      // 		<< "\n";      
       break;
     case 8: 
       /* int write(int file, char *ptr, int len) */
       fd = s->gpr[R_a0];
       nr = s->gpr[R_a2];
+      //std::cout << s->icnt << " write " << fd << "," << std::hex << s->gpr[R_a1] << std::dec << "," << nr << "\n";      
       s->gpr[R_v0] = (int32_t)write(fd, (void*)(s->mem + (uint32_t)s->gpr[R_a1]), nr);
       if(fd==1)
 	fflush(stdout);
@@ -698,6 +707,7 @@ void _monitorBody(uint32_t inst, state_t *s) {
       break;
     case 10:
       fd = s->gpr[R_a0];
+      //std::cout << s->icnt << " close " << fd << "\n";
       if(fd>2)
 	s->gpr[R_v0] = (int32_t)close(fd);
       else
@@ -1303,10 +1313,10 @@ template <bool EL>
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
   uint32_t inst = bswap<EL>(*(uint32_t*)(mem + s->pc));
+  //globals::execHisto[s->pc]++;
   s->last_pc = s->pc;
-  //std::cout << std::hex << s->pc << std::dec << " : " 
-  //<< getAsmString(inst, s->pc) << "\n";
 
+  
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
   uint32_t opcode = inst>>26;
