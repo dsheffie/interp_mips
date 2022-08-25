@@ -462,6 +462,11 @@ void _lh(uint32_t inst, state_t *s) {
 }
 
 
+void _lh_be(uint32_t inst, state_t *s) {
+  _lh<false>(inst, s);
+}
+
+
 static void _lb(uint32_t inst, state_t *s){
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
@@ -500,6 +505,11 @@ void _lhu(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
+void _lhu_be(uint32_t inst, state_t *s) {
+  _lhu<false>(inst, s);
+}
+
+
 
 template <bool EL>
 void _sw(uint32_t inst, state_t *s) {
@@ -535,6 +545,10 @@ void _sh(uint32_t inst, state_t *s) {
   uint32_t ea = s->gpr[rs] + imm;
   *((int16_t*)(s->mem + ea)) = bswap<EL>(((int16_t)s->gpr[rt]));
   s->pc += 4;
+}
+
+void _sh_be(uint32_t inst, state_t *s) {
+  _sh<false>(inst, s);
 }
 
 static void _sb(uint32_t inst, state_t *s) {
@@ -845,6 +859,10 @@ void _ldc1(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
+void _ldc1_be(uint32_t inst, state_t *s) {
+  _ldc1<false>(inst, s);
+}
+
 template <bool EL>
 void _sdc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
@@ -867,6 +885,12 @@ void _lwc1(uint32_t inst, state_t *s) {
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
 }
+
+void _lwc1_be(uint32_t inst, state_t *s) {
+  _lwc1<false>(inst, s);
+}
+
+
 
 template <bool EL>
 void _swc1(uint32_t inst, state_t *s) {
@@ -1715,6 +1739,21 @@ static void _bgtz_be(uint32_t inst, state_t *s) {
   branch<false,branch_type::bgtz>(inst, s); 
 }
 
+static void _beql_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::beql>(inst, s); 
+}
+
+static void _blezl_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::blezl>(inst, s); 
+}
+
+static void _bnel_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::bnel>(inst, s); 
+}
+
+static void _bgtzl_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::bgtzl>(inst, s); 
+}
 
 typedef void (*func_t)(uint32_t,state_t*);
 
@@ -1813,10 +1852,10 @@ static const func_t itype_functs[64] = {
   nullptr, /* 11 */
   nullptr, /* 12 */
   nullptr, /* 13 */
-  nullptr, /* 14 */
-  nullptr, /* 15 */
-  nullptr, /* 16 */
-  nullptr, /* 17 */
+  _beql_be, /* 14 */
+  _bnel_be, /* 15 */
+  _blezl_be, /* 16 */
+  _bgtzl_be, /* 17 */
   nullptr, /* 18 */
   nullptr, /* 19 */
   nullptr, /* 1a */
@@ -1826,15 +1865,15 @@ static const func_t itype_functs[64] = {
   nullptr, /* 1e */
   nullptr, /* 1f */
   _lb, /* 20 */
-  nullptr, /* 21 */
+  _lh_be, /* 21 */
   nullptr, /* 22 - sub */
   _lw_be, /* 23 */
   _lbu, /* 24 */
-  nullptr, /* 25 */
+  _lhu_be, /* 25 */
   nullptr, /* 26 */
   nullptr, /* 27 */
   _sb, /* 28 */
-  nullptr, /* 29 */
+  _sh_be, /* 29 */
   nullptr, /* 2a */
   _sw_be, /* 2b */
   nullptr, /* 2c */
@@ -1842,11 +1881,11 @@ static const func_t itype_functs[64] = {
   nullptr, /* 2e */
   nullptr, /* 2f */
   nullptr, /* 30 */
-  nullptr, /* 31 */
+  _lwc1_be, /* 31 */
   nullptr, /* 32 */
   nullptr, /* 33 */
   nullptr, /* 34 */ 
-  nullptr, /* 35 */
+  _ldc1_be, /* 35 */
   nullptr, /* 36 */
   nullptr, /* 37 */
   nullptr, /* 38 */
@@ -1941,44 +1980,17 @@ void execMips(state_t *s) {
     
     switch(opcode) 
       {
-      case 0x14:
-	branch<EL,branch_type::beql>(inst, s); 
-	break;
-      case 0x16:
-	branch<EL,branch_type::blezl>(inst, s); 
-	break;
-      case 0x15:
-	branch<EL,branch_type::bnel>(inst, s); 
-	break;
-      case 0x17:
-	branch<EL,branch_type::bgtzl>(inst, s); 
-	break;
-      case 0x21:
-	_lh<EL>(inst, s);
-	break;
       case 0x22: 
 	_lwl<EL>(inst, s);
 	break;
-      case 0x25:
-	_lhu<EL>(inst, s);
-	break;
       case 0x26:
 	_lwr<EL>(inst, s);
-	break;
-      case 0x29:
-	_sh<EL>(inst, s); 
 	break;
       case 0x2a:
 	_swl<EL>(inst, s); 
 	break;
       case 0x2e:
 	_swr<EL>(inst, s); 
-	break;
-      case 0x31:
-	_lwc1<EL>(inst, s);
-	break;  
-      case 0x35:
-	_ldc1<EL>(inst, s);
 	break;
       case 0x39:
 	_swc1<EL>(inst, s);
