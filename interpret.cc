@@ -1584,9 +1584,35 @@ static void _teq(uint32_t inst, state_t *s) {
   }
   s->pc +=4;
 }
+/* end rtype */
 
+static void _j(uint32_t inst, state_t *s) {
+  uint32_t jaddr = inst & ((1<<26)-1);
+  jaddr <<= 2;  
+  s->pc += 4;
+  jaddr |= (s->pc & (~((1<<28)-1)));
+  execMips<false>(s);
+  s->pc = jaddr;  
+}
+
+static void _jal(uint32_t inst, state_t *s) {
+  uint32_t jaddr = inst & ((1<<26)-1);
+  jaddr <<= 2;  
+  s->gpr[31] = s->pc+8;  
+  s->pc += 4;
+  jaddr |= (s->pc & (~((1<<28)-1)));
+  execMips<false>(s);
+  s->pc = jaddr;  
+}
 
 typedef void (*func_t)(uint32_t,state_t*);
+
+static const func_t jtype_funcs[4] = {
+  nullptr,
+  nullptr,
+  _j,
+  _jal
+};
 
 static const func_t rtype_functs[64] = {
   _sll, /* 0 */
@@ -1656,6 +1682,7 @@ static const func_t rtype_functs[64] = {
 };
 
 
+
 template <bool EL>
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
@@ -1688,229 +1715,15 @@ void execMips(state_t *s) {
     auto f = rtype_functs[funct];
     assert(f != nullptr);
     f(inst, s);
-#if 0
-    switch(funct) 
-      {
-      case 0x00: /*sll*/
-	s->gpr[rd] = s->gpr[rt] << sa;
-	if(inst == 0) {
-	  s->nopcnt++;
-	}
-	s->pc += 4;
-	break;
-      case 0x01: /* movci */
-	_movci(inst,s);
-	break;
-      case 0x02: /* srl */
-	s->gpr[rd] = ((uint32_t)s->gpr[rt] >> sa);
-	s->pc += 4;
-	break;
-      case 0x03: /* sra */
-	s->gpr[rd] = s->gpr[rt] >> sa;
-	s->pc += 4;
-	break;
-      case 0x04: /* sllv */
-	s->gpr[rd] = s->gpr[rt] << (s->gpr[rs] & 0x1f);
-	s->pc += 4;
-	break;
-      case 0x05:
-	_monitorBody<EL>(inst, s);
-	break;
-      case 0x06:  
-	s->gpr[rd] = ((uint32_t)s->gpr[rt]) >> (s->gpr[rs] & 0x1f);
-	s->pc += 4;
-	break;
-      case 0x07:  
-	s->gpr[rd] = s->gpr[rt] >> (s->gpr[rs] & 0x1f);
-	s->pc += 4;
-	break;
-      case 0x08: { /* jr */
-	uint32_t jaddr = s->gpr[rs];
-#ifdef CALLSTACK_DEBUG	
-	if(rs == 31) {
-	  callstack.pop();
-	}
-#endif
-	s->pc += 4;
-	execMips<EL>(s);
-	s->pc = jaddr;
-	break;
-      }
-      case 0x09: { /* jalr */
-	uint32_t jaddr = s->gpr[rs];
-#ifdef CALLSTACK_DEBUG	
-	callstack.push(s->pc);
-#endif
-	s->gpr[31] = s->pc+8;
-	s->pc += 4;
-	execMips<EL>(s);
-	s->pc = jaddr;
-	break;
-      }
-      case 0x0C: /* syscall */
-	printf("syscall()\n");
-	std::cerr << "mem crc32=" << std::hex
-		  << crc32(s->mem, 1UL<<32)<<std::dec
-		  << "\n";
-	std::cerr << "gpr crc32=" << std::hex
-		  << crc32(reinterpret_cast<uint8_t*>(&s->gpr), 4*32)<<std::dec
-		  << "\n";
-	for(int i  = 0; i < 32; i++) {
-	  std::cerr << "gpr[" << i << "] = " << std::hex << s->gpr[i] << std::dec << "\n";
-	}
-	exit(-1);
-	break;
-      case 0x0D: /* break */
-	s->brk = 1;
-	break;
-      case 0x0f: /* sync */
-	s->pc += 4;
-	break;
-      case 0x10: /* mfhi */
-	s->gpr[rd] = s->hi;
-	s->pc += 4;
-	break;
-      case 0x11: /* mthi */ 
-	s->hi = s->gpr[rs];
-	s->pc += 4;
-	break;
-      case 0x12: /* mflo */
-	s->gpr[rd] = s->lo;
-	s->pc += 4;
-	break;
-      case 0x13: /* mtlo */
-	s->lo = s->gpr[rs];
-	s->pc += 4;
-	break;
-      case 0x18: { /* mult */
-	int64_t y;
-	y = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
-	s->lo = (int32_t)(y & 0xffffffff);
-	s->hi = (int32_t)(y >> 32);
-	s->pc += 4;
-	break;
-      }
-      case 0x19: { /* multu */
-	uint64_t y;
-	uint64_t u0 = (uint64_t)*((uint32_t*)&s->gpr[rs]);
-	uint64_t u1 = (uint64_t)*((uint32_t*)&s->gpr[rt]);
-	y = u0*u1;
-	*((uint32_t*)&(s->lo)) = (uint32_t)y;
-	*((uint32_t*)&(s->hi)) = (uint32_t)(y>>32);
-	s->pc += 4;
-	break;
-      }
-      case 0x1A: /* div */
-	if(s->gpr[rt] != 0) {
-	  s->lo = s->gpr[rs] / s->gpr[rt];
-	  s->hi = s->gpr[rs] % s->gpr[rt];
-	}
-	s->pc += 4;
-	break;
-      case 0x1B: /* divu */
-	if(s->gpr[rt] != 0) {
-	  s->lo = (uint32_t)s->gpr[rs] / (uint32_t)s->gpr[rt];
-	  s->hi = (uint32_t)s->gpr[rs] % (uint32_t)s->gpr[rt];
-	}
-	s->pc += 4;
-	break;
-      case 0x20: /* add */
-	s->gpr[rd] = s->gpr[rs] + s->gpr[rt];
-	s->pc += 4;
-	break;
-      case 0x21: { /* addu */
-	uint32_t u_rs = (uint32_t)s->gpr[rs];
-	uint32_t u_rt = (uint32_t)s->gpr[rt];
-	s->gpr[rd] = u_rs + u_rt;
-	s->pc += 4;
-	break;
-      }
-      case 0x22: /* sub */
-	printf("sub()\n");
-	exit(-1);
-	break;
-      case 0x23:{ /*subu*/  
-	uint32_t u_rs = (uint32_t)s->gpr[rs];
-	uint32_t u_rt = (uint32_t)s->gpr[rt];
-	uint32_t y = u_rs - u_rt;
-	s->gpr[rd] = y;
-	s->pc += 4;
-	break;
-      }
-      case 0x24: /* and */
-	s->gpr[rd] = s->gpr[rs] & s->gpr[rt];
-	s->pc += 4;
-	break;
-      case 0x25: /* or */
-	s->gpr[rd] = s->gpr[rs] | s->gpr[rt];
-	s->pc += 4;
-	break;
-      case 0x26: /* xor */
-	s->gpr[rd] = s->gpr[rs] ^ s->gpr[rt];
-	s->pc += 4;
-	break;
-      case 0x27: /* nor */
-	s->gpr[rd] = ~(s->gpr[rs] | s->gpr[rt]);
-	s->pc += 4;
-	break;
-      case 0x2A: /* slt */
-	s->gpr[rd] = s->gpr[rs] < s->gpr[rt];
-	s->pc += 4;
-	break;
-      case 0x2B: { /* sltu */
-	uint32_t urs = (uint32_t)s->gpr[rs];
-	uint32_t urt = (uint32_t)s->gpr[rt];
-	s->gpr[rd] = (urs < urt);
-	s->pc += 4;
-	break;
-      }
-      case 0x0B: /* movn */
-	s->gpr[rd] = (s->gpr[rt] != 0) ? s->gpr[rs] : s->gpr[rd];
-	s->pc +=4;
-	break;
-      case 0x0A: /* movz */
-	s->gpr[rd] = (s->gpr[rt] == 0) ? s->gpr[rs] : s->gpr[rd];
-	s->pc += 4;
-	break;
-      case 0x34: /* teq */
-	if(s->gpr[rs] == s->gpr[rt]) {
-	  printf("teq trap!!!!!\n");
-	  exit(-1);
-	}
-	s->pc += 4;
-	break;
-      default:
-	printf("%sunknown RType instruction %x, funct = %d%s\n", 
-	       KRED, s->pc, funct, KNRM);
-	exit(-1);
-	break;
-      }
-#endif
   }
   else if(isSpecial2)
     execSpecial2(inst,s);
   else if(isSpecial3)
     execSpecial3(inst,s);
   else if(isJType) {
-    uint32_t jaddr = inst & ((1<<26)-1);
-    jaddr <<= 2;
-    if(opcode==0x2) { /* j */
-      s->pc += 4;
-    }
-    else if(opcode==0x3) { /* jal */
-#ifdef CALLSTACK_DEBUG      
-      callstack.push(s->pc);
-#endif
-      s->gpr[31] = s->pc+8;
-      s->pc += 4;
-    }
-    else {
-      printf("Unknown JType instruction\n");
-      exit(-1);
-    }
-    jaddr |= (s->pc & (~((1<<28)-1)));
-    execMips<EL>(s);
-    s->pc = jaddr;
+    auto f = jtype_funcs[opcode & 3];
+    assert(f);
+    f(inst, s);
   }
   else if(isCoproc0) {  
     switch(rs) 
