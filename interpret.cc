@@ -444,6 +444,10 @@ void _lw(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
+void _lw_be(uint32_t inst, state_t *s) {
+  _lw<false>(inst, s);
+}
+
 template <bool EL>
 void _lh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
@@ -507,6 +511,10 @@ void _sw(uint32_t inst, state_t *s) {
   *((int32_t*)(s->mem + ea)) = bswap<EL>(s->gpr[rt]);
   
   s->pc += 4;
+}
+
+void _sw_be(uint32_t inst, state_t *s) {
+  _sw<false>(inst, s);
 }
 
 template <bool EL>
@@ -1605,6 +1613,109 @@ static void _jal(uint32_t inst, state_t *s) {
   s->pc = jaddr;  
 }
 
+/* end jtype */
+
+static void _addi(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = s->gpr[rs] + simm32;
+  s->pc+=4;  
+}
+
+static void _addiu(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = s->gpr[rs] + simm32;
+  s->pc+=4;  
+}
+
+static void _slti(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = (s->gpr[rs] < simm32);
+  s->pc+=4;  
+}
+
+static void _sltiu(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = ((uint32_t)s->gpr[rs] < (uint32_t)simm32);
+  s->pc+=4;  
+}
+
+static void _andi(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = s->gpr[rs] & uimm32;
+  s->pc+=4;  
+}
+
+static void _ori(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = s->gpr[rs] | uimm32;
+  s->pc+=4;  
+}
+
+static void _xori(uint32_t inst, state_t *s) {
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  s->gpr[rt] = s->gpr[rs] ^ uimm32;
+  s->pc+=4;  
+}
+
+static void _lui(uint32_t inst, state_t *s) {
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t uimm32 = inst & ((1<<16) - 1);
+  int16_t simm16 = (int16_t)uimm32;
+  int32_t simm32 = (int32_t)simm16;
+  uimm32 <<= 16;
+  s->gpr[rt] = uimm32;
+  s->pc+=4;  
+}
+
+static void _bgez_bltz_be(uint32_t inst, state_t *s) {
+  _bgez_bltz<false>(inst, s); 
+}
+
+static void _beq_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::beq>(inst, s); 
+}
+
+static void _bne_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::bne>(inst, s); 
+}
+
+static void _blez_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::blez>(inst, s); 
+}
+
+static void _bgtz_be(uint32_t inst, state_t *s) {
+  branch<false,branch_type::bgtz>(inst, s); 
+}
+
+
 typedef void (*func_t)(uint32_t,state_t*);
 
 static const func_t jtype_funcs[4] = {
@@ -1668,6 +1779,73 @@ static const func_t rtype_functs[64] = {
   nullptr, /* 32 */
   nullptr, /* 33 */
   _teq, /* 34 */ 
+  nullptr, /* 35 */
+  nullptr, /* 36 */
+  nullptr, /* 37 */
+  nullptr, /* 38 */
+  nullptr, /* 39 */
+  nullptr, /* 3a */
+  nullptr, /* 3b */
+  nullptr, /* 3c */
+  nullptr, /* 3d */
+  nullptr, /* 3e */
+  nullptr  /* 3f */  
+};
+
+static const func_t itype_functs[64] = {
+  nullptr, /* 0 */
+  _bgez_bltz_be, /* 1 */
+  nullptr, /* 2 */
+  nullptr, /* 3 */
+  _beq_be, /* 4 */
+  _bne_be, /* 5 */
+  _blez_be, /* 6 */
+  _bgtz_be, /* 7 */
+  _addi, /* 8 */
+  _addiu, /* 9 */
+  _slti, /* a */
+  _sltiu, /* b */
+  _andi, /* c */
+  _ori, /* d */
+  _xori, /* e */
+  _lui,  /* f */
+  nullptr, /* 10 */
+  nullptr, /* 11 */
+  nullptr, /* 12 */
+  nullptr, /* 13 */
+  nullptr, /* 14 */
+  nullptr, /* 15 */
+  nullptr, /* 16 */
+  nullptr, /* 17 */
+  nullptr, /* 18 */
+  nullptr, /* 19 */
+  nullptr, /* 1a */
+  nullptr, /* 1b */
+  nullptr, /* 1c */
+  nullptr, /* 1d */
+  nullptr, /* 1e */
+  nullptr, /* 1f */
+  _lb, /* 20 */
+  nullptr, /* 21 */
+  nullptr, /* 22 - sub */
+  _lw_be, /* 23 */
+  _lbu, /* 24 */
+  nullptr, /* 25 */
+  nullptr, /* 26 */
+  nullptr, /* 27 */
+  _sb, /* 28 */
+  nullptr, /* 29 */
+  nullptr, /* 2a */
+  _sw_be, /* 2b */
+  nullptr, /* 2c */
+  nullptr, /* 2d */
+  nullptr, /* 2e */
+  nullptr, /* 2f */
+  nullptr, /* 30 */
+  nullptr, /* 31 */
+  nullptr, /* 32 */
+  nullptr, /* 33 */
+  nullptr, /* 34 */ 
   nullptr, /* 35 */
   nullptr, /* 36 */
   nullptr, /* 37 */
@@ -1755,56 +1933,14 @@ void execMips(state_t *s) {
     uint32_t uimm32 = inst & ((1<<16) - 1);
     int16_t simm16 = (int16_t)uimm32;
     int32_t simm32 = (int32_t)simm16;
+    auto f = itype_functs[opcode];
+    if(f) {
+      f(inst, s);
+      return;
+    }
+    
     switch(opcode) 
       {
-      case 0x01:
-	_bgez_bltz<EL>(inst, s); 
-	break;
-      case 0x04:
-	branch<EL,branch_type::beq>(inst, s); 
-	break;
-      case 0x05:
-	branch<EL,branch_type::bne>(inst, s); 
-	break;
-      case 0x06:
-	branch<EL,branch_type::blez>(inst, s); 
-	break;
-      case 0x07:
-	branch<EL,branch_type::bgtz>(inst, s); 
-	break;
-      case 0x08: /* addi */
-	s->gpr[rt] = s->gpr[rs] + simm32;  
-	s->pc+=4;
-	break;
-      case 0x09: /* addiu */
-	s->gpr[rt] = s->gpr[rs] + simm32;  
-	s->pc+=4;
-	break;
-      case 0x0A: /* slti */
-	s->gpr[rt] = (s->gpr[rs] < simm32);
-	s->pc += 4;
-	break;
-      case 0x0B:/* sltiu */
-	s->gpr[rt] = ((uint32_t)s->gpr[rs] < (uint32_t)simm32);
-	s->pc += 4;
-	break;
-      case 0x0c: /* andi */
-	s->gpr[rt] = s->gpr[rs] & uimm32;
-	s->pc += 4;
-	break;
-      case 0x0d: /* ori */
-	s->gpr[rt] = s->gpr[rs] | uimm32;
-	s->pc += 4;
-	break;
-      case 0x0e: /* xori */
-	s->gpr[rt] = s->gpr[rs] ^ uimm32;
-	s->pc += 4;
-	break;
-      case 0x0F: /* lui */
-	uimm32 <<= 16;
-	s->gpr[rt] = uimm32;
-	s->pc += 4;
-	break;
       case 0x14:
 	branch<EL,branch_type::beql>(inst, s); 
 	break;
@@ -1817,20 +1953,11 @@ void execMips(state_t *s) {
       case 0x17:
 	branch<EL,branch_type::bgtzl>(inst, s); 
 	break;
-      case 0x20:
-	_lb(inst, s);
-	break;
       case 0x21:
 	_lh<EL>(inst, s);
 	break;
       case 0x22: 
 	_lwl<EL>(inst, s);
-	break;
-      case 0x23:
-	_lw<EL>(inst, s); 
-	break;
-      case 0x24:
-	_lbu(inst, s);
 	break;
       case 0x25:
 	_lhu<EL>(inst, s);
@@ -1838,17 +1965,11 @@ void execMips(state_t *s) {
       case 0x26:
 	_lwr<EL>(inst, s);
 	break;
-      case 0x28:
-	_sb(inst, s); 
-	break;
       case 0x29:
 	_sh<EL>(inst, s); 
 	break;
       case 0x2a:
 	_swl<EL>(inst, s); 
-	break;
-      case 0x2B:
-	_sw<EL>(inst, s); 
 	break;
       case 0x2e:
 	_swr<EL>(inst, s); 
