@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ostream>
 
+
 /* from gdb simulator */
 #define RSVD_INSTRUCTION           (0x00000005)
 #define RSVD_INSTRUCTION_MASK      (0xFC00003F)
@@ -59,6 +60,7 @@ struct state_t{
   uint32_t cpr1[32];
   uint32_t fcr1[5];
   uint64_t icnt;
+  uint64_t nopcnt;
   uint8_t *mem;
   uint8_t brk;
   uint64_t maxicnt;

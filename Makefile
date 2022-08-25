@@ -3,7 +3,7 @@ UNAME_S = $(shell uname -s)
 OBJ = main.o loadelf.o disassemble.o helper.o interpret.o saveState.o githash.o
 
 ifeq ($(UNAME_S),Linux)
-	CXX = g++-9 -march=native -flto
+	CXX = g++-9 -march=native #-flto
 	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options -lcapstone
 endif
 

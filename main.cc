@@ -108,9 +108,9 @@ int main(int argc, char *argv[]) {
       ("clock,c", po::value<bool>(&globals::enClockFuncts)->default_value(false), "enable wall-clock")
       ("hash,h", po::value<bool>(&hash)->default_value(false), "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
-      ("isdump,'d", po::value<bool>(&isDump)->default_value(false), "is a dump")
+      ("isdump,d", po::value<bool>(&isDump)->default_value(false), "is a dump")
       ("dumpicnt", po::value<int64_t>(&dumpIcnt)->default_value(-1L), "dump after n instructions")
-      ("dumpname", po::value<std::string>(&dumpname)->default_value("blob.bin"), "dump file name")
+      ("dumpname", po::value<std::string>(&dumpname), "dump file name")
       ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
       ("silent,s", po::value<bool>(&globals::silent)->default_value(true), "no interpret messages")
       ("icountMIPS", po::value<uint64_t>(&globals::icountMIPS)->default_value(500), "millions of of instructions per second for time calculation")
@@ -124,6 +124,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  
   if(not(globals::silent)) {
     std::cerr << KGRN
 	      << "MIPS INTERP : built "
@@ -178,9 +179,17 @@ int main(int argc, char *argv[]) {
   }
   else {
     if(dumpIcnt != -1L) {
+      if(dumpname.size() == 0) {
+	dumpname = filename;
+      }
       while(s->brk==0 and (s->icnt < s->maxicnt)) {
-	if(s->icnt >= dumpIcnt) {
-	  dumpState(*s, dumpname);
+	if(((s->icnt % dumpIcnt) == 0) and (s->icnt != 0)) {
+	  std::stringstream ss;
+	  ss << dumpname << s->icnt << ".bin";
+	  if(not(globals::silent)) {
+	    std::cout << "dumping at icnt " << s->icnt << "\n";
+	  }
+	  dumpState(*s, ss.str());
 	  s->brk = 1;
 	}
 	execMips(s);
@@ -208,7 +217,8 @@ int main(int argc, char *argv[]) {
     std::cerr << KGRN << "INTERP: "
 	      << runtime << " sec, "
 	      << s->icnt << " ins executed, "
-	      << std::round((s->icnt/runtime)*1e-6) << " megains / sec"
+	      << s->nopcnt << " nops executed, "
+	      << std::round((s->icnt/runtime)*1e-6) << " megains / sec "
 	      << KNRM  << "\n";
   }
 

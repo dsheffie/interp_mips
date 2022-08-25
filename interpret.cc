@@ -12,10 +12,18 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <map>
+#include <stack>
+
 #include "interpret.hh"
 #include "disassemble.hh"
 #include "helper.hh"
 #include "globals.hh"
+
+//#define CALLSTACK_DEBUG
+
+#ifdef CALLSTACK_DEBUG
+static std::stack<uint32_t> callstack;
+#endif
 
 enum class fpOperation {
   abs,neg,mov,add,
@@ -42,7 +50,8 @@ void execCoproc2(uint32_t inst, state_t *s);
 template <bool EL> void execMips(state_t *s);
 
 void execMipsEL(state_t *s) {
-  execMips<true>(s);
+  //execMips<true>(s);
+  assert(false);
 }
 void execMips(state_t *s) {
   execMips<false>(s);
@@ -670,26 +679,30 @@ void _monitorBody(uint32_t inst, state_t *s) {
   tms32_t tms32_buf;
   struct stat native_stat;
   stat32_t *host_stat = nullptr;
-  //std::cout << "monitor reason " << reason << " at icnt " << s->icnt << "\n";
+  
   switch(reason)
     {
     case 6: /* int open(char *path, int flags) */
       path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
       flags = remapIOFlags(s->gpr[R_a1]);
       fd = open(path, flags, S_IRUSR|S_IWUSR);
+
       //std::cout << s->icnt << " open " << path << ", fd = " << fd << "\n";
+      
       s->gpr[R_v0] = fd;
       break;
     case 7: /* int read(int file,char *ptr,int len) */
       fd = s->gpr[R_a0];
       nr = s->gpr[R_a2];
       s->gpr[R_v0] = read(fd, (char*)(s->mem + (uint32_t)s->gpr[R_a1]), nr);
-      // std::cout << s->icnt << " read " << fd << ","
-      // 		<< std::hex << s->gpr[R_a1] << std::dec
-      // 		<< "," << nr
-      // 		<< " = "
-      // 		<< s->gpr[R_v0]
-      // 		<< "\n";      
+      if(fd > 2) {
+	std::cout << s->icnt << " read " << fd << ","
+		  << std::hex << s->gpr[R_a1] << std::dec
+		  << "," << nr
+		  << " = "
+		  << s->gpr[R_v0]
+		  << "\n";
+      }
       break;
     case 8: 
       /* int write(int file, char *ptr, int len) */
@@ -1309,16 +1322,350 @@ void execCoproc1(uint32_t inst, state_t *s) {
     }
 }
 
+static void _sll(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t sa = (inst >> 6) & 31;
+  s->gpr[rd] = s->gpr[rt] << sa;
+  if(inst == 0) {
+    s->nopcnt++;
+  }
+  s->pc += 4;
+}
+
+static void _srl(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t sa = (inst >> 6) & 31;
+  s->gpr[rd] = ((uint32_t)s->gpr[rt] >> sa);
+  s->pc += 4;
+}
+
+
+static void _sra(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t sa = (inst >> 6) & 31;
+  s->gpr[rd] = s->gpr[rt] >> sa;
+  s->pc += 4;
+}
+
+
+static void _sllv(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rt] << (s->gpr[rs] & 0x1f);
+  s->pc += 4;
+}
+
+static void _monitor(uint32_t inst, state_t *s) {
+  _monitorBody<false>(inst, s);
+}
+
+static void _srlv(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = ((uint32_t)s->gpr[rt]) >> (s->gpr[rs] & 0x1f);  
+  s->pc += 4;
+}
+
+
+static void _srav(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;  
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rt] >> (s->gpr[rs] & 0x1f);  
+  s->pc += 4;
+}
+
+static void _jr(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;  
+  uint32_t jaddr = s->gpr[rs];
+  s->pc += 4;
+  execMips<false>(s);
+  s->pc = jaddr;
+}
+
+static void _jalr(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;  
+  uint32_t jaddr = s->gpr[rs];
+  s->gpr[31] = s->pc+8;
+  s->pc += 4;
+  execMips<false>(s);
+  s->pc = jaddr;
+}
+
+static void _break(uint32_t inst, state_t *s) {
+  s->brk = 1;
+  s->pc += 4;
+}
+
+static void _sync(uint32_t inst, state_t *s) {
+  s->pc += 4;
+}
+
+static void _mfhi(uint32_t inst, state_t *s) {
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->hi;
+  s->pc += 4;
+}
+
+static void _mthi(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;  
+  s->hi = s->gpr[rs];
+  s->pc += 4;
+}
+
+static void _mflo(uint32_t inst, state_t *s) {
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->lo;
+  s->pc += 4;
+}
+
+static void _mtlo(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;  
+  s->lo = s->gpr[rs];
+  s->pc += 4;
+}
+
+static void _mult(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  int64_t y  = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
+  s->lo = (int32_t)(y & 0xffffffff);
+  s->hi = (int32_t)(y >> 32);
+  s->pc += 4;
+}
+
+static void _multu(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+
+  uint64_t y;
+  uint64_t u0 = (uint64_t)*((uint32_t*)&s->gpr[rs]);
+  uint64_t u1 = (uint64_t)*((uint32_t*)&s->gpr[rt]);
+  y = u0*u1;
+  *((uint32_t*)&(s->lo)) = (uint32_t)y;
+  *((uint32_t*)&(s->hi)) = (uint32_t)(y>>32);
+  s->pc += 4;
+}
+
+static void _div(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  if(s->gpr[rt] != 0) {
+    s->lo = (uint32_t)s->gpr[rs] / (uint32_t)s->gpr[rt];
+    s->hi = (uint32_t)s->gpr[rs] % (uint32_t)s->gpr[rt];
+  }
+  s->pc += 4;
+}
+
+static void _divu(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  if(s->gpr[rt] != 0) {
+    s->lo = (uint32_t)s->gpr[rs] / (uint32_t)s->gpr[rt];
+    s->hi = (uint32_t)s->gpr[rs] % (uint32_t)s->gpr[rt];
+  }
+  s->pc += 4;
+}
+
+static void _add(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rs] + s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _addu(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t u_rs = (uint32_t)s->gpr[rs];
+  uint32_t u_rt = (uint32_t)s->gpr[rt];
+  s->gpr[rd] = u_rs + u_rt;
+  s->pc += 4;
+}
+
+static void _subu(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t u_rs = (uint32_t)s->gpr[rs];
+  uint32_t u_rt = (uint32_t)s->gpr[rt];
+  uint32_t y = u_rs - u_rt;
+  s->gpr[rd] = y;
+  s->pc += 4;
+}
+
+static void _and(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rs] & s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _or(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rs] | s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _xor(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rs] ^ s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _nor(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = ~(s->gpr[rs] | s->gpr[rt]);
+  s->pc += 4;
+}
+
+static void _slt(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = s->gpr[rs] < s->gpr[rt];
+  s->pc += 4;
+}
+
+static void _sltu(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  uint32_t urs = (uint32_t)s->gpr[rs];
+  uint32_t urt = (uint32_t)s->gpr[rt];
+  s->gpr[rd] = (urs < urt);
+  s->pc += 4;
+}
+
+static void _movn(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = (s->gpr[rt] != 0) ? s->gpr[rs] : s->gpr[rd];
+  s->pc +=4;
+}
+
+static void _movz(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  s->gpr[rd] = (s->gpr[rt] == 0) ? s->gpr[rs] : s->gpr[rd];
+  s->pc +=4;
+}
+
+static void _teq(uint32_t inst, state_t *s) {
+  uint32_t rs = (inst >> 21) & 31;
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rd = (inst >> 11) & 31;
+  if(s->gpr[rs] == s->gpr[rt]) {
+    printf("teq trap!!!!!\n");
+    exit(-1);
+  }
+  s->pc +=4;
+}
+
+
+typedef void (*func_t)(uint32_t,state_t*);
+
+static const func_t rtype_functs[64] = {
+  _sll, /* 0 */
+  _movci, /* 1 */
+  _srl, /* 2 */
+  _sra, /* 3 */
+  _sllv, /* 4 */
+  _monitor, /* 5 */
+  _srlv, /* 6 */
+  _srav, /* 7 */
+  _jr, /* 8 */
+  _jalr, /* 9 */
+  _movz, /* a */
+  _movn, /* b */
+  nullptr, /* c - syscall */
+  _break, /* d */
+  nullptr, /* e */
+  _sync, /* f */
+  _mfhi, /* 10 */
+  _mthi, /* 11 */
+  _mflo, /* 12 */
+  _mtlo, /* 13 */
+  nullptr, /* 14 */
+  nullptr, /* 15 */
+  nullptr, /* 16 */
+  nullptr, /* 17 */
+  _mult, /* 18 */
+  _multu, /* 19 */
+  _div, /* 1a */
+  _divu, /* 1b */
+  nullptr, /* 1c */
+  nullptr, /* 1d */
+  nullptr, /* 1e */
+  nullptr, /* 1f */
+  _add, /* 20 */
+  _addu, /* 21 */
+  nullptr, /* 22 - sub */
+  _subu, /* 23 */
+  _and, /* 24 */
+  _or, /* 25 */
+  _xor, /* 26 */
+  _nor, /* 27 */
+  nullptr, /* 28 */
+  nullptr, /* 29 */
+  _slt, /* 2a */
+  _sltu, /* 2b */
+  nullptr, /* 2c */
+  nullptr, /* 2d */
+  nullptr, /* 2e */
+  nullptr, /* 2f */
+  nullptr, /* 30 */
+  nullptr, /* 31 */
+  nullptr, /* 32 */
+  nullptr, /* 33 */
+  _teq, /* 34 */ 
+  nullptr, /* 35 */
+  nullptr, /* 36 */
+  nullptr, /* 37 */
+  nullptr, /* 38 */
+  nullptr, /* 39 */
+  nullptr, /* 3a */
+  nullptr, /* 3b */
+  nullptr, /* 3c */
+  nullptr, /* 3d */
+  nullptr, /* 3e */
+  nullptr  /* 3f */  
+};
+
+
 template <bool EL>
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
   uint32_t inst = bswap<EL>(*(uint32_t*)(mem + s->pc));
   //globals::execHisto[s->pc]++;
-  s->last_pc = s->pc;
-
-  
+  s->last_pc = s->pc;  
+  static_assert(EL==false, "not build for big endian");
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
+  
   uint32_t opcode = inst>>26;
   bool isRType = (opcode==0);
   bool isJType = ((opcode>>1)==1);
@@ -1338,10 +1685,17 @@ void execMips(state_t *s) {
   if(isRType) {
     uint32_t funct = inst & 63;
     uint32_t sa = (inst >> 6) & 31;
+    auto f = rtype_functs[funct];
+    assert(f != nullptr);
+    f(inst, s);
+#if 0
     switch(funct) 
       {
       case 0x00: /*sll*/
 	s->gpr[rd] = s->gpr[rt] << sa;
+	if(inst == 0) {
+	  s->nopcnt++;
+	}
 	s->pc += 4;
 	break;
       case 0x01: /* movci */
@@ -1372,6 +1726,11 @@ void execMips(state_t *s) {
 	break;
       case 0x08: { /* jr */
 	uint32_t jaddr = s->gpr[rs];
+#ifdef CALLSTACK_DEBUG	
+	if(rs == 31) {
+	  callstack.pop();
+	}
+#endif
 	s->pc += 4;
 	execMips<EL>(s);
 	s->pc = jaddr;
@@ -1379,6 +1738,9 @@ void execMips(state_t *s) {
       }
       case 0x09: { /* jalr */
 	uint32_t jaddr = s->gpr[rs];
+#ifdef CALLSTACK_DEBUG	
+	callstack.push(s->pc);
+#endif
 	s->gpr[31] = s->pc+8;
 	s->pc += 4;
 	execMips<EL>(s);
@@ -1523,6 +1885,7 @@ void execMips(state_t *s) {
 	exit(-1);
 	break;
       }
+#endif
   }
   else if(isSpecial2)
     execSpecial2(inst,s);
@@ -1535,6 +1898,9 @@ void execMips(state_t *s) {
       s->pc += 4;
     }
     else if(opcode==0x3) { /* jal */
+#ifdef CALLSTACK_DEBUG      
+      callstack.push(s->pc);
+#endif
       s->gpr[31] = s->pc+8;
       s->pc += 4;
     }
