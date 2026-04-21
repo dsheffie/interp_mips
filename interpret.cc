@@ -49,6 +49,10 @@ void execCoproc2(uint32_t inst, state_t *s);
 
 template <bool EL> void execMips(state_t *s);
 
+template<bool iside=false> uint32_t translate(state_t *s, uint32_t ea) {
+  return ea;
+}
+
 void execMipsEL(state_t *s) {
   //execMips<true>(s);
   assert(false);
@@ -295,7 +299,8 @@ template <bool EL, typename T>
 void lxc1(uint32_t inst, state_t *s) {
   mips_t mi(inst);
   uint32_t ea = s->gpr[mi.lc1x.base] + s->gpr[mi.lc1x.index];
-  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap<EL>(*reinterpret_cast<T*>(s->mem + ea));
+  uint32_t pa = translate(s, ea);    
+  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap<EL>(*reinterpret_cast<T*>(s->mem + pa));
   s->pc += 4;
 }
 
@@ -439,8 +444,10 @@ void _lw(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
-
-  s->gpr[rt] = bswap<EL>(*((int32_t*)(s->mem + ea))); 
+  uint32_t pa = translate(s, ea);
+  int32_t x = bswap<EL>(*((int32_t*)(s->mem + pa))); 
+  printf("%x = lw %x\n", x , ea);
+  s->gpr[rt] = x;
   s->pc += 4;
 }
 
@@ -456,7 +463,8 @@ void _lh(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  int16_t mem = bswap<EL>(*((int16_t*)(s->mem + ea)));
+  uint32_t pa = translate(s, ea);
+  int16_t mem = bswap<EL>(*((int16_t*)(s->mem + pa)));
   s->gpr[rt] = (int32_t)mem;
   s->pc +=4;
 }
@@ -474,7 +482,8 @@ static void _lb(uint32_t inst, state_t *s){
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  int8_t v = *((int8_t*)(s->mem + ea));
+  uint32_t pa = translate(s, ea);
+  int8_t v = *((int8_t*)(s->mem + pa));
   s->gpr[rt] = (int32_t)v;
   s->pc += 4;
 }
@@ -486,7 +495,8 @@ static void _lbu(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t zExt = (uint32_t)s->mem[ea];
+  uint32_t pa = translate(s, ea);
+  uint32_t zExt = (uint32_t)s->mem[pa];
   *((uint32_t*)&(s->gpr[rt])) = zExt;
 
   s->pc += 4;
@@ -500,7 +510,8 @@ void _lhu(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t zExt = bswap<EL>(*((uint16_t*)(s->mem + ea)));
+  uint32_t pa = translate(s, ea);
+  uint32_t zExt = bswap<EL>(*((uint16_t*)(s->mem + pa)));
   *((uint32_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
 }
@@ -518,7 +529,8 @@ void _sw(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int32_t*)(s->mem + ea)) = bswap<EL>(s->gpr[rt]);
+  uint32_t pa = translate(s, ea);
+  *((int32_t*)(s->mem + pa)) = bswap<EL>(s->gpr[rt]);
   
   s->pc += 4;
 }
@@ -543,7 +555,8 @@ void _sh(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
     
   uint32_t ea = s->gpr[rs] + imm;
-  *((int16_t*)(s->mem + ea)) = bswap<EL>(((int16_t)s->gpr[rt]));
+  uint32_t pa = translate(s, ea);  
+  *((int16_t*)(s->mem + pa)) = bswap<EL>(((int16_t)s->gpr[rt]));
   s->pc += 4;
 }
 
@@ -558,7 +571,8 @@ static void _sb(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
     
   uint32_t ea = s->gpr[rs] + imm;
-  s->mem[ea] = (uint8_t)s->gpr[rt];
+  uint32_t pa = translate(s, ea);
+  s->mem[pa] = (uint8_t)s->gpr[rt];
   
   s->pc +=4;
 }
@@ -588,15 +602,16 @@ void _swl(uint32_t inst, state_t *s) {
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
+  uint32_t pa = translate(s, ea);  
   if(EL)
     ma = 3 - ma;
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = x >> (8*ma);
   uint32_t m = ~((1U << (8*(4 - ma))) - 1);
   xx = (r & m) | xs;
-  *((uint32_t*)(s->mem + ea)) = bswap<EL>(xx);
+  *((uint32_t*)(s->mem + pa)) = bswap<EL>(xx);
   s->pc += 4;
 }
 
@@ -612,14 +627,15 @@ void _swr(uint32_t inst, state_t *s) {
   if(EL)
     ma = 3 - ma;
   ea &= 0xfffffffc;
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
+  uint32_t pa = translate(s, ea);    
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = 8*(3-ma);
   uint32_t rm = (1U << xs) - 1;
 
   xx = (x << xs) | (rm & r);
-  *((uint32_t*)(s->mem + ea)) = bswap<EL>(xx);
+  *((uint32_t*)(s->mem + pa)) = bswap<EL>(xx);
   s->pc += 4;
 }
 
@@ -633,9 +649,10 @@ void _lwl(uint32_t inst, state_t *s) {
   uint32_t ea = ((uint32_t)s->gpr[rs] + imm);
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
+  uint32_t pa = translate(s, ea);    
   if(EL)
     ma = 3 - ma;
-  int32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
+  int32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
   int32_t x =  s->gpr[rt];
   
   switch(ma)
@@ -668,7 +685,8 @@ void _lwr(uint32_t inst, state_t *s) {
   ea &= 0xfffffffc;
   if(EL)
     ma = 3-ma;
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + ea))); 
+  uint32_t pa = translate(s, ea);  
+  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
   uint32_t x =  s->gpr[rt];
 
   switch(ma)
@@ -855,7 +873,8 @@ void _ldc1(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->cpr1 + ft)) = bswap<EL>(*((int64_t*)(s->mem + ea))); 
+  uint32_t pa = translate(s, ea);    
+  *((int64_t*)(s->cpr1 + ft)) = bswap<EL>(*((int64_t*)(s->mem + pa))); 
   s->pc += 4;
 }
 
@@ -870,7 +889,8 @@ void _sdc1(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  *((int64_t*)(s->mem + ea)) = bswap<EL>((*(int64_t*)(s->cpr1 + ft)));
+  uint32_t pa = translate(s, ea);    
+  *((int64_t*)(s->mem + pa)) = bswap<EL>((*(int64_t*)(s->cpr1 + ft)));
   s->pc += 4;
 }
 
@@ -881,7 +901,8 @@ void _lwc1(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t v = bswap<EL>(*((uint32_t*)(s->mem + ea))); 
+  uint32_t pa = translate(s, ea);  
+  uint32_t v = bswap<EL>(*((uint32_t*)(s->mem + pa))); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
 }
@@ -899,8 +920,9 @@ void _swc1(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
+  uint32_t pa = translate(s, ea);    
   uint32_t v = *((uint32_t*)(s->cpr1+ft));
-  *((uint32_t*)(s->mem + ea)) = bswap<EL>(v);
+  *((uint32_t*)(s->mem + pa)) = bswap<EL>(v);
   s->pc += 4;
 }
 
@@ -1903,12 +1925,13 @@ static const func_t itype_functs[64] = {
 template <bool EL>
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
-  uint32_t inst = bswap<EL>(*(uint32_t*)(mem + s->pc));
+  uint32_t ppc = translate<true>(s, s->pc);
+  uint32_t inst = bswap<EL>(*(uint32_t*)(mem + ppc));
   //globals::execHisto[s->pc]++;
   s->last_pc = s->pc;  
   static_assert(EL==false, "not build for big endian");
-  //std::cout << std::hex << s->pc << std::dec << " : "
-  //<< getAsmString(inst, s->pc) << "\n";
+  std::cout << std::hex << s->pc << std::dec << " : "
+	    << getAsmString(inst, s->pc) << "\n";
   
   uint32_t opcode = inst>>26;
   bool isRType = (opcode==0);

@@ -134,10 +134,6 @@ int main(int argc, char *argv[]) {
 	      << KNRM << "\n";
   }
   
-  if(filename.size()==0) {
-    std::cerr << "INTERP : no file\n";
-    return -1;
-  }
 
   /* Build argc and argv */
   globals::sysArgc = buildArgcArgv(filename.c_str(),sysArgs,globals::sysArgv);
@@ -159,14 +155,26 @@ int main(int argc, char *argv[]) {
     std::cerr << "INTERP : couldn't allocate backing memory!\n";
     exit(-1);
   }
+
+  {
+    struct stat ss;
+    int fd = open("ip20prom.070-8116-004.BE.bin", O_RDONLY);
+    if(fd<0) {
+      printf("INTERP: open() returned %d\n", fd);
+      exit(-1);
+    }
+    rc = fstat(fd,&ss);
+    if(rc<0) {
+      printf("INTERP: fstat() returned %d\n", rc);
+      exit(-1);
+    }
+    char *buf = (char*)mmap(nullptr, ss.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    memcpy(s->mem+0xbfc00000, buf, ss.st_size);
+    s->pc = 0xbfc00000;
+    close(fd);
+  }
+
   
-  if(isDump) {
-    loadState(*s,filename);
-  }
-  else {
-    load_elf(filename.c_str(), s);
-    mkMonitorVectors(s);
-  }
   
   initCapstone();
 
