@@ -74,6 +74,11 @@ T bswap(T x) {
   return x;
 }
 
+template <bool EL, typename T, INTEGRAL_ENABLE_IF(1,T)>
+T bswap(T x) {
+  return x;
+}
+
 template <bool EL, typename T, INTEGRAL_ENABLE_IF(2,T)> 
 T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");

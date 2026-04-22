@@ -49,8 +49,44 @@ void execCoproc2(uint32_t inst, state_t *s);
 
 template <bool EL> void execMips(state_t *s);
 
-template<bool iside=false> uint32_t translate(state_t *s, uint32_t ea) {
+template<bool iside=false>
+uint32_t translate(state_t *s, uint32_t ea, int &fault) {
+  fault = 0;
+  uint32_t seg = (ea >> 28) & 0xf;
+  //printf("ea %x maps to segment %d\n", ea, seg);
+  switch(seg)
+    {
+    case 10: /* kseg1 */
+    case 11: 
+      return (ea & 0x1fffffff);
+      break;
+    default:
+      fault = 1;
+      break;
+    }
   return ea;
+}
+
+template<typename T, bool EL>
+T read_access(state_t *s, uint32_t pa) {
+  uint8_t *mem = s->mem;
+  if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
+    uint32_t offs = pa & 0xfffff;
+    return s->mc->read(offs);
+  }
+  
+  T x = bswap<EL>(*(reinterpret_cast<T*>(mem + pa)));
+  return x;
+}
+
+template<typename T, bool EL>
+void store_access(T x, state_t *s, uint32_t pa) {
+  uint8_t *mem = s->mem;
+  if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
+    uint32_t offs = pa & 0xfffff;
+    s->mc->write(offs, x);
+  }  
+  *reinterpret_cast<T*>(s->mem + pa) = bswap<EL>(x);  
 }
 
 void execMipsEL(state_t *s) {
@@ -98,9 +134,9 @@ static void setConditionCode(state_t *s, uint32_t v, uint32_t cc);
 
 
 /* IType instructions */
-static void _lb(uint32_t inst, state_t *s);
-static void _lbu(uint32_t inst, state_t *s);
-static void _sb(uint32_t inst, state_t *s);
+static int _lb(uint32_t inst, state_t *s);
+static int _lbu(uint32_t inst, state_t *s);
+static int _sb(uint32_t inst, state_t *s);
 
 
 static void _mtc1(uint32_t inst, state_t *s);
@@ -151,18 +187,6 @@ static void setConditionCode(state_t *s, uint32_t v, uint32_t cc) {
   s->fcr1[CP1_CR25] = (s->fcr1[CP1_CR25] & m1) | ((1U<<cc) & m2);
 }
 
-
-void mkMonitorVectors(state_t *s) {
-  for (uint32_t loop = 0; (loop < IDT_MONITOR_SIZE); loop += 4) {
-      uint32_t vaddr = IDT_MONITOR_BASE + loop;
-      uint32_t insn = (RSVD_INSTRUCTION |
-		       (((loop >> 2) & RSVD_INSTRUCTION_ARG_MASK)
-			<< RSVD_INSTRUCTION_ARG_SHIFT));
-      *(uint32_t*)(s->mem+vaddr) = globals::isMipsEL ?
-	bswap<true,uint32_t>(insn) :
-	bswap<false,uint32_t>(insn);
-  }
-}
 
 
 
@@ -296,43 +320,46 @@ struct c1xExec {
 
 
 template <bool EL, typename T>
-void lxc1(uint32_t inst, state_t *s) {
+int lxc1(uint32_t inst, state_t *s) {
   mips_t mi(inst);
+  int fault;
   uint32_t ea = s->gpr[mi.lc1x.base] + s->gpr[mi.lc1x.index];
-  uint32_t pa = translate(s, ea);    
-  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = bswap<EL>(*reinterpret_cast<T*>(s->mem + pa));
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  *reinterpret_cast<T*>(s->cpr1 + mi.lc1x.fd) = read_access<T, EL>(s, pa);
   s->pc += 4;
+  return 0;
 }
 
 template <bool EL>
-void execCoproc1x(uint32_t inst, state_t *s) {
+int execCoproc1x(uint32_t inst, state_t *s) {
   mips_t mi(inst);
-
+  int fault = 0;
   switch(mi.lc1x.id)
     {
     case 0:
       //lwxc1
-      lxc1<EL,int32_t>(inst, s);
-      return;
+      return lxc1<EL,int32_t>(inst, s);
     case 1:
       //ldxc1
-      lxc1<EL,int64_t>(inst, s);
-      return;
+      return lxc1<EL,int64_t>(inst, s);
     default:
       break;
     }
-  
+
   switch(mi.c1x.fmt)
    {
    case 0: {
      c1xExec<float> e;
      e(mi.c1x, s);
-     return;
+     return 0;
    }
    case 1: {
      c1xExec<double> e;
      e(mi.c1x, s);
-     return;
+     return 0;
    }
    default:
      std::cerr << "weird type in do_c1x_op @ 0x"
@@ -340,6 +367,8 @@ void execCoproc1x(uint32_t inst, state_t *s) {
 	       <<"\n";
      exit(-1);
    }
+
+  return 0;
 }
 
 
@@ -438,105 +467,110 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
 
 
 template <bool EL>
-void _lw(uint32_t inst, state_t *s) {
+int _lw(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = (uint32_t)s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  int32_t x = bswap<EL>(*((int32_t*)(s->mem + pa))); 
-  printf("%x = lw %x\n", x , ea);
+  int fault;  
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  int32_t x = read_access<int32_t, EL>(s, pa);
   s->gpr[rt] = x;
   s->pc += 4;
-}
-
-void _lw_be(uint32_t inst, state_t *s) {
-  _lw<false>(inst, s);
+  return 0;
 }
 
 template <bool EL>
-void _lh(uint32_t inst, state_t *s) {
+int _lh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  int16_t mem = bswap<EL>(*((int16_t*)(s->mem + pa)));
-  s->gpr[rt] = (int32_t)mem;
+  int fault;  
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  int16_t x = read_access<int16_t, EL>(s, pa);
+  s->gpr[rt] = (int32_t)x;
   s->pc +=4;
+  return 0;
 }
 
-
-void _lh_be(uint32_t inst, state_t *s) {
-  _lh<false>(inst, s);
-}
-
-
-static void _lb(uint32_t inst, state_t *s){
+template <bool EL>
+int _lb(uint32_t inst, state_t *s){
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  int8_t v = *((int8_t*)(s->mem + pa));
-  s->gpr[rt] = (int32_t)v;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  int8_t x = read_access<int8_t,EL>(s, pa);  
+  s->gpr[rt] = (int32_t)x;
   s->pc += 4;
+  return 0;
 }
 
-static void _lbu(uint32_t inst, state_t *s) {
+static int
+_lbu(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }  
   uint32_t zExt = (uint32_t)s->mem[pa];
   *((uint32_t*)&(s->gpr[rt])) = zExt;
-
   s->pc += 4;
+  return fault;
 }
 
 template <bool EL>
-void _lhu(uint32_t inst, state_t *s) {
+int _lhu(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  uint32_t zExt = bswap<EL>(*((uint16_t*)(s->mem + pa)));
-  *((uint32_t*)&(s->gpr[rt])) = zExt;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  uint16_t x = read_access<uint16_t, EL>(s, pa);  
+  *((uint32_t*)&(s->gpr[rt])) = static_cast<uint32_t>(x);
   s->pc += 4;
+  return 0;
 }
-
-void _lhu_be(uint32_t inst, state_t *s) {
-  _lhu<false>(inst, s);
-}
-
-
 
 template <bool EL>
-void _sw(uint32_t inst, state_t *s) {
+int _sw(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  *((int32_t*)(s->mem + pa)) = bswap<EL>(s->gpr[rt]);
-  
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  store_access<int32_t, EL>(s->gpr[rt], s, pa);
   s->pc += 4;
-}
-
-void _sw_be(uint32_t inst, state_t *s) {
-  _sw<false>(inst, s);
+  return 0;
 }
 
 template <bool EL>
@@ -548,33 +582,38 @@ void _sc(uint32_t inst, state_t *s) {
 
 
 template <bool EL>
-void _sh(uint32_t inst, state_t *s) {
+int _sh(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
     
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);  
-  *((int16_t*)(s->mem + pa)) = bswap<EL>(((int16_t)s->gpr[rt]));
+  int fault;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  store_access<int16_t, EL>(static_cast<int16_t>(s->gpr[rt]), s, pa);  
   s->pc += 4;
+  return 0;
 }
 
-void _sh_be(uint32_t inst, state_t *s) {
-  _sh<false>(inst, s);
-}
-
-static void _sb(uint32_t inst, state_t *s) {
+template <bool EL>
+int _sb(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-    
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);
-  s->mem[pa] = (uint8_t)s->gpr[rt];
-  
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  store_access<uint8_t, EL>(static_cast<uint8_t>(s->gpr[rt]), s, pa);    
   s->pc +=4;
+  return 0;
 }
 
 static void _mtc1(uint32_t inst, state_t *s) {
@@ -593,66 +632,77 @@ static void _mfc1(uint32_t inst, state_t *s) {
 
 
 template <bool EL>
-void _swl(uint32_t inst, state_t *s) {
+int _swl(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
-  uint32_t pa = translate(s, ea);  
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
   if(EL)
     ma = 3 - ma;
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
+  uint32_t r = read_access<int32_t, EL>(s, pa); 
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = x >> (8*ma);
   uint32_t m = ~((1U << (8*(4 - ma))) - 1);
   xx = (r & m) | xs;
-  *((uint32_t*)(s->mem + pa)) = bswap<EL>(xx);
+  store_access<uint32_t, EL>(xx, s, pa);
   s->pc += 4;
+  return 0;
 }
 
 template <bool EL>
-void _swr(uint32_t inst, state_t *s) {
+int _swr(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-   
+  int fault;
   uint32_t ea = s->gpr[rs] + imm;
   uint32_t ma = ea & 3;
   if(EL)
     ma = 3 - ma;
   ea &= 0xfffffffc;
-  uint32_t pa = translate(s, ea);    
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  uint32_t r = read_access<int32_t, EL>(s, pa);   
   uint32_t xx=0,x = s->gpr[rt];
   
   uint32_t xs = 8*(3-ma);
   uint32_t rm = (1U << xs) - 1;
 
   xx = (x << xs) | (rm & r);
-  *((uint32_t*)(s->mem + pa)) = bswap<EL>(xx);
+  store_access<uint32_t, EL>(xx, s, pa);  
   s->pc += 4;
+  return 0;
 }
 
 template <bool EL>
-void _lwl(uint32_t inst, state_t *s) {
+int _lwl(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
-  
+  int fault;
   uint32_t ea = ((uint32_t)s->gpr[rs] + imm);
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
-  uint32_t pa = translate(s, ea);    
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
   if(EL)
     ma = 3 - ma;
-  int32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
+  int32_t r = read_access<int32_t, EL>(s, pa);
   int32_t x =  s->gpr[rt];
   
   switch(ma)
@@ -671,22 +721,26 @@ void _lwl(uint32_t inst, state_t *s) {
       break;
     }
   s->pc += 4;
+  return 0;
 }
 
 template<bool EL>
-void _lwr(uint32_t inst, state_t *s) {
+int _lwr(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
- 
+  int fault;
   uint32_t ea = ((uint32_t)s->gpr[rs] + imm);
   uint32_t ma = ea & 3;
   ea &= 0xfffffffc;
   if(EL)
     ma = 3-ma;
-  uint32_t pa = translate(s, ea);  
-  uint32_t r = bswap<EL>(*((int32_t*)(s->mem + pa))); 
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  int32_t r = read_access<int32_t, EL>(s, pa);
   uint32_t x =  s->gpr[rt];
 
   switch(ma)
@@ -705,225 +759,77 @@ void _lwr(uint32_t inst, state_t *s) {
       break;
     }
   s->pc += 4;
-}
-
-template <bool EL>
-void _monitorBody(uint32_t inst, state_t *s) {
- uint32_t reason = (inst >> RSVD_INSTRUCTION_ARG_SHIFT) & RSVD_INSTRUCTION_ARG_MASK;
-  reason >>= 1;
-  int32_t fd=-1,nr=-1,flags=-1;
-  char *path;
-  struct timeval tp;
-  timeval32_t tp32;
-  struct tms tms_buf;
-  tms32_t tms32_buf;
-  struct stat native_stat;
-  stat32_t *host_stat = nullptr;
-  
-  switch(reason)
-    {
-    case 6: /* int open(char *path, int flags) */
-      path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
-      flags = remapIOFlags(s->gpr[R_a1]);
-      fd = open(path, flags, S_IRUSR|S_IWUSR);
-
-      //std::cout << s->icnt << " open " << path << ", fd = " << fd << "\n";
-      
-      s->gpr[R_v0] = fd;
-      break;
-    case 7: /* int read(int file,char *ptr,int len) */
-      fd = s->gpr[R_a0];
-      nr = s->gpr[R_a2];
-      s->gpr[R_v0] = read(fd, (char*)(s->mem + (uint32_t)s->gpr[R_a1]), nr);
-      if(fd > 2) {
-	std::cout << s->icnt << " read " << fd << ","
-		  << std::hex << s->gpr[R_a1] << std::dec
-		  << "," << nr
-		  << " = "
-		  << s->gpr[R_v0]
-		  << "\n";
-      }
-      break;
-    case 8: 
-      /* int write(int file, char *ptr, int len) */
-      fd = s->gpr[R_a0];
-      nr = s->gpr[R_a2];
-      //std::cout << s->icnt << " write " << fd << "," << std::hex << s->gpr[R_a1] << std::dec << "," << nr << "\n";      
-      s->gpr[R_v0] = (int32_t)write(fd, (void*)(s->mem + (uint32_t)s->gpr[R_a1]), nr);
-      if(fd==1)
-	fflush(stdout);
-      else if(fd==2)
-	fflush(stderr);
-      break;
-    case 9:
-      s->gpr[R_v0] = lseek(s->gpr[R_a0], s->gpr[R_a1], s->gpr[R_a2]);
-      break;
-    case 10:
-      fd = s->gpr[R_a0];
-      //std::cout << s->icnt << " close " << fd << "\n";
-      if(fd>2)
-	s->gpr[R_v0] = (int32_t)close(fd);
-      else
-	s->gpr[R_v0] = 0;
-      break;
-    case 13:
-      /* fstat */
-      fd = s->gpr[R_a0];
-      s->gpr[R_v0] = fstat(fd, &native_stat);
-      host_stat = (stat32_t*)(s->mem + (uint32_t)s->gpr[R_a1]); 
-
-      host_stat->st_dev = bswap<EL>((uint32_t)native_stat.st_dev);
-      host_stat->st_ino = bswap<EL>((uint16_t)native_stat.st_ino);
-      host_stat->st_mode = bswap<EL>((uint32_t)native_stat.st_mode);
-      host_stat->st_nlink = bswap<EL>((uint16_t)native_stat.st_nlink);
-      host_stat->st_uid = bswap<EL>((uint16_t)native_stat.st_uid);
-      host_stat->st_gid = bswap<EL>((uint16_t)native_stat.st_gid);
-      host_stat->st_size = bswap<EL>((uint32_t)native_stat.st_size);
-      host_stat->_st_atime = bswap<EL>((uint32_t)native_stat.st_atime);
-      host_stat->_st_mtime = 0;
-      host_stat->_st_ctime = 0;
-      host_stat->st_blksize = bswap<EL>((uint32_t)native_stat.st_blksize);
-      host_stat->st_blocks = bswap<EL>((uint32_t)native_stat.st_blocks);
-      break;
-    case 33: {
-      uint32_t uptr = *(uint32_t*)(s->gpr + R_a0);
-      if(globals::enClockFuncts) {
-	gettimeofday(&tp, nullptr);
-	tp32.tv_sec = bswap<EL>((uint32_t)tp.tv_sec);
-	tp32.tv_usec = bswap<EL>((uint32_t)tp.tv_usec);
-      }
-      else {
-	uint64_t mips = globals::icountMIPS*1000000;
-	tp.tv_sec = s->icnt / mips;
-	tp.tv_usec = ((s->icnt % mips) * 1000000)/ mips;
-      }
-      tp32.tv_sec = bswap<EL>((uint32_t)tp.tv_sec);
-      tp32.tv_usec = bswap<EL>((uint32_t)tp.tv_usec);      
-      *((timeval32_t*)(s->mem + uptr)) = tp32;
-      s->gpr[R_v0] = 0;
-      break;
-    }
-    case 34: {
-      uint32_t uptr = *(uint32_t*)(s->gpr + R_a0);
-      if(globals::enClockFuncts) {
-	*((uint32_t*)(&s->gpr[R_v0])) = times(&tms_buf);
-      }
-      else {
-	uint64_t mips = globals::icountMIPS*1000000;
-        tms_buf.tms_utime = (s->icnt/mips)*100;
-	tms_buf.tms_stime = 0;
-	tms_buf.tms_cutime = 0;
-	tms_buf.tms_cstime = 0;	
-      }
-      tms32_buf.tms_utime = bswap<EL>((uint32_t)tms_buf.tms_utime);
-      tms32_buf.tms_stime = bswap<EL>((uint32_t)tms_buf.tms_stime);
-      tms32_buf.tms_cutime = bswap<EL>((uint32_t)tms_buf.tms_cutime);
-      tms32_buf.tms_cstime = bswap<EL>((uint32_t)tms_buf.tms_cstime);      
-      *((tms32_t*)(s->mem + uptr)) = tms32_buf;
-      break;
-    }
-    case 35:
-      /* int getargs(char **argv) */
-      for(int i = 0; i < std::min(MARGS, globals::sysArgc); i++) {
-	  uint32_t arrayAddr = ((uint32_t)s->gpr[R_a0])+4*i;
-	  uint32_t ptr = bswap<EL>(*((uint32_t*)(s->mem + arrayAddr)));
-	  strcpy((char*)(s->mem + ptr), globals::sysArgv[i]);
-	}
-      s->gpr[R_v0] = globals::sysArgc;
-      break;
-    case 37:
-      /*char *getcwd(char *buf, uint32_t size) */
-      path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
-      getcwd(path, (uint32_t)s->gpr[R_a1]);
-      s->gpr[R_v0] = s->gpr[R_a0];
-      break;
-    case 38:
-      /* int chdir(const char *path); */
-      path = (char*)(s->mem + (uint32_t)s->gpr[R_a0]);
-      //printf("chdir(%s)\n", path);
-      s->gpr[R_v0] = chdir(path);
-      break;
-    case 55: 
-      /* void get_mem_info(unsigned int *ptr) */
-      /* in:  A0 = pointer to three word memory location */
-      /* out: [A0 + 0] = size */
-      /*      [A0 + 4] = instruction cache size */
-      /*      [A0 + 8] = data cache size */
-      /* 256 MBytes of DRAM */
-      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 0)) = bswap<EL>(K1SIZE);
-      /* No Icache */
-      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 4)) = 0;
-      /* No Dcache */
-      *((uint32_t*)(s->mem + (uint32_t)s->gpr[R_a0] + 8)) = 0;
-      break;
-    default:
-      printf("unhandled monitor instruction (reason = %d)\n", reason);
-      exit(-1);
-      break;
-    }
-  s->pc = s->gpr[31];
+  return 0;
 }
 
 
 
 template <bool EL>
-void _ldc1(uint32_t inst, state_t *s) {
+int _ldc1(uint32_t inst, state_t *s) {
+  uint32_t ft = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  int fault;
+  uint32_t ea = s->gpr[rs] + imm;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  *((int64_t*)(s->cpr1 + ft)) = read_access<int64_t, EL>(s, pa);
+  s->pc += 4;
+  return 0;
+}
+
+template <bool EL>
+int _sdc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);    
-  *((int64_t*)(s->cpr1 + ft)) = bswap<EL>(*((int64_t*)(s->mem + pa))); 
+  int fault;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  store_access<int64_t, EL>((*(int64_t*)(s->cpr1 + ft)), s, pa);
   s->pc += 4;
-}
-
-void _ldc1_be(uint32_t inst, state_t *s) {
-  _ldc1<false>(inst, s);
+  return 0;
 }
 
 template <bool EL>
-void _sdc1(uint32_t inst, state_t *s) {
+int _lwc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);    
-  *((int64_t*)(s->mem + pa)) = bswap<EL>((*(int64_t*)(s->cpr1 + ft)));
+  int fault;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  *((uint32_t*)(s->cpr1 + ft)) = read_access<uint32_t, EL>(s, pa);  
   s->pc += 4;
+  return 0;
 }
 
 template <bool EL>
-void _lwc1(uint32_t inst, state_t *s) {
+int _swc1(uint32_t inst, state_t *s) {
   uint32_t ft = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);  
-  uint32_t v = bswap<EL>(*((uint32_t*)(s->mem + pa))); 
-  *((float*)(s->cpr1 + ft)) = *((float*)&v);
+  int fault;
+  uint32_t pa = translate(s, ea, fault);
+  if(fault) {
+    return fault;
+  }
+  store_access<uint32_t, EL>((*(uint32_t*)(s->cpr1 + ft)), s, pa);  
   s->pc += 4;
-}
-
-void _lwc1_be(uint32_t inst, state_t *s) {
-  _lwc1<false>(inst, s);
-}
-
-
-
-template <bool EL>
-void _swc1(uint32_t inst, state_t *s) {
-  uint32_t ft = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = (int32_t)himm;
-  uint32_t ea = s->gpr[rs] + imm;
-  uint32_t pa = translate(s, ea);    
-  uint32_t v = *((uint32_t*)(s->cpr1+ft));
-  *((uint32_t*)(s->mem + pa)) = bswap<EL>(v);
-  s->pc += 4;
+  return 0;
 }
 
 static void _truncl(uint32_t inst, state_t *s) {
@@ -1416,9 +1322,6 @@ static void _sllv(uint32_t inst, state_t *s) {
   s->pc += 4;
 }
 
-static void _monitor(uint32_t inst, state_t *s) {
-  _monitorBody<false>(inst, s);
-}
 
 static void _srlv(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
@@ -1792,7 +1695,7 @@ static const func_t rtype_functs[64] = {
   _srl, /* 2 */
   _sra, /* 3 */
   _sllv, /* 4 */
-  _monitor, /* 5 */
+  nullptr, /* 5 */
   _srlv, /* 6 */
   _srav, /* 7 */
   _jr, /* 8 */
@@ -1886,28 +1789,28 @@ static const func_t itype_functs[64] = {
   nullptr, /* 1d */
   nullptr, /* 1e */
   nullptr, /* 1f */
-  _lb, /* 20 */
-  _lh_be, /* 21 */
+  nullptr, /*_lb,*/ /* 20 */
+  nullptr, /*_lh_be,*/ /* 21 */
   nullptr, /* 22 - sub */
-  _lw_be, /* 23 */
-  _lbu, /* 24 */
-  _lhu_be, /* 25 */
+  nullptr,/*_lw_be,*/ /* 23 */
+  nullptr,/*_lbu*,/ /* 24 */
+  nullptr,/*_lhu_be,*/ /* 25 */
   nullptr, /* 26 */
   nullptr, /* 27 */
-  _sb, /* 28 */
-  _sh_be, /* 29 */
+  nullptr, /*_sb,*/ /* 28 */
+  nullptr, /*_sh_be,*/ /* 29 */
   nullptr, /* 2a */
-  _sw_be, /* 2b */
+  nullptr, /*_sw_be,*/ /* 2b */
   nullptr, /* 2c */
   nullptr, /* 2d */
   nullptr, /* 2e */
   nullptr, /* 2f */
   nullptr, /* 30 */
-  _lwc1_be, /* 31 */
+  nullptr, /*_lwc1_be,*/ /* 31 */
   nullptr, /* 32 */
   nullptr, /* 33 */
   nullptr, /* 34 */ 
-  _ldc1_be, /* 35 */
+  nullptr, /*_ldc1_be,*/ /* 35 */
   nullptr, /* 36 */
   nullptr, /* 37 */
   nullptr, /* 38 */
@@ -1925,28 +1828,41 @@ static const func_t itype_functs[64] = {
 template <bool EL>
 void execMips(state_t *s) {
   uint8_t *mem = s->mem;
-  uint32_t ppc = translate<true>(s, s->pc);
-  uint32_t inst = bswap<EL>(*(uint32_t*)(mem + ppc));
+  int fault = 0;
+  uint32_t opcode,rs,rt,rd,inst; 
+  bool isRType,isJType,isCoproc0,isCoproc1,isCoproc1x,isCoproc2;
+  bool isSpecial2,isSpecial3,isLoadLinked,isStoreCond;
+  uint32_t ppc = translate<true>(s, s->pc, fault);
+  if(fault) {
+    printf("generating fetch fault\n");
+    goto handle_exception;
+  }
+  inst = bswap<EL>(*(uint32_t*)(mem + ppc));
   //globals::execHisto[s->pc]++;
   s->last_pc = s->pc;  
   static_assert(EL==false, "not build for big endian");
-  std::cout << std::hex << s->pc << std::dec << " : "
-	    << getAsmString(inst, s->pc) << "\n";
-  
-  uint32_t opcode = inst>>26;
-  bool isRType = (opcode==0);
-  bool isJType = ((opcode>>1)==1);
-  bool isCoproc0 = (opcode == 0x10);
-  bool isCoproc1 = (opcode == 0x11);
-  bool isCoproc1x = (opcode == 0x13);
-  bool isCoproc2 = (opcode == 0x12);
-  bool isSpecial2 = (opcode == 0x1c); 
-  bool isSpecial3 = (opcode == 0x1f);
-  bool isLoadLinked = (opcode == 0x30);
-  bool isStoreCond = (opcode == 0x38);
-  uint32_t rs = (inst >> 21) & 31;
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rd = (inst >> 11) & 31;
+  if(globals::log) {
+    std::cout << std::hex << s->pc << std::dec << " : "
+	      << getAsmString(inst, s->pc) << "\n";
+
+
+  }
+
+  opcode = inst>>26;
+  isRType = (opcode==0);
+  isJType = ((opcode>>1)==1);
+  isCoproc0 = (opcode == 0x10);
+  isCoproc1 = (opcode == 0x11);
+  isCoproc1x = (opcode == 0x13);
+  isCoproc2 = (opcode == 0x12);
+  isSpecial2 = (opcode == 0x1c); 
+  isSpecial3 = (opcode == 0x1f);
+  isLoadLinked = (opcode == 0x30);
+  isStoreCond = (opcode == 0x38);
+  rs = (inst >> 21) & 31;
+  rt = (inst >> 16) & 31;
+  rd = (inst >> 11) & 31;
+  //std::cout << getGPRName(R_a1) << " " << s->gpr[R_a1] << "\n";  
   s->icnt++;
     
   if(isRType) {
@@ -1982,8 +1898,9 @@ void execMips(state_t *s) {
   }
   else if(isCoproc1) 
     execCoproc1<EL>(inst,s);
-  else if(isCoproc1x)
-    execCoproc1x<EL>(inst,s);
+  else if(isCoproc1x) {
+    fault = execCoproc1x<EL>(inst,s);
+  }
   else if(isCoproc2) {
     printf("coproc2 unimplemented\n");  exit(-1);
   }
@@ -2000,26 +1917,55 @@ void execMips(state_t *s) {
       f(inst, s);
       return;
     }
-    
     switch(opcode) 
       {
+      case 0x20:
+	fault = _lb<EL>(inst, s);
+	break;
+      case 0x21:
+	fault = _lh<EL>(inst, s);
+	break;	
       case 0x22: 
-	_lwl<EL>(inst, s);
+	fault = _lwl<EL>(inst, s);
+	break;
+      case 0x23:
+	fault = _lw<EL>(inst, s);
+	break;
+      case 0x24:
+	fault = _lbu(inst, s);
+	break;
+      case 0x25:
+	fault = _lhu<EL>(inst, s);
 	break;
       case 0x26:
-	_lwr<EL>(inst, s);
+	fault = _lwr<EL>(inst, s);
+	break;
+      case 0x28:
+	fault = _sb<EL>(inst, s);
+	break;
+      case 0x29:
+	fault = _sh<EL>(inst, s);
 	break;
       case 0x2a:
-	_swl<EL>(inst, s); 
+	fault = _swl<EL>(inst, s); 
 	break;
+      case 0x2b:
+	fault = _sw<EL>(inst, s);
+	break;	
       case 0x2e:
-	_swr<EL>(inst, s); 
+	fault = _swr<EL>(inst, s); 
+	break;
+      case 0x31:
+	fault = _lwc1<EL>(inst, s);
+	break;
+      case 0x35:
+	fault = _ldc1<EL>(inst, s);
 	break;
       case 0x39:
-	_swc1<EL>(inst, s);
+	fault = _swc1<EL>(inst, s);
 	break;
       case 0x3D:
-	_sdc1<EL>(inst, s);
+	fault = _sdc1<EL>(inst, s);
 	break;
       default:
 	printf("%s: Unknown IType instruction (bits=%x) @ pc=0x%08x\n", 
@@ -2027,5 +1973,14 @@ void execMips(state_t *s) {
 	exit(-1);
 	break;
       }
+    if(fault) {
+      goto handle_exception;
+    }
   }
+  return;
+
+ handle_exception:
+  printf("got fault %x\n", fault);
+  assert(false);
+  
 }

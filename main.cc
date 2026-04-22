@@ -26,10 +26,9 @@
 
 extern const char* githash;
 
-char **globals::sysArgv = nullptr;
-int globals::sysArgc = 0;
 bool globals::enClockFuncts = false;
 bool globals::isMipsEL = false;
+bool globals::log = false;
 uint64_t globals::icountMIPS = 500;
 bool globals::silent = true;
 std::map<uint32_t, uint64_t> globals::execHisto;
@@ -61,35 +60,6 @@ static inline void dump_histo(const std::string &fname,
 }
 
 
-static int buildArgcArgv(const char *filename, const std::string &sysArgs, char **&argv){
-  int cnt = 0;
-  std::vector<std::string> args;
-  char **largs = 0;
-  args.push_back(std::string(filename));
-
-  char *ptr = nullptr;
-  char *c_str = strdup(sysArgs.c_str());
-  if(sysArgs.size() != 0)
-    ptr = strtok(c_str, " ");
-
-  while(ptr && (cnt<MARGS)) {
-    args.push_back(std::string(ptr));
-    ptr = strtok(nullptr, " ");
-    cnt++;
-  }
-  largs = new char*[args.size()];
-  for(size_t i = 0; i < args.size(); i++) {
-    const std::string & s = args[i];
-    size_t l = strlen(s.c_str());
-    largs[i] = new char[l+1];
-    memset(largs[i],0,sizeof(char)*(l+1));
-    memcpy(largs[i],s.c_str(),sizeof(char)*l);
-  }
-  argv = largs;
-  free(c_str);
-  return (int)args.size();
-}
-
 int main(int argc, char *argv[]) {
   bool bigEndianMips = true;
   namespace po = boost::program_options; 
@@ -104,16 +74,22 @@ int main(int argc, char *argv[]) {
     po::options_description desc("Options");
     desc.add_options() 
       ("help", "Print help messages") 
-      ("args,a", po::value<std::string>(&sysArgs), "arguments to mips binary") 
-      ("clock,c", po::value<bool>(&globals::enClockFuncts)->default_value(false), "enable wall-clock")
-      ("hash,h", po::value<bool>(&hash)->default_value(false), "hash memory at end of execution")
+      ("args,a", po::value<std::string>(&sysArgs),
+       "arguments to mips binary") 
+      ("clock,c", po::value<bool>(&globals::enClockFuncts)->default_value(false),
+       "enable wall-clock")
+      ("hash,h", po::value<bool>(&hash)->default_value(false),
+       "hash memory at end of execution")
       ("file,f", po::value<std::string>(&filename), "mips binary")
       ("isdump,d", po::value<bool>(&isDump)->default_value(false), "is a dump")
-      ("dumpicnt", po::value<int64_t>(&dumpIcnt)->default_value(-1L), "dump after n instructions")
+      ("dumpicnt", po::value<int64_t>(&dumpIcnt)->default_value(-1L),
+       "dump after n instructions")
       ("dumpname", po::value<std::string>(&dumpname), "dump file name")
-      ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions to execute")
-      ("silent,s", po::value<bool>(&globals::silent)->default_value(true), "no interpret messages")
-      ("icountMIPS", po::value<uint64_t>(&globals::icountMIPS)->default_value(500), "millions of of instructions per second for time calculation")
+      ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)),
+       "max instructions to execute")
+      ("silent,s", po::value<bool>(&globals::silent)->default_value(true),
+       "no interpret messages")
+      ("log", po::value<bool>(&globals::log)->default_value(false), "log instr")
       ; 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -136,7 +112,6 @@ int main(int argc, char *argv[]) {
   
 
   /* Build argc and argv */
-  globals::sysArgc = buildArgcArgv(filename.c_str(),sysArgs,globals::sysArgv);
 
   int rc = posix_memalign((void**)&s, pgSize, pgSize); 
   initState(s);
@@ -151,6 +126,8 @@ int main(int argc, char *argv[]) {
   assert(mempt != reinterpret_cast<void*>(-1));
   assert(madvise(mempt, 1UL<<32, MADV_DONTNEED)==0);
   s->mem = reinterpret_cast<uint8_t*>(mempt);
+  s->mc = new sgi_mc(s->mem);
+  
   if(s->mem == nullptr) {
     std::cerr << "INTERP : couldn't allocate backing memory!\n";
     exit(-1);
@@ -168,8 +145,11 @@ int main(int argc, char *argv[]) {
       printf("INTERP: fstat() returned %d\n", rc);
       exit(-1);
     }
-    char *buf = (char*)mmap(nullptr, ss.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    memcpy(s->mem+0xbfc00000, buf, ss.st_size);
+    char *buf = (char*)mmap(nullptr, ss.st_size,
+			    PROT_READ, MAP_PRIVATE, fd, 0);
+
+    memcpy(s->mem+(0xbfc00000 & 0x1fffffff), buf, ss.st_size);
+    
     s->pc = 0xbfc00000;
     close(fd);
   }
@@ -232,12 +212,7 @@ int main(int argc, char *argv[]) {
 
   
   munmap(mempt, 1UL<<32);
-  if(globals::sysArgv) {
-    for(int i = 0; i < globals::sysArgc; i++) {
-      delete [] globals::sysArgv[i];
-    }
-    delete [] globals::sysArgv;
-  }
+  delete s->mc;
   free(s);
   stopCapstone();
 
