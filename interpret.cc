@@ -72,7 +72,7 @@ T read_access(state_t *s, uint32_t pa) {
   uint8_t *mem = s->mem;
   if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
     uint32_t offs = pa & 0xfffff;
-    return s->mc->read(offs);
+    return s->mc->read(offs, sizeof(T));
   }
   
   T x = bswap<EL>(*(reinterpret_cast<T*>(mem + pa)));
@@ -84,7 +84,7 @@ void store_access(T x, state_t *s, uint32_t pa) {
   uint8_t *mem = s->mem;
   if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
     uint32_t offs = pa & 0xfffff;
-    s->mc->write(offs, x);
+    s->mc->write(offs, x, sizeof(T));
   }  
   *reinterpret_cast<T*>(s->mem + pa) = bswap<EL>(x);  
 }

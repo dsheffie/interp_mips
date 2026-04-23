@@ -85,7 +85,7 @@ int main(int argc, char *argv[]) {
       ("dumpicnt", po::value<int64_t>(&dumpIcnt)->default_value(-1L),
        "dump after n instructions")
       ("dumpname", po::value<std::string>(&dumpname), "dump file name")
-      ("maxinsns,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)),
+      ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)),
        "max instructions to execute")
       ("silent,s", po::value<bool>(&globals::silent)->default_value(true),
        "no interpret messages")
