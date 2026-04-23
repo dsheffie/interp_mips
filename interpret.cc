@@ -72,8 +72,7 @@ T read_access(state_t *s, uint32_t pa) {
   uint8_t *mem = s->mem;
   T x = 0;
   if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
-    uint32_t offs = pa & 0xfffff;
-    x =  s->mc->read(offs, sizeof(T));
+    x =  s->mc->read(pa & 0xfffff, sizeof(T));
   }
   else if(pa >= 0x1fc00000 and pa <=0x1fffffff) {
     /* boot rom */
@@ -81,8 +80,7 @@ T read_access(state_t *s, uint32_t pa) {
   }
   else if(pa >= 0x1fb00000 and pa <= 0x1fbfffff) {
     /* hpc and io */
-    printf("accessing %x in hpc and io range\n", pa);
-    exit(-1);
+    x = s->hpc->read(pa & 0xfffff, sizeof(T));
   }
   else {
     printf("accessing %lx\n", pa);

@@ -7,6 +7,7 @@
 #include <ostream>
 
 #include "sgi_mc.hh"
+#include "sgi_hpc.hh"
 
 /* from gdb simulator */
 #define RSVD_INSTRUCTION           (0x00000005)
@@ -64,6 +65,7 @@ struct state_t{
   uint64_t nopcnt;
   uint8_t *mem;
   sgi_mc *mc;
+  sgi_hpc *hpc;
   uint8_t brk;
   uint64_t maxicnt;
 };

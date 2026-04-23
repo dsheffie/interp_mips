@@ -127,6 +127,7 @@ int main(int argc, char *argv[]) {
   assert(madvise(mempt, 1UL<<32, MADV_DONTNEED)==0);
   s->mem = reinterpret_cast<uint8_t*>(mempt);
   s->mc = new sgi_mc(s);
+  s->hpc = new sgi_hpc(s);
   
   if(s->mem == nullptr) {
     std::cerr << "INTERP : couldn't allocate backing memory!\n";
@@ -213,6 +214,7 @@ int main(int argc, char *argv[]) {
   
   munmap(mempt, 1UL<<32);
   delete s->mc;
+  delete s->hpc;
   free(s);
   stopCapstone();
 
