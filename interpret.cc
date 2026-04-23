@@ -1789,28 +1789,28 @@ static const func_t itype_functs[64] = {
   nullptr, /* 1d */
   nullptr, /* 1e */
   nullptr, /* 1f */
-  nullptr, /*_lb,*/ /* 20 */
-  nullptr, /*_lh_be,*/ /* 21 */
-  nullptr, /* 22 - sub */
-  nullptr,/*_lw_be,*/ /* 23 */
-  nullptr,/*_lbu*,/ /* 24 */
-  nullptr,/*_lhu_be,*/ /* 25 */
+  nullptr, /* 20 */
+  nullptr, /* 21 */
+  nullptr, /* 22 */
+  nullptr, /* 23 */
+  nullptr, /* 24 */
+  nullptr, /* 25 */
   nullptr, /* 26 */
   nullptr, /* 27 */
-  nullptr, /*_sb,*/ /* 28 */
-  nullptr, /*_sh_be,*/ /* 29 */
+  nullptr, /* 28 */
+  nullptr, /* 29 */
   nullptr, /* 2a */
-  nullptr, /*_sw_be,*/ /* 2b */
+  nullptr, /* 2b */
   nullptr, /* 2c */
   nullptr, /* 2d */
   nullptr, /* 2e */
   nullptr, /* 2f */
   nullptr, /* 30 */
-  nullptr, /*_lwc1_be,*/ /* 31 */
+  nullptr, /* 31 */
   nullptr, /* 32 */
   nullptr, /* 33 */
   nullptr, /* 34 */ 
-  nullptr, /*_ldc1_be,*/ /* 35 */
+  nullptr, /* 35 */
   nullptr, /* 36 */
   nullptr, /* 37 */
   nullptr, /* 38 */
