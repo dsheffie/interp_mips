@@ -1,5 +1,6 @@
 #include "sgi_mc.hh"
 #include "helper.hh"
+#include "interpret.hh"
 #include <cstdio>
 
 /* https://erikarn.github.io/sgi/indy/datasheets/sgi_indy_mc.pdf */
@@ -31,9 +32,24 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
       const uint32_t index = (offs >> 1) & 1;
       x = cpu_control[index];
       break;
+    }
+    case 0xc4: 
+    case 0xcc: {
+      const uint32_t index = (offs >> 1) & 1;
+      x = memcfg[index];
+      break;
     }      
+    case 0xd4:
+      x = cpu_mem_access_config;
+      break;
+    case 0xdc:
+      x = gio_mem_access_config;
+      break;
     case 0x30:
       x = 0x10;//eeprom_ctrl & (~0x10);
+      break;
+    case 0x1004:
+      x = static_cast<uint32_t>(s->icnt/10);//rpss_counter;
       break;
     default:
       printf("trying to read reg %x\n", offs);
@@ -56,12 +72,23 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
     {
     case 0x0:
     case 0x4:
-    case 0x8:
     case 0xc: {
       const uint32_t index = (offs >> 1) & 1;
       cpu_control[index] = x;
       break;
     }
+    case 0xc4: 
+    case 0xcc: {
+      const uint32_t index = (offs >> 1) & 1;
+      memcfg[index] = x;
+      break;
+    }      
+    case 0xd4:
+      cpu_mem_access_config = x;
+      break;
+    case 0xdc:
+      gio_mem_access_config =x;
+      break;
     case 0x30:
       eeprom_ctrl = x;
       if ( ((x>>1) & 3) == 3) {

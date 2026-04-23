@@ -126,7 +126,7 @@ int main(int argc, char *argv[]) {
   assert(mempt != reinterpret_cast<void*>(-1));
   assert(madvise(mempt, 1UL<<32, MADV_DONTNEED)==0);
   s->mem = reinterpret_cast<uint8_t*>(mempt);
-  s->mc = new sgi_mc(s->mem);
+  s->mc = new sgi_mc(s);
   
   if(s->mem == nullptr) {
     std::cerr << "INTERP : couldn't allocate backing memory!\n";
