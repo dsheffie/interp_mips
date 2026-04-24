@@ -56,11 +56,14 @@ uint32_t translate(state_t *s, uint32_t ea, int &fault) {
   //printf("ea %x maps to segment %d\n", ea, seg);
   switch(seg)
     {
+    case 8:
+    case 9:  /* kseg0 */
     case 10: /* kseg1 */
     case 11: 
       return (ea & 0x1fffffff);
       break;
     default:
+      printf("%x translated to segment %d\n", ea, seg);
       fault = 1;
       break;
     }
@@ -68,34 +71,43 @@ uint32_t translate(state_t *s, uint32_t ea, int &fault) {
 }
 
 template<typename T, bool EL>
-T read_access(state_t *s, uint32_t pa) {
+T read_access(state_t *s, uint32_t pa, uint32_t va = 0) {
   uint8_t *mem = s->mem;
   T x = 0;
-  if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
-    x =  s->mc->read(pa & 0xfffff, sizeof(T));
+
+  if(pa >= 0x1fa00000 and pa <= 0x1fa1ffff) {
+    //printf("read mc access from pc %x\n", s->pc);
+    x = s->mc->read(pa & 0x1ffff, sizeof(T));
   }
   else if(pa >= 0x1fc00000 and pa <=0x1fffffff) {
     /* boot rom */
     x = bswap<EL>(*(reinterpret_cast<T*>(mem + pa)));
   }
-  else if(pa >= 0x1fb00000 and pa <= 0x1fbfffff) {
+  else if(pa >= 0x1fb80000 and pa <= 0x1fbfffff) {
     /* hpc and io */
-    x = s->hpc->read(pa & 0xfffff, sizeof(T));
+    printf("read hpc pa = %x\n", pa);        
+    x = s->hpc->read(pa & 0x7ffff, sizeof(T));
   }
   else {
-    printf("accessing %lx\n", pa);
+    printf("accessing %x\n", pa);
     exit(-1);
   }
   return x;
 }
 
 template<typename T, bool EL>
-void store_access(T x, state_t *s, uint32_t pa) {
+void store_access(T x, state_t *s, uint32_t pa, uint32_t va = 0) {
   uint8_t *mem = s->mem;
-  if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
-    uint32_t offs = pa & 0xfffff;
+  if(pa >= 0x1fa00000 and pa <= 0x1fa1ffff) {
+    //printf("write mc access from pc %x\n", s->pc);    
+    uint32_t offs = pa & 0x1ffff;
     s->mc->write(offs, x, sizeof(T));
-  }  
+    return;
+  }
+  else if(pa >= 0x1fb80000 and pa <= 0x1fbfffff) {
+    /* hpc and io */
+    s->hpc->write(pa & 0x7ffff, x, sizeof(T));    
+  }
   *reinterpret_cast<T*>(s->mem + pa) = bswap<EL>(x);  
 }
 
@@ -488,7 +500,7 @@ int _lw(uint32_t inst, state_t *s) {
   if(fault) {
     return fault;
   }
-  int32_t x = read_access<int32_t, EL>(s, pa);
+  int32_t x = read_access<int32_t, EL>(s, pa, ea);
   s->gpr[rt] = x;
   s->pc += 4;
   return 0;
@@ -506,7 +518,7 @@ int _lh(uint32_t inst, state_t *s) {
   if(fault) {
     return fault;
   }
-  int16_t x = read_access<int16_t, EL>(s, pa);
+  int16_t x = read_access<int16_t, EL>(s, pa, ea);
   s->gpr[rt] = (int32_t)x;
   s->pc +=4;
   return 0;
@@ -578,7 +590,7 @@ int _sw(uint32_t inst, state_t *s) {
   if(fault) {
     return fault;
   }
-  store_access<int32_t, EL>(s->gpr[rt], s, pa);
+  store_access<int32_t, EL>(s->gpr[rt], s, pa, ea);
   s->pc += 4;
   return 0;
 }
@@ -1895,10 +1907,37 @@ void execMips(state_t *s) {
     switch(rs) 
       {
       case 0x0: /*mfc0*/
-	s->gpr[rt] = s->cpr0[rd];
+	if(globals::log) {
+	  printf("reading coproc reg %d\n", rd);
+	}
+	switch(rd) {
+	case CONFIG_REG: /* config register */
+	  /* Some configuration options, as defined by Config bits 31:6, are set by the
+	   * hardware during reset and are included in the Config register as read-only
+	   * status bits for the software to access */
+	  s->gpr[rt] = s->cpr0[CONFIG_REG];
+	  break;
+	default:
+	  s->gpr[rt] = s->cpr0[rd];
+	  break;
+	}
+
 	break;
       case 0x4: /*mtc0*/
-	s->cpr0[rd] = s->gpr[rt];
+	if(globals::log) {
+	  printf("writing coproc reg%d with %x\n", rd,  s->gpr[rt]);
+	}
+	switch(rd) {
+	case CONFIG_REG: {
+	  s->cpr0[CONFIG_REG] &= (~31);
+	  s->cpr0[CONFIG_REG] |= (s->gpr[rt] & 31);
+	  break;
+	}
+	default:
+	  s->cpr0[rd] = s->gpr[rt];
+	  break;
+	}
+
 	break;
       default:
 	printf("unknown %s instruction @ %x", __func__, s->pc); exit(-1);

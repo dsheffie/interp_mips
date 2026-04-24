@@ -67,6 +67,8 @@
 #define CP1_CR26 3
 #define CP1_CR28 4
 
+#define CONFIG_REG 16
+
 const std::string &getCondName(uint32_t c);
 const std::string &getGPRName(uint32_t r);
 

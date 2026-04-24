@@ -61,7 +61,7 @@ static inline void dump_histo(const std::string &fname,
 
 
 int main(int argc, char *argv[]) {
-  bool bigEndianMips = true;
+  static bool bigEndianMips = true;
   namespace po = boost::program_options; 
   std::string dumpname;
   int64_t dumpIcnt = -1L;
@@ -136,7 +136,7 @@ int main(int argc, char *argv[]) {
 
   {
     struct stat ss;
-    int fd = open("ip20prom.070-8116-004.BE.bin", O_RDONLY);
+    int fd = open("ip24prom.070-9101-005.bin", O_RDONLY);
     if(fd<0) {
       printf("INTERP: open() returned %d\n", fd);
       exit(-1);
@@ -154,41 +154,18 @@ int main(int argc, char *argv[]) {
     s->pc = 0xbfc00000;
     close(fd);
   }
-
+  /* big endian */
+  s->cpr0[CONFIG_REG] = 0x8000;
+  /* icache and dcache are 8192 */
+  s->cpr0[CONFIG_REG] |= (1 << 9) | (8192 << 6);
   
   
   initCapstone();
 
   double runtime = timestamp();
   
-  if(globals::isMipsEL) {
-    while(s->brk==0 and (s->icnt < s->maxicnt)) {
-      execMipsEL(s);
-    }
-  }
-  else {
-    if(dumpIcnt != -1L) {
-      if(dumpname.size() == 0) {
-	dumpname = filename;
-      }
-      while(s->brk==0 and (s->icnt < s->maxicnt)) {
-	if(((s->icnt % dumpIcnt) == 0) and (s->icnt != 0)) {
-	  std::stringstream ss;
-	  ss << dumpname << s->icnt << ".bin";
-	  if(not(globals::silent)) {
-	    std::cout << "dumping at icnt " << s->icnt << "\n";
-	  }
-	  dumpState(*s, ss.str());
-	  s->brk = 1;
-	}
-	execMips(s);
-      }
-    }
-    else {
-      while(s->brk==0 and (s->icnt < s->maxicnt)) {
-	execMips(s);
-      }
-    }
+  while(s->brk==0 and (s->icnt < s->maxicnt)) {
+    execMips(s);
   }
   runtime = timestamp()-runtime;
   dump_histo("exec.txt", globals::execHisto);

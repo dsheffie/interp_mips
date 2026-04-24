@@ -49,6 +49,7 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
       x = 0x10;//eeprom_ctrl & (~0x10);
       break;
     case 0x1004:
+      printf("rpss counter read\n");
       x = static_cast<uint32_t>(s->icnt/10);//rpss_counter;
       break;
     default:
@@ -56,7 +57,7 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
       exit(-1);
       break;
     }
-  printf("read access to MC, reg %x, value %x\n", offs, x);  
+  //printf("read access to MC, reg %x, value %x\n", offs, x);  
   return x;
 }
 
@@ -66,7 +67,7 @@ static uint8_t byte = 0;
 static uint32_t cbyte = 0;
 
 void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
-  printf("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
+  //printf("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
   
   switch(offs)
     {
@@ -77,6 +78,12 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
       cpu_control[index] = x;
       break;
     }
+    case 0x2c:
+      rpss_divider = x;
+      break;
+    case 0x84:
+      gio64_arb_param = x;
+      break;
     case 0xc4: 
     case 0xcc: {
       const uint32_t index = (offs >> 1) & 1;
@@ -88,6 +95,12 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
       break;
     case 0xdc:
       gio_mem_access_config =x;
+      break;
+    case 0xec:
+      cpu_error_status = 0;
+      break;
+    case 0xfc:
+      gio_error_status = 0;
       break;
     case 0x30:
       eeprom_ctrl = x;
@@ -105,10 +118,6 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
 	}
 
       }
-      break;
-    case 0xec:
-    case 0xfc:
-      printf("huh not sure what to do for %x\n", offs);
       break;
     default:
       exit(-1);
