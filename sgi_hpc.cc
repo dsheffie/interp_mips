@@ -32,6 +32,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
 }
 
 void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
+  //assert(sz == 4);
   if(offs <= 0x0000ffff) {
     printf("pbus dma write\n");
   }
@@ -41,6 +42,10 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   }
   else if(offs == 0x30004) {
     misc = x&3;
+  }
+  else if(offs >= 0x40000 and offs <= 0x47fff) {
+    printf("scsi hd0 interface %x\n", x);
+    exit(-1);
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) {
     uint32_t c = (offs >> 8) & 15;
