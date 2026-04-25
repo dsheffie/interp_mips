@@ -49,7 +49,7 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
       x = 0x10;//eeprom_ctrl & (~0x10);
       break;
     case 0x1004:
-      printf("rpss counter read\n");
+      //printf("rpss counter read\n");
       x = static_cast<uint32_t>(s->icnt/10);//rpss_counter;
       break;
     default:

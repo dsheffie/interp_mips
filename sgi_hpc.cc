@@ -24,7 +24,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   }
   //else {
   printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);    
-  assert(false);
+  //assert(false);
     //}
   
   //exit(-1);
@@ -37,6 +37,7 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   }
   else if(offs >= 0x00010000 and offs <= 0x0001ffff) {
     printf("enet write\n");
+    return;
   }
   else if(offs == 0x30004) {
     misc = x&3;
@@ -47,6 +48,24 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
       c = (c & 1) ? 9 : 8;
     }
     printf("pio data on channel %u\n", c);    
+  }
+  else if(offs >= 0x5c000 and offs <= 0x5cfff) {
+    int id = ((offs>>8) & 0xf)>>1;
+    printf("pbus dma write for channel %d = %x\n", id, x);
+    pbus_dma_config[id] = x;
+    return;
+  }
+  else if(offs >= 0x5d000 and offs <= 0x5dfff) {
+    /* pbus pio channel configuration register */
+    int id = (offs>>8) & 0xf;
+    printf("pio channel config %d = %x\n", id, x);
+    if(id < 10) {
+      pbus_pio_config[id] = x;
+    }
+    else {
+      assert(false);
+    }
+    return;
   }
   else {
     printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);    
