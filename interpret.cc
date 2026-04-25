@@ -106,6 +106,7 @@ void store_access(T x, state_t *s, uint32_t pa, uint32_t va = 0) {
   }
   else if(pa >= 0x1fb80000 and pa <= 0x1fbfffff) {
     /* hpc and io */
+    printf("write hpc pa = %x\n", pa);            
     s->hpc->write(pa & 0x7ffff, x, sizeof(T));    
   }
   *reinterpret_cast<T*>(s->mem + pa) = bswap<EL>(x);  

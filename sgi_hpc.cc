@@ -16,11 +16,8 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
     return misc;
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) {
-    uint32_t c = (offs >> 8) & 15;
-    if (c >= 10) {
-      c = (c & 1) ? 9 : 8;
-    }
-    printf("pio data on channel %u\n", c);
+    int id = ((offs>>8) & 0x7f)>>2;
+    printf("pio data on channel %u\n", id);
   }
   //else {
   printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);    
@@ -44,15 +41,11 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     misc = x&3;
   }
   else if(offs >= 0x40000 and offs <= 0x47fff) {
-    printf("scsi hd0 interface %x\n", x);
-    exit(-1);
+    printf("scsi hd0 interface writes %x\n", x);
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) {
-    uint32_t c = (offs >> 8) & 15;
-    if (c >= 10) {
-      c = (c & 1) ? 9 : 8;
-    }
-    printf("pio data on channel %u\n", c);    
+    int id = ((offs>>8) & 0x7f)>>2;
+    printf("pio write data on channel %x for offset %x with data %x\n", id, offs, x);    
   }
   else if(offs >= 0x5c000 and offs <= 0x5cfff) {
     int id = ((offs>>8) & 0xf)>>1;
