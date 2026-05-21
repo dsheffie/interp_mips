@@ -74,16 +74,16 @@ template<typename T, bool EL>
 T read_access(state_t *s, uint32_t pa, uint32_t va = 0) {
   uint8_t *mem = s->mem;
   T x = 0;
-
-  if(pa >= 0x1fa00000 and pa <= 0x1fa1ffff) {
+  const mem_range_t mr = compute_mem_range_type(pa);
+  if(mr == mem_range_t::mc_regs) {
     //printf("read mc access from pc %x\n", s->pc);
     x = s->mc->read(pa & 0x1ffff, sizeof(T));
   }
-  else if(pa >= 0x1fc00000 and pa <=0x1fffffff) {
+  else if(mr == mem_range_t::boot_rom) {
     /* boot rom */
     x = bswap<EL>(*(reinterpret_cast<T*>(mem + pa)));
   }
-  else if(pa >= 0x1fb80000 and pa <= 0x1fbfffff) {
+  else if(mr == mem_range_t::hpc_regs) {
     /* hpc and io */
     printf("read hpc pa = %x\n", pa);        
     x = s->hpc->read(pa & 0x7ffff, sizeof(T));
@@ -98,13 +98,14 @@ T read_access(state_t *s, uint32_t pa, uint32_t va = 0) {
 template<typename T, bool EL>
 void store_access(T x, state_t *s, uint32_t pa, uint32_t va = 0) {
   uint8_t *mem = s->mem;
-  if(pa >= 0x1fa00000 and pa <= 0x1fa1ffff) {
+  const mem_range_t mr = compute_mem_range_type(pa);  
+  if(mr == mem_range_t::mc_regs) {
     //printf("write mc access from pc %x\n", s->pc);    
     uint32_t offs = pa & 0x1ffff;
     s->mc->write(offs, x, sizeof(T));
     return;
   }
-  else if(pa >= 0x1fb80000 and pa <= 0x1fbfffff) {
+  else if(mr == mem_range_t::hpc_regs) {
     /* hpc and io */
     printf("write hpc pa = %x\n", pa);            
     s->hpc->write(pa & 0x7ffff, x, sizeof(T));    
@@ -1865,7 +1866,7 @@ void execMips(state_t *s) {
   s->last_pc = s->pc;  
   static_assert(EL==false, "not build for big endian");
   if(globals::log) {
-    std::cout << std::hex << s->pc << std::dec << " : "
+    std::cout << std::hex << s->pc << "," << inst << std::dec << " : "
 	      << getAsmString(inst, s->pc) << "\n";
 
 

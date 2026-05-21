@@ -158,7 +158,7 @@ int main(int argc, char *argv[]) {
   s->cpr0[CONFIG_REG] = 0x8000;
   /* icache and dcache are 8192 */
   s->cpr0[CONFIG_REG] |= (1 << 9) | (8192 << 6);
-  
+  //printf("s->cpr0[16] = %x\n", s->cpr0[CONFIG_REG]);
   
   initCapstone();
 
