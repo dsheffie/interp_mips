@@ -149,8 +149,8 @@ static void raise_ades(state_t *s) {
 }
 
 static void raise_ri(state_t *s, uint32_t inst) {
-  fprintf(stderr, "unimplemented: opcode=0x%02x funct=0x%02x @ pc=0x%08x\n",
-          inst >> 26, inst & 0x3fu, (uint32_t)s->pc);
+  fprintf(stderr, "unimplemented: opcode=0x%02x funct=0x%02x @ pc=0x%08x, bits %x\n",
+          inst >> 26, inst & 0x3fu, (uint32_t)s->pc, inst);
   s->cpr0[CPR0_EPC]   = (uint32_t)s->pc;
   s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2)) | (10u << 2);
   s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
@@ -1557,16 +1557,12 @@ bool is_store_insn(state_t *s) {
 template <bool EL>
 void execMips(state_t *s) {
   sparse_mem &mem = s->mem;
+  s->gpr[0] = 0;   /* MIPS $0 is hardwired to zero; e.g. `mflo $0` must not stick */
   uint32_t inst = bswap<EL>(mem.get<uint32_t>(va2pa(s->pc)));
-  if(globals::trace_retirement and false) {
-    std::cout << std::hex
-	      << "cosim "
-	      << s->pc << ","
-	      << std::dec << " : "
-	      << getAsmString(inst, s->pc) << "\n";
-  }
+
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
+  
   uint32_t opcode = inst>>26;
   bool isRType = (opcode==0);
   bool isJType = ((opcode>>1)==1);

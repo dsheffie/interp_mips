@@ -52,6 +52,7 @@ int main(int argc, char *argv[]) {
   sm->st = s;
   sm->route_devices = true;
 
+  initState(s);                    /* CP0 reset state: PRId, Config, SR, Random */
   load_elf(filename.c_str(), s);   /* sets s->pc to the entry */
 
   if(!arcs.empty()) {
