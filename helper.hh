@@ -6,14 +6,59 @@
 #include <cstdint>
 #include <iostream>
 
-#define KNRM  "\x1B[0m"
-#define KRED  "\x1B[31m"
-#define KGRN  "\x1B[32m"
-#define KYEL  "\x1B[33m"
-#define KBLU  "\x1B[34m"
-#define KMAG  "\x1B[35m"
-#define KCYN  "\x1B[36m"
-#define KWHT  "\x1B[37m"
+static const char KNRM[] = "\x1B[0m";
+static const char KRED[] = "\x1B[31m";
+static const char KGRN[] = "\x1B[32m";
+static const char KYEL[] = "\x1B[33m";
+static const char KBLU[] = "\x1B[34m";
+static const char KMAG[] = "\x1B[35m";
+static const char KCYN[] = "\x1B[36m";
+static const char KWHT[] = "\x1B[37m";
+
+
+template <typename T, unsigned B>
+inline T signextend(const T x) {
+  struct {T x:B;} s;
+  return s.x = x;
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value,T>::type* = nullptr>
+T roundToPgSz(T x, T pgsz) {
+  return ((x + pgsz -1) / pgsz) * pgsz;
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value,T>::type* = nullptr>
+bool isPow2(T x) {
+  return (((x-1)&x) == 0);
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value,T>::type* = nullptr>
+T nextPow2(T x) {
+  T y = 1;
+  while(y < x) {
+    y *= 2;
+  }
+  return y;
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value,T>::type* = nullptr>
+T ln2(T x) {
+  T y = 1, l =0;
+  while(y < x) {
+    l++;
+    y *= 2;
+  }
+  return l;
+}
+
+template <typename T, typename std::enable_if<std::is_integral<T>::value,T>::type* = nullptr>
+T mod(T x, T y) {
+  if(isPow2(y)) {
+    return x & (y-1);
+  }
+  return x % y;
+}
+
 
 void dbt_backtrace();
 
@@ -26,7 +71,6 @@ void dbt_backtrace();
 #define die() {								\
     std::cerr << __PRETTY_FUNCTION__ << " @ " << __FILE__ << ":"	\
 	      << __LINE__ << " called die\n";				\
-    dbt_backtrace();							\
     abort();								\
   }
 
@@ -74,11 +118,6 @@ T bswap(T x) {
   return x;
 }
 
-template <bool EL, typename T, INTEGRAL_ENABLE_IF(1,T)>
-T bswap(T x) {
-  return x;
-}
-
 template <bool EL, typename T, INTEGRAL_ENABLE_IF(2,T)> 
 T bswap(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
@@ -109,10 +148,6 @@ T bswap(T x) {
 #undef INTEGRAL_ENABLE_IF
 
 
-
-template <class T> bool isPow2(T x) {
-  return (((x-1)&x) == 0);
-}
 
 
 #endif

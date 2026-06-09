@@ -3,6 +3,8 @@
 #include <cassert>
 
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
+  printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
+  
   if(offs <= 0x0000ffff) {
     printf("pbus dma read\n");
   }
@@ -20,7 +22,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
     printf("pio data on channel %u\n", id);
   }
   //else {
-  printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);    
+
   //assert(false);
     //}
   

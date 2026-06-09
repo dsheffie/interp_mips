@@ -22,6 +22,7 @@ When the processor is running in little endian mode the even word addresses,
 */
   
 uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
+  printf("read access to MC, reg %x\n", offs);    
   uint32_t x = 0;
   switch(offs)
     {
@@ -67,7 +68,7 @@ static uint8_t byte = 0;
 static uint32_t cbyte = 0;
 
 void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
-  //printf("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
+  printf("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
   
   switch(offs)
     {

@@ -11,7 +11,7 @@
 #include <utility>
 #include <cstdint>
 #include <list>
-#include <map>
+
 
 #include "helper.hh"
 #include "interpret.hh"
@@ -26,6 +26,7 @@
 #include <elf.h>
 #endif
 
+
 #define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
 
 template <typename T, INTEGRAL_ENABLE_IF(1,T)>
@@ -36,28 +37,19 @@ T bswap_(T x) {
 template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
 T bswap_(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  if(globals::isMipsEL) 
-    return x;
-  else
   return  __builtin_bswap16(x);
 }
 
 template <typename T, INTEGRAL_ENABLE_IF(4,T)>
 T bswap_(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  if(globals::isMipsEL)
-    return x;
-  else 
-    return  __builtin_bswap32(x);
+  return  __builtin_bswap32(x);
 }
 
 template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
 T bswap_(T x) {
   static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  if(globals::isMipsEL)
-    return x;
-  else 
-    return  __builtin_bswap64(x);
+  return  __builtin_bswap64(x);
 }
 
 #undef INTEGRAL_ENABLE_IF
@@ -86,12 +78,14 @@ void load_elf(const char* fn, state_t *ms) {
   Elf32_Ehdr *eh32 = nullptr;
   Elf32_Phdr* ph32 = nullptr;
   Elf32_Shdr* sh32 = nullptr;
-  int32_t e_phnum=-1,e_shnum=-1;
+  int32_t e_phnum=-1,e_shnum=-1,e_phoff=-1;
   size_t pgSize = getpagesize();
   int fd,rc;
   char *buf = nullptr;
-  uint8_t *mem = ms->mem;
+  sparse_mem &mem = ms->mem;
 
+  ms->mem.clear();
+  
   fd = open(fn, O_RDONLY);
   if(fd<0) {
     printf("INTERP: open() returned %d\n", fd);
@@ -112,16 +106,8 @@ void load_elf(const char* fn, state_t *ms) {
   }
 
   /* Check for a MIPS machine */
-  if(checkLittleEndian(eh32)) {
-    globals::isMipsEL = true;
-  }
-  else if(checkBigEndian(eh32)) {
-    globals::isMipsEL = false;
-  }
-  else {
-    std::cerr << "not big or little little endian?\n";
-    die();
-  }
+  assert(checkBigEndian(eh32));
+
   if(bswap_(eh32->e_machine) != 8) {
     printf("INTERP : non-mips binary..goodbye\n");
     exit(-1);
@@ -130,11 +116,13 @@ void load_elf(const char* fn, state_t *ms) {
   uint32_t lAddr = bswap_(eh32->e_entry);
 
   e_phnum = bswap_(eh32->e_phnum);
-  ph32 = (Elf32_Phdr*)(buf + bswap_(eh32->e_phoff));
+  e_phoff = bswap_(eh32->e_phoff);
+  ph32 = reinterpret_cast<Elf32_Phdr*>(buf + e_phoff);
   e_shnum = bswap_(eh32->e_shnum);
-  sh32 = (Elf32_Shdr*)(buf + bswap_(eh32->e_shoff));
-  ms->pc = lAddr;
+  sh32 = reinterpret_cast<Elf32_Shdr*>(buf + bswap_(eh32->e_shoff));
+  ms->pc = (int64_t)(int32_t)lAddr;
 
+  uint32_t loaddr = ~0U, hiaddr = 0;
   /* Find instruction segments and copy to
    * the memory buffer */
   for(int32_t i = 0; i < e_phnum; i++, ph32++) {
@@ -143,37 +131,45 @@ void load_elf(const char* fn, state_t *ms) {
     int32_t p_filesz = bswap_(ph32->p_filesz);
     int32_t p_type = bswap_(ph32->p_type);
     uint32_t p_vaddr = bswap_(ph32->p_vaddr);
-    if(p_type == SHT_PROGBITS && p_memsz) {
-      if( (p_vaddr + p_memsz) > lAddr)
-	lAddr = (p_vaddr + p_memsz);
-      
-      memset(mem+p_vaddr, 0, sizeof(uint8_t)*p_memsz);
-      memcpy(mem+p_vaddr, (uint8_t*)(buf + p_offset),
-	     sizeof(uint8_t)*p_filesz);
+    /* stolen from QEMU */
+    if(p_type == PT_LOAD) {
+      uint32_t sz = (p_vaddr + p_memsz);
+      loaddr = std::min(loaddr, (p_vaddr - p_offset));
+      hiaddr = std::max(hiaddr, sz);
     }
-  }
-  /* Iterate through code sections and
-   * mark as no-write. Tag with extra-special
-   * metadata (DBS_PROT_INSN) that these
-   * are instructions */
-  for(int32_t i = 0; i < e_shnum; i++, sh32++) {
-    int32_t f = bswap_(sh32->sh_flags);
-    if(f & SHF_EXECINSTR) {
-      uint32_t addr = bswap_(sh32->sh_addr);
-      int32_t size = bswap_(sh32->sh_size);
-      bool pgAligned = ((addr & 4095) == 0);
-      if(pgAligned) {
-	size = (size / pgSize) * pgSize;
-	void *mpaddr = (void*)(mem+addr);
-	rc = mprotect(mpaddr, size, PROT_READ);
-	if(rc != 0) {
-	  printf("mprotect rc = %d, error(%d) = %s\n", rc, 
-		 errno, strerror(errno));
-	}
+    uint32_t vaddr_ef = p_vaddr + p_filesz;
+    uint32_t vaddr_em = p_vaddr + p_memsz;
+    
+    if(p_type == SHT_PROGBITS && p_memsz) {
+      if( (p_vaddr + p_memsz) > lAddr) {
+        lAddr = (p_vaddr + p_memsz);
+      }
+      // std::cerr << "loading ELF segment at virtual address "
+      // 		<< std::hex << p_vaddr << std::dec << " of memsz "
+      // 		<< p_memsz << " and filesz "
+      // 		<< p_filesz
+      // 		<< " end virtual address "
+      // 		<< std::hex
+      // 		<< (p_vaddr + p_memsz)
+      // 		<< std::dec
+      // 		<< "\n";
+      
+      
+      /* not strictly required, prefault fills with zeros */
+      for(int32_t cc = 0; cc < p_memsz; cc++) {
+	mem.set<uint8_t>(cc+p_vaddr, 0);
+      }
+      
+      for(int32_t cc = 0; cc < p_filesz; cc++) {
+	uint32_t v_addr = cc+p_vaddr;
+	mem.set<uint8_t>(va2pa(v_addr),
+			 reinterpret_cast<uint8_t*>(buf + p_offset)[cc]);
       }
     }
+    
   }
-
+  /* again, stolen from QEMU */
   munmap(buf, s.st_size);
-
+  //exit(-1);
 }
+

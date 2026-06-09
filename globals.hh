@@ -3,11 +3,11 @@
 
 namespace globals {
   extern bool enClockFuncts;
-  extern bool isMipsEL;
   extern uint64_t icountMIPS;
-  extern bool log;
-  extern bool silent;
-  extern std::map<uint32_t, uint64_t> execHisto;
+  extern uint64_t cycle;
+  extern bool trace_retirement;
+  extern bool trace_fp;
+  extern bool report_syscalls;
 };
 
 #endif

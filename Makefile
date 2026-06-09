@@ -1,6 +1,6 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o loadelf.o disassemble.o helper.o interpret.o saveState.o sgi_mc.o sgi_hpc.o githash.o
+OBJ = main.o loadelf.o disassemble.o helper.o interpret.o sparse_mem.o sgi_mc.o sgi_hpc.o githash.o
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native #-flto
@@ -17,11 +17,11 @@ ifeq ($(UNAME_S),Darwin)
 	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt -lcapstone
 endif
 
-CXXFLAGS = -std=c++11 -g $(OPT)
+CXXFLAGS = -std=c++17 -g $(OPT)
 LIBS =  $(EXTRA_LD) -lpthread
 
 DEP = $(OBJ:.o=.d)
-OPT = -O3 -g -fomit-frame-pointer -std=c++11
+OPT = -O3 -g -fomit-frame-pointer -std=c++17
 EXE = interp_mips
 
 .PHONY : all clean

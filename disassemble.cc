@@ -59,7 +59,7 @@ static const std::map<cs_err, std::string> cs_error_map =
 static csh handle;
 
 void initCapstone() {
-  cs_err C = cs_open(CS_ARCH_MIPS, CS_MODE_MIPS32, &handle);
+  cs_err C = cs_open(CS_ARCH_MIPS, CS_MODE_MIPS64, &handle);
   if(C != CS_ERR_OK) {
     std::cerr << "capstone error : " << cs_error_map.at(C) << "\n";
     exit(-1);
@@ -78,8 +78,12 @@ std::string getAsmString(uint32_t inst, uint32_t addr) {
   size_t count = cs_disasm(handle,reinterpret_cast<const uint8_t *>(&inst),
 			   sizeof(inst), addr, 0, &insn);
   if(count != 1) {
-    return "huh?";
+    return std::string();
   }
+  //if(count != 1) {
+  //std::cerr << "decoded count of " << count << " mips instructions?\n";
+  //}
+  //assert(count == 1);
   ss << insn[0].mnemonic << " " << insn[0].op_str;
   cs_free(insn, count);
   return ss.str();
