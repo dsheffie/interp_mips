@@ -4,3 +4,13 @@
 *~
 githash.cc
 interp_mips
+
+# retire-trace output + rv64analyzer-generated artifacts
+*.rt
+*_cfg_*.dot
+*_cfg_*.txt
+
+# firmware / ROM blobs and disk images
+*prom*.bin
+*.zip
+indy_4613/
