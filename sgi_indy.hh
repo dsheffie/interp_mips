@@ -49,13 +49,16 @@ inline static mem_range_t compute_mem_range_type(uint32_t pa) {
     return mem_range_t::gio64_slot1;
   }
   else if(pa >= 0x1fa00000 and pa <= 0x1fafffff) {
-    return mem_range_t::mc_regs;
+    return mem_range_t::mc_regs;       /* Memory Controller regs (see sgi_mc.cc) */
   }
   else if(pa >= 0x1fb00000 and pa <= 0x1fbfffff) {
+    /* HPC3 I/O space: 0x1fb00000 = second HPC3 chip, 0x1fb80000 = first HPC3
+     * chip (boot PROM/SCSI/enet/EEPROM/PBUS). sgi_hpc offsets are relative to
+     * the first chip's 0x1fb80000 base (see sgi_hpc.cc). */
     return mem_range_t::hpc_regs;
   }
   else if(pa >= 0x1fc00000 and pa <= 0x1fffffff) {
-    return mem_range_t::boot_rom;
+    return mem_range_t::boot_rom;      /* HPC3 PROM space (0/1) */
   }
   else if(pa >= 0x20000000 and pa <= 0x2fffffff) {
     return mem_range_t::high_local;

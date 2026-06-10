@@ -20,36 +20,81 @@ If the processor is running in big endian mode the odd word addresses,
 When the processor is running in little endian mode the even word addresses,
 (addresses that end in 0 and 8) are used.
 */
-  
+
+/*
+ * MC (Memory Controller) register map. `offs` is the byte offset into the MC
+ * register window (physical 0x1fa00000..0x1fafffff, see sgi_indy.hh). Offsets
+ * below are the big-endian "odd word" aliases (ending in 4/c) that IRIX and the
+ * IP22 PROM use; each register also responds at the even-word alias (-4).
+ *
+ * Cross-checked against: SGI Indy MC datasheet (indy_docs/mc.pdf), Linux
+ * arch/mips/include/asm/sgi/mc.h, and NetBSD arch/sgimips. Names follow mc.h.
+ *
+ *   0x004  cpuctrl0    CPU control word 0 (refresh, parity, watchdog, endian)
+ *   0x00c  cpuctrl1    CPU control word 1 (GIO timeout, HPC/EXP endianness)
+ *   0x014  watchdogt   Watchdog timer (read-only; any write clears it)
+ *   0x01c  systemid    System ID: [3:0]=MC revision, [4]=EPRESENT (EISA present)
+ *   0x02c  divider     RPSS divider (real-time counter prescale)
+ *   0x034  eeprom      Serial EEPROM byte register (bit-banged NMC93xx)
+ *   0x044  rcntpre     Refresh counter preload
+ *   0x04c  rcounter    Refresh counter (read-only)
+ *   0x084  giopar      GIO64 arbitration / bus parameter word
+ *   0x08c  cputp       CPU bus arbitration time period
+ *   0x09c  lbursttp    Long-burst time period
+ *   0x0c4  mconfig0    Memory config bank 0/1 (bank valid, base addr, size)
+ *   0x0cc  mconfig1    Memory config bank 2/3
+ *   0x0d4  cmacc       CPU memory access config
+ *   0x0dc  gmacc       GIO memory access config
+ *   0x0e4  cerr        CPU error address (read-only)
+ *   0x0ec  cstat       CPU error status (write clears)
+ *   0x0f4  gerr        GIO error address (read-only)
+ *   0x0fc  gstat       GIO error status (write clears)
+ *   0x104  syssembit   System semaphore (single bit, test-and-set)
+ *   0x10c  mlock       GIO memory access lock
+ *   0x114  elock       EISA-from-GIO access lock
+ *   0x154+ gio_dma_*   GIO DMA translation / control registers
+ *   0x184+ dtlb_*      GIO DMA TLB (hi/lo pairs, 4 entries)
+ *   0x1dc+ dma*        GIO DMA engine (size, stride, mode, count, start, run)
+ *   0x1004 rpss        RPSS 32-bit free-running counter (read-only)
+ */
+
 uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
   printf("read access to MC, reg %x\n", offs);    
   uint32_t x = 0;
   switch(offs)
     {
-    case 0x0:
-    case 0x4:
-    case 0x8:
-    case 0xc: {
+    case 0x0:    /* cpuctrl0 (even alias) */
+    case 0x4:    /* cpuctrl0 CPU control word 0 */
+    case 0x8:    /* cpuctrl1 (even alias) */
+    case 0xc: {  /* cpuctrl1 CPU control word 1 */
       const uint32_t index = (offs >> 1) & 1;
       x = cpu_control[index];
       break;
     }
-    case 0xc4: 
-    case 0xcc: {
+    case 0xc4:   /* mconfig0 memory config banks 0/1 */
+    case 0xcc: { /* mconfig1 memory config banks 2/3 */
       const uint32_t index = (offs >> 1) & 1;
       x = memcfg[index];
       break;
-    }      
-    case 0xd4:
+    }
+    case 0x84:   /* giopar GIO64 arbitration / bus parameter word */
+      x = gio64_arb_param;
+      break;
+    case 0xd4:   /* cmacc CPU memory access config */
       x = cpu_mem_access_config;
       break;
-    case 0xdc:
+    case 0xdc:   /* gmacc GIO memory access config */
       x = gio_mem_access_config;
       break;
-    case 0x30:
+    case 0x1c:   /* systemid */
+      /* MC System ID: low nibble = revision, bit4 (EPRESENT) = EISA present.
+       * Indy has no EISA, so EPRESENT stays clear. */
+      x = sys_id;
+      break;
+    case 0x30:   /* eeprom (even alias): serial EEPROM data bit, SDATAI high */
       x = 0x10;//eeprom_ctrl & (~0x10);
       break;
-    case 0x1004:
+    case 0x1004: /* rpss free-running counter (read-only) */
       //printf("rpss counter read\n");
       x = static_cast<uint32_t>(s->icnt/10);//rpss_counter;
       break;
@@ -72,38 +117,38 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
   
   switch(offs)
     {
-    case 0x0:
-    case 0x4:
-    case 0xc: {
+    case 0x0:    /* cpuctrl0 (even alias) */
+    case 0x4:    /* cpuctrl0 CPU control word 0 */
+    case 0xc: {  /* cpuctrl1 CPU control word 1 */
       const uint32_t index = (offs >> 1) & 1;
       cpu_control[index] = x;
       break;
     }
-    case 0x2c:
+    case 0x2c:   /* divider RPSS prescale */
       rpss_divider = x;
       break;
-    case 0x84:
+    case 0x84:   /* giopar GIO64 arbitration / bus parameter word */
       gio64_arb_param = x;
       break;
-    case 0xc4: 
-    case 0xcc: {
+    case 0xc4:   /* mconfig0 memory config banks 0/1 */
+    case 0xcc: { /* mconfig1 memory config banks 2/3 */
       const uint32_t index = (offs >> 1) & 1;
       memcfg[index] = x;
       break;
-    }      
-    case 0xd4:
+    }
+    case 0xd4:   /* cmacc CPU memory access config */
       cpu_mem_access_config = x;
       break;
-    case 0xdc:
+    case 0xdc:   /* gmacc GIO memory access config */
       gio_mem_access_config =x;
       break;
-    case 0xec:
+    case 0xec:   /* cstat CPU error status (any write clears) */
       cpu_error_status = 0;
       break;
-    case 0xfc:
+    case 0xfc:   /* gstat GIO error status (any write clears) */
       gio_error_status = 0;
       break;
-    case 0x30:
+    case 0x30:   /* eeprom serial EEPROM control: bit-bang CS/CLK/DATA */
       eeprom_ctrl = x;
       if ( ((x>>1) & 3) == 3) {
 	printf("data bit %d, bit %u\n", (x>>3)&1, nbits);

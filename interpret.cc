@@ -19,6 +19,7 @@
 #include "disassemble.hh"
 #include "helper.hh"
 #include "globals.hh"
+#include "inst_record.hh"
 
 static fpMode currFpMode = fpMode::mipsii;
 
@@ -1578,7 +1579,17 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
-    
+
+  /* Emit a retire-trace record in program order. Branches/jumps recurse into
+   * execMips for their delay slot, so each retired instruction (including the
+   * slot) lands here exactly once; nullified branch-likely slots never reach
+   * here and are correctly absent. pc=physical, vpc=virtual, mirroring the
+   * rv64core RTL trace flow. */
+  if(globals::trace_retirement and globals::retire_log) {
+    globals::retire_log->get_records().emplace_back(va2pa(s->pc), (uint64_t)s->pc, inst);
+  }
+
+
   if(isRType) {
     uint32_t funct = inst & 63;
     uint32_t sa = (inst >> 6) & 31;
