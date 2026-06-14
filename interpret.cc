@@ -25,11 +25,9 @@ static fpMode currFpMode = fpMode::mipsii;
 
 state_t::~state_t() {
   //std::cout << mem.bytes_allocated() << " bytes present in memory image\n";
-  //delete &mem; // mem owned by caller
+  //delete &mem; // mem owned by caller (main.cc deletes the sparse_mem)
 }
 
-static void execSpecial2(uint32_t inst, state_t *s);
-static void execSpecial3(uint32_t inst, state_t *s);
 static void execCoproc0(uint32_t inst, state_t *s);
 static void execCoproc2(uint32_t inst, state_t *s);
 
@@ -186,11 +184,66 @@ static void raise_ades(state_t *s) {
   raise_common(s, 5u);
 }
 
-static void raise_ri(state_t *s, uint32_t inst) {
-  fprintf(stderr, "unimplemented: opcode=0x%02x funct=0x%02x @ pc=0x%08x, bits %x\n",
-          inst >> 26, inst & 0x3fu, (uint32_t)s->pc, inst);
+/* Reserved Instruction exception setup (ExcCode=10), no diagnostic message. */
+static void take_exception_ri(state_t *s) {
   set_exc_pc(s);
   raise_common(s, 10u);
+}
+
+static void raise_ri(state_t *s, uint32_t inst) {
+  fprintf(stderr, "unimplemented: opcode=0x%02x funct=0x%02x @ pc=0x%08x\n",
+          inst >> 26, inst & 0x3fu, (uint32_t)s->pc);
+  take_exception_ri(s);
+}
+
+/* Execute a branch/jump delay-slot instruction.  Returns true iff the delay slot
+ * raised an exception (Status.EXL went 0->1, i.e. it vectored).  In that case the
+ * branch/jump must NOT be taken: the exception has already redirected pc to the
+ * handler with EPC = the branch pc (BD=1), and overwriting pc with the branch
+ * target would SWALLOW the delay-slot fault (the RTL takes it -> co-sim diverges). */
+template <bool EL>
+static inline bool run_delay_slot(state_t *s) {
+  bool exl_before = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
+  bool saved = s->in_delay_slot;
+  s->in_delay_slot = true;
+  execMips<EL>(s);
+  s->in_delay_slot = saved;
+  return (!exl_before) && ((s->cpr0[CPR0_SR] & SR_EXL) != 0);
+}
+
+/* 64-bit operating mode, matching exec.sv:2640-2646:
+ *   kernel=(KSU==0)|EXL|ERL ; user=(KSU==2)&!EXL&!ERL ; super=(KSU==1)&!EXL&!ERL
+ *   in_64b = (kernel&KX) | (user&UX) | (super&SX). */
+static inline bool in_64b_mode(state_t *s) {
+  uint32_t sr = s->cpr0[CPR0_SR];
+  uint32_t ksu = (sr >> 3) & 3u;
+  bool exl = (sr & SR_EXL) != 0, erl = (sr & SR_ERL) != 0;
+  bool kernel = (ksu == 0u) || exl || erl;
+  bool user   = (ksu == 2u) && !exl && !erl;
+  bool super  = (ksu == 1u) && !exl && !erl;
+  /* 64-bit operations are always valid in Kernel mode (KX gates 64-bit
+   * addressing / the XTLB vector, not op availability); Supervisor/User need
+   * SX/UX.  Must match decode_mips.sv's w_in_64b_mode for the co-sim. */
+  return  kernel ||
+         (user   && (sr & SR_UX)) ||
+         (super  && (sr & SR_SX));
+}
+
+/* The 64-bit instructions decode_mips.sv gates behind 64-bit mode -- must match
+ * EXACTLY so the co-sim agrees (RTL does NOT gate dsll32/dsrl32/dsra32, daddi,
+ * or 64-bit loads/stores, so neither do we). */
+static inline bool is_64b_gated(uint32_t inst) {
+  uint32_t op = inst >> 26;
+  if(op == 0x19) return true;                  /* daddiu */
+  if(op != 0) return false;
+  switch(inst & 0x3fu) {
+    case 0x14: case 0x16: case 0x17:            /* dsllv dsrlv dsrav        */
+    case 0x1c: case 0x1d: case 0x1e: case 0x1f: /* dmult dmultu ddiv ddivu  */
+    case 0x2c: case 0x2d: case 0x2e: case 0x2f: /* dadd daddu dsub dsubu    */
+    case 0x38: case 0x3a: case 0x3b:            /* dsll dsrl dsra           */
+      return true;
+    default: return false;
+  }
 }
 
 static void raise_overflow(state_t *s) {
@@ -202,6 +255,27 @@ static void raise_trap(state_t *s) {
   set_exc_pc(s);
   raise_common(s, 13u);
 }
+
+void raise_int(state_t *s, uint32_t epc) {
+  s->cpr0[CPR0_EPC]   = epc;
+  s->cpr0[CPR0_CAUSE] = (1u << 15);  /* IP[7]=1 (timer), ExcCode=0, BD=0 */
+  s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
+  s->pc = sext32(0xBFC00180u);
+}
+
+static uint32_t getConditionCode(state_t *s, uint32_t cc) {
+  return ((s->fcr1[CP1_CR25] & (1U<<cc)) >> cc) & 0x1;
+}
+
+static void setConditionCode(state_t *s, uint32_t v, uint32_t cc) {
+  uint32_t m0,m1,m2;
+  m0 = 1U<<cc;
+  m1 = ~m0;
+  m2 = ~(v-1);
+  s->fcr1[CP1_CR25] = (s->fcr1[CP1_CR25] & m1) | ((1U<<cc) & m2);
+}
+
+
 
 /* ------------------------------------------------------------------------
  * Translating TLB (R4000), matching the r9999 RTL tlb.sv semantics.
@@ -353,162 +427,6 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   return 0;
 }
 
-/* Execute a branch/jump delay-slot instruction.  Returns true iff the delay slot
- * raised an exception (Status.EXL went 0->1, i.e. it vectored).  In that case the
- * branch/jump must NOT be taken: the exception has already redirected pc to the
- * handler with EPC = the branch pc (BD=1), and overwriting pc with the branch
- * target would SWALLOW the delay-slot fault. */
-template <bool EL>
-static inline bool run_delay_slot(state_t *s) {
-  bool exl_before = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
-  bool saved = s->in_delay_slot;
-  s->in_delay_slot = true;
-  execMips<EL>(s);
-  s->in_delay_slot = saved;
-  return (!exl_before) && ((s->cpr0[CPR0_SR] & SR_EXL) != 0);
-}
-
-void raise_int(state_t *s, uint32_t epc) {
-  bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
-  s->cpr0[CPR0_EPC]   = epc;
-  s->cpr0[CPR0_CAUSE] = (1u << 15);  /* IP[7]=1 (timer), ExcCode=0, BD=0 */
-  s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
-  s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
-}
-
-static uint32_t getConditionCode(state_t *s, uint32_t cc) {
-  return ((s->fcr1[CP1_CR25] & (1U<<cc)) >> cc) & 0x1;
-}
-
-static void setConditionCode(state_t *s, uint32_t v, uint32_t cc) {
-  uint32_t m0,m1,m2;
-  m0 = 1U<<cc;
-  m1 = ~m0;
-  m2 = ~(v-1);
-  s->fcr1[CP1_CR25] = (s->fcr1[CP1_CR25] & m1) | ((1U<<cc) & m2);
-}
-
-
-
-static void execSpecial2(uint32_t inst,state_t *s) {
-  uint32_t funct = inst & 63; 
-  uint32_t rs = (inst >> 21) & 31;
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rd = (inst >> 11) & 31;
-
-  switch(funct)
-    {
-    case(0x0): /* madd */ {
-      int64_t y,acc;
-      acc = ((int64_t)(uint32_t)s->hi) << 32;
-      acc |= (uint32_t)s->lo;
-      y = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
-      y += acc;
-      s->lo = (int32_t)(y & 0xffffffff);
-      s->hi = (int32_t)(y >> 32);
-      s->insn_histo[mipsInsn::MADD]++;
-      break;
-    }
-    case 0x1: /* maddu */ {
-      uint64_t y,acc;
-      uint64_t uk0 = (uint64_t)(uint32_t)s->gpr[rs];
-      uint64_t uk1 = (uint64_t)(uint32_t)s->gpr[rt];
-      y = uk0*uk1;
-      acc = ((uint64_t)(uint32_t)s->hi) << 32;
-      acc |= (uint64_t)(uint32_t)s->lo;
-      y += acc;
-      s->lo = sext64((uint32_t)(y & 0xffffffff));
-      s->hi = sext64((uint32_t)(y >> 32));
-      s->insn_histo[mipsInsn::MADDU]++;
-      break;
-    }
-    case(0x2): /* mul */{
-      int64_t y = ((int64_t)s->gpr[rs]) * ((int64_t)s->gpr[rt]);
-      //printf("multiply: %x x %x -> %x\n", s->gpr[rs], s->gpr[rt], y);
-      s->gpr[rd] = (int32_t)y;
-      s->insn_histo[mipsInsn::MUL]++;
-      break;
-    }
-    case(0x4): /* msub */ {
-      int64_t y,acc;
-      acc = ((int64_t)s->hi) << 32;
-      acc |= ((int64_t)s->lo);
-      y = (int64_t)s->gpr[rs] * (int64_t)s->gpr[rt];
-      y = acc - y;
-      s->lo = (int32_t)(y & 0xffffffff);
-      s->hi = (int32_t)(y >> 32);
-      s->insn_histo[mipsInsn::MSUB]++;
-      break;
-    }
-    case(0x20): /* clz */
-      s->gpr[rd] = (s->gpr[rs]==0) ? 32 : __builtin_clz(s->gpr[rs]);
-      s->insn_histo[mipsInsn::CLZ]++;
-      break;
-    default:
-      printf("unhandled special2 instruction @ 0x%08x\n", s->pc); 
-      exit(-1);
-      break;
-    }
-  s->pc += 4;
-}
-
-static void execSpecial3(uint32_t inst,state_t *s) {
-  uint32_t funct = inst & 63;
-  uint32_t op = (inst>>6) & 31;
-  uint32_t rt = (inst >> 16) & 31; 
-  uint32_t rs = (inst >> 21) & 31;
-  uint32_t rd = (inst >> 11) & 31;
-  if(funct == 32) {
-    switch(op)
-      {
-      case 0x10: /* seb */
-	s->gpr[rd] = (int32_t)((int8_t)s->gpr[rt]);
-	s->insn_histo[mipsInsn::SEB]++;
-	break;
-      case 0x18: /* seh */
-	s->gpr[rd] = (int32_t)((int16_t)s->gpr[rt]);
-	s->insn_histo[mipsInsn::SEH]++;
-	break;
-      default:
-	printf("unhandled special3 instruction @ 0x%08x, opcode = %x\n", s->pc, funct); 
-	exit(-1);    
-	break;
-      }
-  }
-  else if(funct == 0) { /* ext */  
-    uint32_t pos = (inst >> 6) & 31;
-    uint32_t size = ((inst >> 11) & 31) + 1;
-    s->gpr[rt] = (s->gpr[rs] >> pos) & ((1<<size)-1);
-    s->insn_histo[mipsInsn::EXT]++;
-  }
-  else if(funct == 0x4) {/* ins */
-    uint32_t size = rd-op+1;
-    uint32_t mask = (1U<<size) -1;
-    uint32_t cmask = ~(mask << op);
-    uint32_t v = (s->gpr[rs] & mask) << op;
-    uint32_t c = (s->gpr[rt] & cmask) | v;
-    s->gpr[rt] = c;
-    s->insn_histo[mipsInsn::INS]++;    
-  }
-  else if(funct == 0x3b) { /* rdhwr */
-    switch(rd)
-      {
-      case 29:
-	s->gpr[rt] = s->cpr0[29];
-	s->insn_histo[mipsInsn::RDHWR]++;
-	break;
-      default:
-	abort();
-      }
-  }
-  else {
-    printf("unhandled special3 instruction @ 0x%08x\n", s->pc); 
-    exit(-1);    
-  }
-  s->pc += 4;
-}
-
-
 template <typename T>
 struct c1xExec {
   void operator()(const coproc1x_t& insn, state_t *s) {
@@ -654,6 +572,23 @@ void branch(uint32_t inst, state_t *s) {
       s->insn_histo[mipsInsn::BGEZAL]++;
       saveReturn = true;
       break;
+    case branch_type::bltzal:
+      takeBranch = (s->gpr[rs] < 0);
+      s->insn_histo[mipsInsn::BLTZAL]++;
+      saveReturn = true;
+      break;
+    case branch_type::bgezall:
+      isLikely = true;
+      takeBranch = (s->gpr[rs] >= 0);
+      s->insn_histo[mipsInsn::BGEZALL]++;
+      saveReturn = true;
+      break;
+    case branch_type::bltzall:
+      isLikely = true;
+      takeBranch = (s->gpr[rs] < 0);
+      s->insn_histo[mipsInsn::BLTZALL]++;
+      saveReturn = true;
+      break;
     case branch_type::bc1tl:
       isLikely = true;
       takeBranch = getConditionCode(s,((inst>>18)&7))==1;
@@ -679,6 +614,8 @@ void branch(uint32_t inst, state_t *s) {
   s->pc += 4;
   if(isLikely) {
     if(takeBranch) {
+      if(saveReturn)
+	s->gpr[31] = sext32((uint32_t)(npc + 4));
       if(!run_delay_slot<EL>(s))
 	s->pc = (imm+npc);
     }
@@ -718,7 +655,32 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
     case 17:
       branch<EL,branch_type::bgezal>(inst, s);
       break;
-    default:      
+    case 16:
+      branch<EL,branch_type::bltzal>(inst, s);
+      break;
+    case 18:
+      branch<EL,branch_type::bltzall>(inst, s);
+      break;
+    case 19:
+      branch<EL,branch_type::bgezall>(inst, s);
+      break;
+    case 8: case 9: case 10: case 11: case 12: case 14: { /* trap-immediates */
+      uint32_t rs = (inst >> 21) & 31;
+      int64_t a = (int64_t)s->gpr[rs];
+      int64_t simm = (int64_t)(int16_t)(inst & 0xffff);
+      bool trap = false;
+      switch(rt) {
+      case 8:  trap = (a >= simm);                           s->insn_histo[mipsInsn::TGEI]++;  break;
+      case 9:  trap = ((uint64_t)a >= (uint64_t)simm);       s->insn_histo[mipsInsn::TGEIU]++; break;
+      case 10: trap = (a < simm);                            s->insn_histo[mipsInsn::TLTI]++;  break;
+      case 11: trap = ((uint64_t)a < (uint64_t)simm);        s->insn_histo[mipsInsn::TLTIU]++; break;
+      case 12: trap = (a == simm);                           s->insn_histo[mipsInsn::TEQI]++;  break;
+      case 14: trap = (a != simm);                           s->insn_histo[mipsInsn::TNEI]++;  break;
+      }
+      if(trap) raise_trap(s); else s->pc += 4;
+      break;
+    }
+    default:
       std::cerr << "case " << rt << " not handled!\n";
       exit(-1);
     }
@@ -867,19 +829,6 @@ void _sc(uint32_t inst, state_t *s) {
   s->insn_histo[mipsInsn::SC]++;
 }
 
-template <bool EL>
-void _scd(uint32_t inst, state_t *s) {
-  uint32_t rt = (inst >> 16) & 31;
-  uint32_t rs = (inst >> 21) & 31;
-  int32_t imm = (int32_t)(int16_t)(inst & 0xffffu);
-  uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
-  if(s->tlb_fault) return;
-  s->mem.set<int64_t>(ea, bswap<EL>(static_cast<int64_t>(s->gpr[rt])));
-  s->gpr[rt] = 1;
-  s->pc += 4;
-  s->insn_histo[mipsInsn::SC]++;
-}
-
 
 template <bool EL>
 void _sh(uint32_t inst, state_t *s) {
@@ -905,25 +854,77 @@ static void _sb(uint32_t inst, state_t *s) {
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
   s->mem.set<uint8_t>(ea, static_cast<uint8_t>(s->gpr[rt]));
-
+  
   s->pc +=4;
   s->insn_histo[mipsInsn::SB]++;
 }
 
 static void _mtc1(uint32_t inst, state_t *s) {
-  uint32_t rd = (inst>>11) & 31;
+  uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
-  s->cpr1[rd] = s->gpr[rt];
+  /* mips3/4 FR=1: FPR[fs] = sign_extend32(GPR[rt][31:0]) */
+  s->cpr1[fs] = (uint64_t)(int64_t)(int32_t)(uint32_t)s->gpr[rt];
   s->pc += 4;
-  s->insn_histo[mipsInsn::MTC1]++;  
+  s->insn_histo[mipsInsn::MTC1]++;
 }
 
 static void _mfc1(uint32_t inst, state_t *s) {
-  uint32_t rd = (inst>>11) & 31;
+  uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
-  s->gpr[rt] = s->cpr1[rd];
+  /* mips3/4 FR=1: GPR[rt] = sign_extend32(FPR[fs][31:0]) */
+  s->gpr[rt] = (int64_t)(int32_t)(uint32_t)s->cpr1[fs];
   s->pc +=4;
   s->insn_histo[mipsInsn::MFC1]++;
+}
+
+static void _dmtc1(uint32_t inst, state_t *s) {
+  uint32_t fs = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  /* FR=1: FPR[fs] = GPR[rt] (full 64-bit, no sign-ext) */
+  s->cpr1[fs] = s->gpr[rt];
+  s->pc += 4;
+  s->insn_histo[mipsInsn::DMTC1]++;
+}
+
+static void _dmfc1(uint32_t inst, state_t *s) {
+  uint32_t fs = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  /* FR=1: GPR[rt] = FPR[fs] (full 64-bit) */
+  s->gpr[rt] = s->cpr1[fs];
+  s->pc += 4;
+  s->insn_histo[mipsInsn::DMFC1]++;
+}
+
+/* map a raw FP control-register number to the compact fcr1[] index */
+static inline int fcr_index(uint32_t cr) {
+  switch(cr) {
+  case 0:  return CP1_CR0;   /* FIR  */
+  case 31: return CP1_CR31;  /* FCSR */
+  case 25: return CP1_CR25;
+  case 26: return CP1_CR26;
+  case 28: return CP1_CR28;
+  default: return CP1_CR31;
+  }
+}
+
+static void _cfc1(uint32_t inst, state_t *s) {
+  uint32_t cr = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  /* GPR[rt] = sign_extend32(FCR[cr]); FCR0 is the read-only FIR */
+  uint32_t v = (cr == 0) ? 0x00000500u : (uint32_t)s->fcr1[fcr_index(cr)];
+  s->gpr[rt] = (int64_t)(int32_t)v;
+  s->pc += 4;
+  s->insn_histo[mipsInsn::CFC1]++;
+}
+
+static void _ctc1(uint32_t inst, state_t *s) {
+  uint32_t cr = (inst>>11) & 31;
+  uint32_t rt = (inst>>16) & 31;
+  /* FCR[cr] = GPR[rt][31:0]; FCR0 (FIR) is read-only */
+  if(cr != 0)
+    s->fcr1[fcr_index(cr)] = (uint32_t)s->gpr[rt];
+  s->pc += 4;
+  s->insn_histo[mipsInsn::CTC1]++;
 }
 
 
@@ -939,12 +940,12 @@ void _swl(uint32_t inst, state_t *s) {
   ea &= 0xfffffffc;
   if(EL)
     ma = 3 - ma;
-  uint32_t r = bswap<EL>(s->mem.get<uint32_t>(ea));
+  uint32_t r = bswap<EL>(s->mem.get<uint32_t>(ea));   
   uint32_t xx=0,x = s->gpr[rt];
-
+  
   uint32_t xs = x >> (8*ma);
-  /* at ma==0 the count is 32, a 32-bit-shift UB (x86 masks to 0, making
-   * m=0xffffffff and storing r|rt instead of rt). */
+  /* 64-bit shift: at ma==0 the count is 32, a 32-bit-shift UB (x86 masks to 0,
+   * making m=0xffffffff and storing r|rt instead of rt). */
   uint32_t m = (uint32_t)~(((uint64_t)1u << (8*(4 - ma))) - 1);
   xx = (r & m) | xs;
   //std::cout << "SIM SWL EA " << std::hex << ea
@@ -999,7 +1000,7 @@ void _lwl(uint32_t inst, state_t *s) {
     ma = 3 - ma;
   uint32_t r = bswap<EL>(s->mem.get<uint32_t>(ea));
   state_t::reg_t x =  s->gpr[rt];
-
+  
   switch(ma)
     {
     case 0:
@@ -1212,7 +1213,7 @@ void _sdc1(uint32_t inst, state_t *s) {
   if(s->tlb_fault) return;
   s->mem.set<int64_t>(ea,  bswap<EL>((*(int64_t*)(s->cpr1 + ft))));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SDC1]++;
+  s->insn_histo[mipsInsn::SDC1]++;  
 }
 
 template <bool EL>
@@ -1223,7 +1224,7 @@ void _lwc1(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::load);
   if(s->tlb_fault) return;
-  uint32_t v = bswap<EL>(s->mem.get<uint32_t>(ea));
+  uint32_t v = bswap<EL>(s->mem.get<uint32_t>(ea)); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
   s->insn_histo[mipsInsn::LWC1]++;
@@ -1668,7 +1669,9 @@ static void execCoproc1(uint32_t inst, state_t *s) {
 	}
       /*BRANCH*/
     }
-  else if((lowbits == 0) && ((functField==0x0) || (functField==0x4)))
+  else if((lowbits == 0) && ((functField==0x0) || (functField==0x4) ||
+			     (functField==0x2) || (functField==0x6) ||
+			     (functField==0x1) || (functField==0x5)))
     {
       if(functField == 0x0)
 	{
@@ -1679,6 +1682,26 @@ static void execCoproc1(uint32_t inst, state_t *s) {
 	{
 	  /* move to coprocessor */
 	  _mtc1(inst,s);
+	}
+      else if(functField == 0x1)
+	{
+	  /* doubleword move from coprocessor (dmfc1) */
+	  _dmfc1(inst,s);
+	}
+      else if(functField == 0x5)
+	{
+	  /* doubleword move to coprocessor (dmtc1) */
+	  _dmtc1(inst,s);
+	}
+      else if(functField == 0x2)
+	{
+	  /* move from control coprocessor (cfc1) */
+	  _cfc1(inst,s);
+	}
+      else if(functField == 0x6)
+	{
+	  /* move to control coprocessor (ctc1) */
+	  _ctc1(inst,s);
 	}
     }
   else
@@ -1788,10 +1811,15 @@ void execMips(state_t *s) {
   uint32_t ipa = va_translate(s, (uint64_t)s->pc, tlb_op::fetch);
   if(s->tlb_fault) return;   /* instruction-fetch TLB miss -> vectored */
   uint32_t inst = bswap<EL>(mem.get<uint32_t>(ipa));
-
+  if(globals::trace_retirement and false) {
+    std::cout << std::hex
+	      << "cosim "
+	      << s->pc << ","
+	      << std::dec << " : "
+	      << getAsmString(inst, s->pc) << "\n";
+  }
   //std::cout << std::hex << s->pc << std::dec << " : "
   //<< getAsmString(inst, s->pc) << "\n";
-  
   uint32_t opcode = inst>>26;
   bool isRType = (opcode==0);
   bool isJType = ((opcode>>1)==1);
@@ -1807,17 +1835,17 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
-
-  /* Emit a retire-trace record in program order. Branches/jumps recurse into
-   * execMips for their delay slot, so each retired instruction (including the
-   * slot) lands here exactly once; nullified branch-likely slots never reach
-   * here and are correctly absent. pc=physical, vpc=virtual, mirroring the
-   * rv64core RTL trace flow. */
   if(globals::trace_retirement and globals::retire_log) {
-    globals::retire_log->get_records().emplace_back(va2pa(s->pc), (uint64_t)s->pc, inst);
+    globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
 
-
+  /* 64-bit ops raise Reserved Instruction when not in 64-bit mode (matches the
+   * RTL decode_mips.sv gate; the random instruction tests rely on this). */
+  if(is_64b_gated(inst) && !in_64b_mode(s)) {
+    take_exception_ri(s);
+    return;
+  }
+    
   if(isRType) {
     uint32_t funct = inst & 63;
     uint32_t sa = (inst >> 6) & 31;
@@ -1917,7 +1945,7 @@ void execMips(state_t *s) {
 	s->lo = (int32_t)(y & 0xffffffff);
 	s->hi = (int32_t)(y >> 32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MULT]++;
+	s->insn_histo[mipsInsn::MULT]++;			
 	break;
       }
       case 0x19: { /* multu */
@@ -2008,9 +2036,9 @@ void execMips(state_t *s) {
 	uint32_t u_rs = (uint32_t)s->gpr[rs];
 	uint32_t u_rt = (uint32_t)s->gpr[rt];
 	uint32_t result = u_rs - u_rt;
-	/* Overflow iff operands have different signs AND result sign != rs sign.
-	 * Matches RTL: w_sub32_overflow = (result[31]!=rt[31]) & (rs[31]!=rt[31]) */
-	if (((result >> 31) != (u_rt >> 31)) && ((u_rs >> 31) != (u_rt >> 31))) {
+	/* A-B overflows iff operands differ in sign AND result sign != rs (minuend).
+	 * Matches RTL: w_sub32_overflow = (result[31]!=rs[31]) & (rs[31]!=rt[31]) */
+	if (((result >> 31) != (u_rs >> 31)) && ((u_rs >> 31) != (u_rt >> 31))) {
 	  raise_overflow(s);
 	  break;
 	}
@@ -2071,6 +2099,18 @@ void execMips(state_t *s) {
 	s->pc += 4;
 	s->insn_histo[mipsInsn::MOVZ]++;	
 	break;
+      case 0x30: /* tge  */
+	if((int64_t)s->gpr[rs] >= (int64_t)s->gpr[rt]) { raise_trap(s); return; }
+	s->pc += 4; s->insn_histo[mipsInsn::TGE]++; break;
+      case 0x31: /* tgeu */
+	if((uint64_t)s->gpr[rs] >= (uint64_t)s->gpr[rt]) { raise_trap(s); return; }
+	s->pc += 4; s->insn_histo[mipsInsn::TGEU]++; break;
+      case 0x32: /* tlt  */
+	if((int64_t)s->gpr[rs] < (int64_t)s->gpr[rt]) { raise_trap(s); return; }
+	s->pc += 4; s->insn_histo[mipsInsn::TLT]++; break;
+      case 0x33: /* tltu */
+	if((uint64_t)s->gpr[rs] < (uint64_t)s->gpr[rt]) { raise_trap(s); return; }
+	s->pc += 4; s->insn_histo[mipsInsn::TLTU]++; break;
       case 0x34: /* teq */
 	if(s->gpr[rs] == s->gpr[rt]) {
 	  raise_trap(s);
@@ -2110,8 +2150,9 @@ void execMips(state_t *s) {
 	uint64_t u_rs = (uint64_t)s->gpr[rs];
 	uint64_t u_rt = (uint64_t)s->gpr[rt];
 	uint64_t result = u_rs - u_rt;
-	/* Matches RTL: w_sub64_overflow = (result[63]!=rt[63]) & (rs[63]!=rt[63]) */
-	if (((result >> 63) != (u_rt >> 63)) && ((u_rs >> 63) != (u_rt >> 63))) {
+	/* A-B overflows iff operands differ in sign AND result sign != rs (minuend).
+	 * Matches RTL: w_sub64_overflow = (result[63]!=rs[63]) & (rs[63]!=rt[63]) */
+	if (((result >> 63) != (u_rs >> 63)) && ((u_rs >> 63) != (u_rt >> 63))) {
 	  raise_overflow(s);
 	  break;
 	}
@@ -2175,10 +2216,8 @@ void execMips(state_t *s) {
 	break;
       }
   }
-  else if(isSpecial2)
-    execSpecial2(inst,s);
-  else if(isSpecial3)
-    execSpecial3(inst,s);
+  else if(isSpecial2 || isSpecial3)
+    raise_ri(s, inst);   /* MIPS32 SPECIAL2/SPECIAL3 are not in MIPS-III (R4000) */
   else if(isJType) {
     state_t::reg_t jaddr = inst & ((1<<26)-1);
     jaddr <<= 2;
@@ -2451,17 +2490,6 @@ void execMips(state_t *s) {
       case 0x17:
 	branch<EL,branch_type::bgtzl>(inst, s);
 	break;
-      case 0x18: { /* daddi: 64-bit add, trap on signed overflow */
-	int64_t a = s->gpr[rs], b = simm32, r = (int64_t)((uint64_t)a + (uint64_t)b);
-	if(((a ^ r) & (b ^ r)) < 0) {
-	  raise_overflow(s);
-	} else {
-	  s->gpr[rt] = r;
-	  s->pc += 4;
-	}
-	s->insn_histo[mipsInsn::DADDIU]++;
-	break;
-      }
       case 0x19: /* daddiu */
 	s->gpr[rt] = s->gpr[rs] + simm32;
 	s->pc += 4;
@@ -2545,17 +2573,11 @@ void execMips(state_t *s) {
       case 0x37:
 	_ld<EL>(inst, s);
 	break;
-      case 0x34: /* LLD: functional load-linked doubleword */
-	_ld<EL>(inst, s);
-	break;
       case 0x3D:
 	_sdc1<EL>(inst, s);
 	break;
       case 0x3F:
 	_sd<EL>(inst, s);
-	break;
-      case 0x3C: /* SCD: store-conditional doubleword (always succeeds) */
-	_scd<EL>(inst, s);
 	break;
       default:
 	raise_ri(s, inst);

@@ -52,6 +52,10 @@
   X(DMTC0)					\
   X(MFC1)					\
   X(MTC1)					\
+  X(DMFC1)					\
+  X(DMTC1)					\
+  X(CFC1)					\
+  X(CTC1)					\
   X(LW)						\
   X(LWU)					\
   X(LB)						\
@@ -73,19 +77,20 @@
   X(MOVZ)					\
   X(TEQ)					\
   X(TNE)					\
-  X(EXT)					\
-  X(INS)					\
-  X(MADD)					\
-  X(MADDU)					\
-  X(MUL)					\
-  X(MSUB)					\
-  X(CLZ)					\
+  X(TGE)					\
+  X(TGEU)					\
+  X(TLT)					\
+  X(TLTU)					\
+  X(TGEI)					\
+  X(TGEIU)					\
+  X(TLTI)					\
+  X(TLTIU)					\
+  X(TEQI)					\
+  X(TNEI)					\
   X(LWL)					\
   X(LWR)					\
   X(SWL)					\
   X(SWR)					\
-  X(SEB)					\
-  X(SEH)					\
   X(DADD)					\
   X(DADDU)					\
   X(DADDI)					\
@@ -114,7 +119,8 @@
   X(BAL)					\
   X(BGEZAL)					\
   X(BGEZALL)					\
-  X(RDHWR)					\
+  X(BLTZAL)					\
+  X(BLTZALL)					\
   X(SC)						\
   X(SYNC)					\
   X(BREAK)					\
