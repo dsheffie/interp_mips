@@ -34,7 +34,14 @@ public:
 		       gio64_arb_param(0),
 		       rpss_divider(0x104),
 		       rpss_counter(0) {
-
+    /* Advertise installed DRAM as the IP22 PROM would, so the kernel MC probe
+     * (and IRIX szmem) finds it.  bank0 = mconfig0[31:16] describes 128 MiB at
+     * physical 0x08000000 (MC rev<5: addr=(cfg&0xff)<<22, size=((cfg&0x1f00)+
+     * 0x100)<<14).  cfg = BVALID(0x2000)|RMASK(0x1f00)|BASE(0x20) = 0x3f20.
+     * Stored byte-swapped: the interpreter bswaps the device load, so the kernel
+     * reads 0x3f200000. */
+    memcfg[0] = __builtin_bswap32(0x3f20u << 16);
+    memcfg[1] = 0;
   };
   uint32_t read(uint32_t offs, size_t sz);
   void write(uint32_t offs, uint32_t x, size_t sz);  

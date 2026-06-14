@@ -15,6 +15,7 @@
 #include "sparse_mem.hh"
 #include "sgi_mc.hh"
 #include "sgi_hpc.hh"
+#include "sgi_scc.hh"
 #include "globals.hh"
 #include "inst_record.hh"
 
@@ -52,11 +53,18 @@ int main(int argc, char *argv[]) {
   s->maxicnt = maxinsns;
   s->mc  = new sgi_mc(s);
   s->hpc = new sgi_hpc(s);
+  s->scc = new sgi_scc(s);
   sm->st = s;
   sm->route_devices = true;
 
   initState(s);                    /* CP0 reset state: PRId, Config, SR, Random */
   load_elf(filename.c_str(), s);   /* sets s->pc to the entry */
+
+  /* IRIX /unix entry ABI (ARCS): a0=argc, a1=argv, a2=envp.  MAME ground truth
+   * for a direct kernel boot is a0=8, a1=0, a2=0. */
+  s->gpr[4] = 8;   /* a0 */
+  s->gpr[5] = 0;   /* a1 */
+  s->gpr[6] = 0;   /* a2 */
 
   if(!arcs.empty()) {
     int fd = open(arcs.c_str(), O_RDONLY);
@@ -66,6 +74,32 @@ int main(int argc, char *argv[]) {
     memcpy(sm->mem + 0x1000, buf, st.st_size);
     std::cerr << "loaded ARCS firmware (" << st.st_size << " bytes) at PA 0x1000\n";
     munmap(buf, st.st_size); close(fd);
+
+    /* Patch the ARCS GetEnvironmentVariable stub to return a real "eaddr" string.
+     * The r9999-irix arcs_irix blob's stub_getenv returns NULL; with the real TLB
+     * enabled, init_sysid then calls etoh(NULL) -> load from VA 0 -> TLB miss and
+     * derail (the old 1:1 va2pa masked this by reading PA 0 = zeros, giving a
+     * harmless all-zero MAC). Real PROM firmware returns the EEPROM eaddr, so we
+     * inject one. Layout: stub_getenv @ blob offset 0xe68; the eaddr ASCII string
+     * is placed at blob offset 0xf00 (past the 3840-byte blob, still low RAM).
+     * Code (big-endian, as fetched+bswapped): lui v0,0xa000; ori v0,v0,0x1f00;
+     * jr ra; nop.  v0 -> 0xa0001f00 (kseg1, uncached).  Only applies to the IRIX
+     * blob (stub_getenv @ 0xe68; blob is 0xf00 bytes); the Linux arcs_fw blob is
+     * far smaller (752 bytes), so guard on size to avoid clobbering a small blob. */
+    if(st.st_size >= 0xe78) {
+      uint8_t *base = (uint8_t*)sm->mem + 0x1000;
+      const char *eaddr = "08:00:69:12:34:56";
+      memcpy(base + 0xf00, eaddr, strlen(eaddr) + 1);
+      /* MIPS BE instruction words, written byte-wise as big-endian */
+      auto put_be = [&](uint32_t off, uint32_t insn) {
+        base[off+0] = (insn >> 24) & 0xff; base[off+1] = (insn >> 16) & 0xff;
+        base[off+2] = (insn >>  8) & 0xff; base[off+3] = (insn >>  0) & 0xff;
+      };
+      put_be(0xe68, 0x3c02a000);   /* lui   v0, 0xa000      */
+      put_be(0xe6c, 0x34421f00);   /* ori   v0, v0, 0x1f00  */
+      put_be(0xe70, 0x03e00008);   /* jr    ra              */
+      put_be(0xe74, 0x00000000);   /* nop                   */
+    }
   }
 
   retire_trace rt;
@@ -74,7 +108,17 @@ int main(int argc, char *argv[]) {
     globals::trace_retirement = true;
   }
 
+  const char *pctrace = getenv("PCTRACE");
+  uint64_t pcsample = pctrace ? strtoull(pctrace, nullptr, 0) : 0;
+  const char *fw = getenv("FINEWIN");   /* "lo:hi" icnt window for per-insn PC trace */
+  uint64_t flo=0, fhi=0;
+  if(fw) { sscanf(fw, "%lu:%lu", &flo, &fhi); }
   while(s->brk == 0 && s->icnt < s->maxicnt) {
+    if(pcsample && (s->icnt % pcsample) == 0)
+      fprintf(stderr, "[pc] icnt=%lu pc=%08x ra=%08x sp=%08x\n",
+              (unsigned long)s->icnt, (uint32_t)s->pc, (uint32_t)s->gpr[31], (uint32_t)s->gpr[29]);
+    if(fw && s->icnt>=flo && s->icnt<fhi)
+      fprintf(stderr, "[fine] icnt=%lu pc=%08x\n", (unsigned long)s->icnt, (uint32_t)s->pc);
     execMips(s);
   }
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
@@ -87,6 +131,6 @@ int main(int argc, char *argv[]) {
               << " retire_trace records to " << retire_name << "\n";
   }
 
-  delete s->mc; delete s->hpc; delete s; delete sm;
+  delete s->mc; delete s->hpc; delete s->scc; delete s; delete sm;
   return 0;
 }

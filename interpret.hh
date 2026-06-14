@@ -104,6 +104,7 @@ enum class fp_reg_state { unknown, sp, dp };
 
 class sgi_mc;
 class sgi_hpc;
+class sgi_scc;
 
 class state_t{
 public:
@@ -140,6 +141,18 @@ public:
   bool silent = false;
   sgi_mc *mc = nullptr;
   sgi_hpc *hpc = nullptr;
+  sgi_scc *scc = nullptr;
+
+  /* True while executing a branch/jump delay-slot instruction.  An exception in
+   * a delay slot sets EPC = the branch pc and Cause.BD = 1 (matches the RTL,
+   * core.sv: n_epc = in_delay_slot ? pc-4 : pc; n_exc_in_delay = in_delay_slot). */
+  bool in_delay_slot = false;
+
+  /* Set by va_translate() when an address translation raised a TLB exception
+   * (Refill/Invalid/Modified).  The faulting instruction must abort immediately
+   * (do not commit its result or advance pc) -- the exception has already
+   * redirected pc to the refill/general vector. Cleared at the top of execMips. */
+  bool tlb_fault = false;
 
   state_t(sparse_mem &mem) : mem(mem) {}
   ~state_t();
@@ -334,6 +347,7 @@ bool is_store_insn(state_t *s);
 #define CPR0_EPC      14
 #define CPR0_PRID     15
 #define CPR0_CONFIG   16
+#define CPR0_XCONTEXT 20
 #define CPR0_ERROREPC 30
 
 /* CP0 PRId values (imp field bits [15:8]; R4000 family shares imp 0x04 and is

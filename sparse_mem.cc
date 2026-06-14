@@ -12,7 +12,12 @@
 #include "interpret.hh"
 #include "sgi_mc.hh"
 #include "sgi_hpc.hh"
+#include "sgi_scc.hh"
 #include "sgi_indy.hh"
+
+/* IRIX serial console (IOC2 Z8530 SCC), 16-byte window inside HPC space. */
+static const uint64_t SCC_BASE = 0x1fbd9830ULL;
+static const uint64_t SCC_END  = 0x1fbd983fULL;
 
 
 #define PROT (PROT_READ | PROT_WRITE)
@@ -187,6 +192,7 @@ sparse_mem::~sparse_mem() {
 
 
 template <typename T> T sparse_mem::route_load(uint64_t pa) {
+  if(pa >= SCC_BASE && pa <= SCC_END) return static_cast<T>(st->scc->read((uint32_t)(pa - SCC_BASE)));
   switch(compute_mem_range_type(static_cast<uint32_t>(pa))) {
   case mem_range_t::mc_regs:  return static_cast<T>(st->mc->read(pa & 0x1ffff, sizeof(T)));
   case mem_range_t::hpc_regs: return static_cast<T>(st->hpc->read(pa & 0x7ffff, sizeof(T)));
@@ -194,6 +200,7 @@ template <typename T> T sparse_mem::route_load(uint64_t pa) {
   }
 }
 template <typename T> void sparse_mem::route_store(uint64_t pa, T v) {
+  if(pa >= SCC_BASE && pa <= SCC_END) { st->scc->write((uint32_t)(pa - SCC_BASE), (uint8_t)v); return; }
   switch(compute_mem_range_type(static_cast<uint32_t>(pa))) {
   case mem_range_t::mc_regs:  st->mc->write(pa & 0x1ffff, static_cast<uint32_t>(v), sizeof(T)); break;
   case mem_range_t::hpc_regs: st->hpc->write(pa & 0x7ffff, static_cast<uint32_t>(v), sizeof(T)); break;

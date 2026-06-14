@@ -2,6 +2,11 @@
 #include "helper.hh"
 #include "interpret.hh"
 #include <cstdio>
+#include <cstdlib>
+
+/* device-trace spew off by default; set DEVTRACE=1 to re-enable. */
+static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
+#define DPRINTF(...) do { if(dev_verbose) printf(__VA_ARGS__); } while(0)
 
 /* https://erikarn.github.io/sgi/indy/datasheets/sgi_indy_mc.pdf */
 
@@ -59,7 +64,7 @@ When the processor is running in little endian mode the even word addresses,
  */
 
 uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
-  printf("read access to MC, reg %x\n", offs);    
+  DPRINTF("read access to MC, reg %x\n", offs);    
   uint32_t x = 0;
   switch(offs)
     {
@@ -99,8 +104,8 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
       x = static_cast<uint32_t>(s->icnt/10);//rpss_counter;
       break;
     default:
-      printf("trying to read reg %x\n", offs);
-      exit(-1);
+      DPRINTF("trying to read MC reg %x (lenient -> 0)\n", offs);
+      x = 0;
       break;
     }
   //printf("read access to MC, reg %x, value %x\n", offs, x);  
@@ -113,7 +118,7 @@ static uint8_t byte = 0;
 static uint32_t cbyte = 0;
 
 void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
-  printf("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
+  DPRINTF("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
   
   switch(offs)
     {
@@ -151,11 +156,11 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
     case 0x30:   /* eeprom serial EEPROM control: bit-bang CS/CLK/DATA */
       eeprom_ctrl = x;
       if ( ((x>>1) & 3) == 3) {
-	printf("data bit %d, bit %u\n", (x>>3)&1, nbits);
+	DPRINTF("data bit %d, bit %u\n", (x>>3)&1, nbits);
 	byte = (byte << 1) | ((x>>3)&1);
 	++nbits;	
 	if(nbits==8) {
-	  printf("wrote byte %u : %x\n", cbyte, (int)byte);	  
+	  DPRINTF("wrote byte %u : %x\n", cbyte, (int)byte);	  
 	  eerom[cbyte] = byte;
 	  ++cbyte;
 	  nbits = 0;
@@ -166,7 +171,7 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
       }
       break;
     default:
-      exit(-1);
+      DPRINTF("write to unknown MC reg %x (lenient -> ignore)\n", offs);
       break;
     }
 }

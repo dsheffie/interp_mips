@@ -1,6 +1,12 @@
 #include "sgi_hpc.hh"
 #include "interpret.hh"
 #include <cassert>
+#include <cstdlib>
+
+/* device-trace spew is off by default (it floods the console stream and slows the
+ * boot to a crawl); set DEVTRACE=1 to re-enable. */
+static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
+#define DPRINTF(...) do { if(dev_verbose) printf(__VA_ARGS__); } while(0)
 
 /*
  * HPC3 (High Performance Peripheral Controller, 3rd gen) register map.
@@ -38,13 +44,13 @@
  */
 
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
-  printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
+  DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
   
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
-    printf("pbus dma read\n");
+    DPRINTF("pbus dma read\n");
   }
   else if(offs >= 0x00010000 and offs <= 0x0001ffff) { /* HD0/HD1/ENET DMA regs */
-    printf("enet read\n");
+    DPRINTF("enet read\n");
   }
   else if(offs == 0x30000) {      /* istat0: interrupt status [4:0] */
     return intstat;
@@ -54,7 +60,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
-    printf("pio data on channel %u\n", id);
+    DPRINTF("pio data on channel %u\n", id);
   }
   //else {
 
@@ -68,32 +74,32 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
 void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   //assert(sz == 4);
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
-    printf("pbus dma write\n");
+    DPRINTF("pbus dma write\n");
   }
   else if(offs >= 0x00010000 and offs <= 0x0001ffff) { /* HD0/HD1/ENET DMA regs */
-    printf("enet write\n");
+    DPRINTF("enet write\n");
     return;
   }
   else if(offs == 0x30004) {      /* gio_misc */
     misc = x&3;
   }
   else if(offs >= 0x40000 and offs <= 0x47fff) { /* HD0 SCSI (WD33C93) device regs */
-    printf("scsi hd0 interface writes %x\n", x);
+    DPRINTF("scsi hd0 interface writes %x\n", x);
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
-    printf("pio write data on channel %x for offset %x with data %x\n", id, offs, x);
+    DPRINTF("pio write data on channel %x for offset %x with data %x\n", id, offs, x);
   }
   else if(offs >= 0x5c000 and offs <= 0x5cfff) { /* PBUS DMA channel config */
     int id = ((offs>>8) & 0xf)>>1;
-    printf("pbus dma write for channel %d = %x\n", id, x);
+    DPRINTF("pbus dma write for channel %d = %x\n", id, x);
     pbus_dma_config[id] = x;
     return;
   }
   else if(offs >= 0x5d000 and offs <= 0x5dfff) {
     /* pbus pio channel configuration register */
     int id = (offs>>8) & 0xf;
-    printf("pio channel config %d = %x\n", id, x);
+    DPRINTF("pio channel config %d = %x\n", id, x);
     if(id < 10) {
       pbus_pio_config[id] = x;
     }
@@ -103,7 +109,6 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     return;
   }
   else {
-    printf("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);    
-    assert(false);
+    DPRINTF("%s at pc %x : %x unimplemented (lenient -> ignore)\n", __PRETTY_FUNCTION__, s->pc, offs);
   }
 }
