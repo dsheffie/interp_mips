@@ -829,6 +829,22 @@ void _sc(uint32_t inst, state_t *s) {
   s->insn_histo[mipsInsn::SC]++;
 }
 
+template <bool EL>
+void _scd(uint32_t inst, state_t *s) {
+  /* store conditional doubleword (mirrors _sc; single-core functional sim, so
+   * the store always succeeds and rt is set to 1) */
+  uint32_t rt = (inst >> 16) & 31;
+  uint32_t rs = (inst >> 21) & 31;
+  int16_t himm = (int16_t)(inst & ((1<<16) - 1));
+  int32_t imm = (int32_t)himm;
+  uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
+  if(s->tlb_fault) return;
+  s->mem.set<int64_t>(ea, bswap<EL>(static_cast<int64_t>(s->gpr[rt])));
+  s->gpr[rt] = 1;
+  s->pc += 4;
+  s->insn_histo[mipsInsn::SC]++;
+}
+
 
 template <bool EL>
 void _sh(uint32_t inst, state_t *s) {
@@ -1831,6 +1847,8 @@ void execMips(state_t *s) {
   bool isSpecial3 = (opcode == 0x1f);
   bool isLoadLinked = (opcode == 0x30);
   bool isStoreCond = (opcode == 0x38);
+  bool isLoadLinkedD = (opcode == 0x34);   /* lld */
+  bool isStoreCondD = (opcode == 0x3c);    /* scd */
   uint32_t rs = (inst >> 21) & 31;
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
@@ -2414,6 +2432,10 @@ void execMips(state_t *s) {
     _lw<EL>(inst, s);
   else if(isStoreCond)
     _sc<EL>(inst, s);
+  else if(isLoadLinkedD)
+    _ld<EL>(inst, s);
+  else if(isStoreCondD)
+    _scd<EL>(inst, s);
   else { /* itype */
     uint32_t uimm32 = inst & ((1<<16) - 1);
     int16_t simm16 = (int16_t)uimm32;
