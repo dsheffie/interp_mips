@@ -2490,6 +2490,20 @@ void execMips(state_t *s) {
       case 0x17:
 	branch<EL,branch_type::bgtzl>(inst, s);
 	break;
+      case 0x18: { /* daddi: doubleword add immediate, traps on signed 64-bit overflow */
+	uint64_t u_rs  = (uint64_t)s->gpr[rs];
+	uint64_t u_imm = (uint64_t)(int64_t)simm32;   /* sign-extend imm to 64 bits */
+	uint64_t result = u_rs + u_imm;
+	/* same overflow rule as dadd (0x2C): same-sign inputs, different-sign result */
+	if (((result >> 63) != (u_imm >> 63)) && ((u_rs >> 63) == (u_imm >> 63))) {
+	  raise_overflow(s);
+	  break;
+	}
+	s->gpr[rt] = (int64_t)result;
+	s->pc += 4;
+	s->insn_histo[mipsInsn::DADDI]++;
+	break;
+      }
       case 0x19: /* daddiu */
 	s->gpr[rt] = s->gpr[rs] + simm32;
 	s->pc += 4;
