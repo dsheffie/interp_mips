@@ -1870,6 +1870,22 @@ void execMips(state_t *s) {
   if(globals::trace_retirement and globals::retire_log) {
     globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
+  {
+    /* CALLWIN=lo:hi -- log every jal/jalr (caller pc -> callee target) in the
+     * icnt window, for diffing the kernel call sequence against MAME. */
+    static const char *cw = getenv("CALLWIN");
+    static uint64_t cwlo = 0, cwhi = 0; static bool cwp = false;
+    if(cw && !cwp) { sscanf(cw, "%llu:%llu", (unsigned long long*)&cwlo, (unsigned long long*)&cwhi); cwp = true; }
+    if(cw && s->icnt >= cwlo && s->icnt < cwhi) {
+      uint32_t op = inst >> 26;
+      if(op == 3) /* jal */
+        fprintf(stderr, "[call] %lu %08x %08x\n", (unsigned long)s->icnt,
+                (uint32_t)s->pc, (uint32_t)((s->pc & ~0xfffffffULL) | ((uint64_t)(inst & 0x3ffffff) << 2)));
+      else if(op == 0 && (inst & 0x3f) == 9) /* jalr */
+        fprintf(stderr, "[call] %lu %08x %08x\n", (unsigned long)s->icnt,
+                (uint32_t)s->pc, (uint32_t)s->gpr[(inst >> 21) & 31]);
+    }
+  }
 
   /* 64-bit ops raise Reserved Instruction when not in 64-bit mode (matches the
    * RTL decode_mips.sv gate; the random instruction tests rely on this). */
