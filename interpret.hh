@@ -356,8 +356,13 @@ bool is_store_insn(state_t *s);
  * distinguished by the revision byte). */
 #define PRID_R4000  0x00000400u   /* imp 0x04, rev 0x00 */
 #define PRID_R4400  0x00000440u   /* imp 0x04, rev 0x40 */
+#define PRID_R4600  0x00002020u   /* imp 0x20, rev 0x20 -- the SGI Indy CPU */
 #define PRID_R10000 0x00000900u   /* imp 0x09, rev 0x00 */
-#define PRID_VALUE  PRID_R4000
+/* The real SGI Indy (and MAME's indy_4610) is an R4600. IRIX's `start` reads
+ * PRId and selects per-CPU init (cache config, TLB-refill handler variant,
+ * cache-op handling) by the IMP field; presenting R4000 (imp 0x04) makes IRIX
+ * run the wrong path. (Confirmed via MAME co-sim, MAME_QUESTIONS.md Q5.) */
+#define PRID_VALUE  PRID_R4600
 
 #define VA2PA(x) ((x & 0x1fffffff))
 

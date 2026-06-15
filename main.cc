@@ -28,6 +28,9 @@ namespace globals {
   bool trace_fp = false;
   bool report_syscalls = false;
   retire_trace *retire_log = nullptr;
+  FILE *pctrace = nullptr;
+  uint32_t pctrace_start = 0x88005960u;
+  bool pctrace_on = false;
 };
 static state_t *s = nullptr;
 
@@ -118,6 +121,13 @@ int main(int argc, char *argv[]) {
   const char *a1after = getenv("A1PROBE_AFTER"); /* only start probing past this icnt */
   uint64_t probe_after = a1after ? strtoull(a1after, nullptr, 0) : 0;
   int probe_hits = 0;
+  /* PCTRACEOUT=<file>: co-sim trace -- one hex virtual PC per retired
+   * instruction (delay slots included; emitted inside execMips), starting when
+   * execution first reaches PCTRACE_START (default kernel entry 0x88005960). */
+  const char *pcto = getenv("PCTRACEOUT");
+  if(pcto) globals::pctrace = fopen(pcto, "w");
+  const char *pcs = getenv("PCTRACE_START");
+  if(pcs) globals::pctrace_start = (uint32_t)strtoull(pcs, nullptr, 0);
   while(s->brk == 0 && s->icnt < s->maxicnt) {
     if(pcsample && (s->icnt % pcsample) == 0)
       fprintf(stderr, "[pc] icnt=%lu pc=%08x ra=%08x sp=%08x\n",
@@ -133,6 +143,7 @@ int main(int argc, char *argv[]) {
     }
     execMips(s);
   }
+  if(globals::pctrace) fclose(globals::pctrace);
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
 
   if(!retire_name.empty() && !rt.empty()) {

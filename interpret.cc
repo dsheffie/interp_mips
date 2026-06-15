@@ -1870,6 +1870,10 @@ void execMips(state_t *s) {
   if(globals::trace_retirement and globals::retire_log) {
     globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
+  if(globals::pctrace) {
+    if(!globals::pctrace_on && (uint32_t)s->pc == globals::pctrace_start) globals::pctrace_on = true;
+    if(globals::pctrace_on) fprintf(globals::pctrace, "%08x\n", (uint32_t)s->pc);
+  }
   {
     /* CALLWIN=lo:hi -- log every jal/jalr (caller pc -> callee target) in the
      * icnt window, for diffing the kernel call sequence against MAME. */
