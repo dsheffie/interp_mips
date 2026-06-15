@@ -324,6 +324,20 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
   static const bool tlbdbg = getenv("TLBDBG") != nullptr;
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   tlb_set_fault_state(s, va);
+  if((uint32_t)va == 0xff800000u && getenv("KPTEDBG")) {
+    static int once = 0;
+    if(once++ < 2) {
+      fprintf(stderr, "[KPTE] fault on 0xff800000: faultPC=%08x EPC=%08x exl=%d code=%u refill=%d ctx=%08x icnt=%lu\n",
+              (uint32_t)s->pc, s->cpr0[CPR0_EPC], exl_was_set?1:0, exccode, is_refill,
+              s->cpr0[CPR0_CONTEXT], (unsigned long)s->icnt);
+      for(int i = 0; i < state_t::NUM_TLB_ENTRIES; i++)
+        if(s->tlb[i].entry_hi || (s->tlb[i].entry_lo0 | s->tlb[i].entry_lo1) & 0x2)
+          fprintf(stderr, "   tlb[%2d] hi=%016llx lo0=%016llx lo1=%016llx pm=%08x\n", i,
+                  (unsigned long long)s->tlb[i].entry_hi,
+                  (unsigned long long)s->tlb[i].entry_lo0,
+                  (unsigned long long)s->tlb[i].entry_lo1, s->tlb[i].page_mask);
+    }
+  }
   if(tlbdbg)
     fprintf(stderr, "[raise_tlb] va=%016llx code=%u refill=%d xtlb=%d pc=%08x exl=%d ctx=%08x ctx64=%016llx\n",
             (unsigned long long)va, exccode, is_refill, is_xtlb, (uint32_t)s->pc,

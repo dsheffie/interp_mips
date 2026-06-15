@@ -125,10 +125,11 @@ int main(int argc, char *argv[]) {
     if(fw && s->icnt>=flo && s->icnt<fhi)
       fprintf(stderr, "[fine] icnt=%lu pc=%08x\n", (unsigned long)s->icnt, (uint32_t)s->pc);
     if(probe_pc && s->icnt >= probe_after && (uint32_t)s->pc == probe_pc) {
-      fprintf(stderr, "[probe] icnt=%lu pc=%08x a0=%016lx a1=%016lx a2=%016lx\n",
+      fprintf(stderr, "[probe] icnt=%lu pc=%08x a0=%016lx a1=%016lx a2=%016lx a3=%016lx a4=%016lx a5=%016lx\n",
               (unsigned long)s->icnt, (uint32_t)s->pc,
-              (long)s->gpr[4], (long)s->gpr[5], (long)s->gpr[6]);
-      if(++probe_hits >= 8) break;
+              (long)s->gpr[4], (long)s->gpr[5], (long)s->gpr[6],
+              (long)s->gpr[7], (long)s->gpr[8], (long)s->gpr[9]);
+      if(++probe_hits >= 64) break;
     }
     execMips(s);
   }
