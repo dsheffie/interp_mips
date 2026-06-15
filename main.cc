@@ -113,12 +113,23 @@ int main(int argc, char *argv[]) {
   const char *fw = getenv("FINEWIN");   /* "lo:hi" icnt window for per-insn PC trace */
   uint64_t flo=0, fhi=0;
   if(fw) { sscanf(fw, "%lu:%lu", &flo, &fhi); }
+  const char *a1p = getenv("A1PROBE"); /* dump a0/a1/a2 first few times pc hits this addr */
+  uint32_t probe_pc = a1p ? (uint32_t)strtoull(a1p, nullptr, 0) : 0;
+  const char *a1after = getenv("A1PROBE_AFTER"); /* only start probing past this icnt */
+  uint64_t probe_after = a1after ? strtoull(a1after, nullptr, 0) : 0;
+  int probe_hits = 0;
   while(s->brk == 0 && s->icnt < s->maxicnt) {
     if(pcsample && (s->icnt % pcsample) == 0)
       fprintf(stderr, "[pc] icnt=%lu pc=%08x ra=%08x sp=%08x\n",
               (unsigned long)s->icnt, (uint32_t)s->pc, (uint32_t)s->gpr[31], (uint32_t)s->gpr[29]);
     if(fw && s->icnt>=flo && s->icnt<fhi)
       fprintf(stderr, "[fine] icnt=%lu pc=%08x\n", (unsigned long)s->icnt, (uint32_t)s->pc);
+    if(probe_pc && s->icnt >= probe_after && (uint32_t)s->pc == probe_pc) {
+      fprintf(stderr, "[probe] icnt=%lu pc=%08x a0=%016lx a1=%016lx a2=%016lx\n",
+              (unsigned long)s->icnt, (uint32_t)s->pc,
+              (long)s->gpr[4], (long)s->gpr[5], (long)s->gpr[6]);
+      if(++probe_hits >= 8) break;
+    }
     execMips(s);
   }
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
