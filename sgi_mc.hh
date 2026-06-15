@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstdlib>
 
 /* systemid value (MC reg 0x1c): [3:0]=revision, [4]=EISA present. Indy has no
  * EISA so bit4 stays clear; MAME reports revision 3 ("rev c"). */
@@ -35,12 +36,21 @@ public:
 		       rpss_divider(0x104),
 		       rpss_counter(0) {
     /* Advertise installed DRAM as the IP22 PROM would, so the kernel MC probe
-     * (and IRIX szmem) finds it.  bank0 = mconfig0[31:16] describes 128 MiB at
-     * physical 0x08000000 (MC rev<5: addr=(cfg&0xff)<<22, size=((cfg&0x1f00)+
-     * 0x100)<<14).  cfg = BVALID(0x2000)|RMASK(0x1f00)|BASE(0x20) = 0x3f20.
-     * Stored byte-swapped: the interpreter bswaps the device load, so the kernel
-     * reads 0x3f200000. */
-    memcfg[0] = __builtin_bswap32(0x3f20u << 16);
+     * finds it.  bank0 = mconfig0[31:16]; MC rev<5 decode: base=(cfg&0xff)<<22,
+     * size=((cfg&0x1f00)+0x100)<<14.  cfg = BVALID(0x2000)|RMASK|BASE(0x20).
+     * The kernel reads mconfig0/1 directly in mlreset() at the +4/+c BE aliases
+     * (0x1fa000c4 / 0x1fa000cc); stored byte-swapped so the kernel reads
+     * 0x23200000 / 0.
+     *
+     * Default = 16 MiB @ PA 0x08000000 (cfg 0x2320, size field [12:8]=0x03) --
+     * this is the real SGI Indy / MAME config (confirmed via MAME hinv; see
+     * MAME_QUESTIONS.md Q4). NB: 128 MiB (cfg 0x3f20, field 0x1f) makes IRIX's
+     * VM init skip init_pmap and panic with no banner; 16 MiB lets init_pmap run
+     * and IRIX print its release banner.
+     * MEMCFG=<hex cfg> overrides at runtime. */
+    const char *e = getenv("MEMCFG");
+    uint32_t cfg = e ? (uint32_t)strtoul(e, nullptr, 16) : 0x2320u;
+    memcfg[0] = __builtin_bswap32(cfg << 16);
     memcfg[1] = 0;
   };
   uint32_t read(uint32_t offs, size_t sz);
