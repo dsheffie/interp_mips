@@ -13,6 +13,7 @@
 #include "interpret.hh"
 #include "loadelf.hh"
 #include "sparse_mem.hh"
+#include "pseudo_bios.hh"
 #include "sgi_mc.hh"
 #include "sgi_hpc.hh"
 #include "sgi_scc.hh"
@@ -63,11 +64,10 @@ int main(int argc, char *argv[]) {
   initState(s);                    /* CP0 reset state: PRId, Config, SR, Random */
   load_elf(filename.c_str(), s);   /* sets s->pc to the entry */
 
-  /* IRIX /unix entry ABI (ARCS): a0=argc, a1=argv, a2=envp.  MAME ground truth
-   * for a direct kernel boot is a0=8, a1=0, a2=0. */
-  s->gpr[4] = 8;   /* a0 */
-  s->gpr[5] = 0;   /* a1 */
-  s->gpr[6] = 0;   /* a2 */
+  /* IRIX /unix entry ABI (ARCS): a0=argc, a1=argv, a2=envp. The pseudo-BIOS
+   * synthesizes the real argv/envp handoff sash gives /unix (the kernel's
+   * getargs/_envirn read these; a1=a2=0 made getargs derail -- MAME Q5). */
+  install_pseudo_bios(s, sm);
 
   if(!arcs.empty()) {
     int fd = open(arcs.c_str(), O_RDONLY);
