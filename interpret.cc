@@ -137,6 +137,14 @@ static inline state_t::reg_t sext32(uint32_t v) {
  * (EPC = branch pc = pc-4, BD=1); matches the RTL.  Call before the ExcCode write
  * (which preserves BD by masking only bits [6:2]). */
 static inline void set_exc_pc(state_t *s) {
+  /* R4000: EPC (and Cause.BD) are updated ONLY if Status.EXL==0 at the time of the
+   * exception. On a nested exception (EXL already set) they are preserved — so the
+   * eventual eret returns to the ORIGINAL faulting instruction, not the nested
+   * handler. (This is load-bearing for IRIX's self-mapped page-table refill: a
+   * nested TLB miss in the 0x80000000 refill handler must leave EPC = the original
+   * access, so retrying it re-runs the whole refill once the PT page is mapped.) */
+  if(s->cpr0[CPR0_SR] & SR_EXL)
+    return;
   if(s->in_delay_slot) {
     s->cpr0[CPR0_EPC]    = (uint32_t)(s->pc - 4);
     s->cpr0[CPR0_CAUSE] |=  (1u << 31);
