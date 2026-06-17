@@ -43,9 +43,25 @@ static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
  *   0x5d000..0x5dfff  PBUS PIO channel config (10 channels)
  */
 
+/* i8254 counter 2 counts DOWN at the chip's 1 MHz against CP0 Count (which we
+ * tick once per retired insn); the >>3 ratio makes dosample()'s ~4000-count
+ * poll window span ~32K insns -> a nonzero, run-to-run-stable r4k_tick. */
+uint16_t sgi_hpc::t2_value() {
+  uint32_t elapsed = (uint32_t)(s->cpr0[CPR0_COUNT] - t2_count_at_load);
+  uint32_t dec = elapsed >> 3;
+  if(dec >= t2_load) return 0;       /* counted down to (or past) zero */
+  return (uint16_t)(t2_load - dec);
+}
+
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
-  
+  if(offs == 0x598bb) {           /* i8254 counter 2: return latched low then high byte */
+    uint8_t b = (t2_rd_phase == 0) ? (uint8_t)(t2_latch & 0xff)
+                                   : (uint8_t)((t2_latch >> 8) & 0xff);
+    t2_rd_phase ^= 1;
+    return b;
+  }
+
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
     DPRINTF("pbus dma read\n");
   }
@@ -73,13 +89,39 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
 
   //assert(false);
     //}
-  
+
   //exit(-1);
   return 0;
 }
 
 void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   //assert(sz == 4);
+  if(offs == 0x598bf) {           /* i8254 control word (tcword) */
+    if(((x >> 4) & 0x3) == 0) {   /* RW=00: counter-latch command -> snapshot live value */
+      t2_latch = t2_value();
+      t2_rd_phase = 0;
+    }
+    else {                        /* RW=both: program (or stop) -> expect a 2-byte reload */
+      t2_loading = true;
+      t2_wr_phase = 0;
+    }
+    return;
+  }
+  else if(offs == 0x598bb) {      /* i8254 counter 2 (tcnt2): low byte then high byte */
+    if(t2_loading) {
+      if(t2_wr_phase == 0) {
+        t2_load = (t2_load & 0xff00) | (x & 0xff);
+        t2_wr_phase = 1;
+      }
+      else {
+        t2_load = (t2_load & 0x00ff) | ((x & 0xff) << 8);
+        t2_wr_phase = 0;
+        t2_loading = false;
+        t2_count_at_load = s->cpr0[CPR0_COUNT];   /* (re)start the down-count */
+      }
+    }
+    return;
+  }
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
     DPRINTF("pbus dma write\n");
   }

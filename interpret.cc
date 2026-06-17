@@ -149,11 +149,18 @@ static inline void set_exc_pc(state_t *s) {
    * access, so retrying it re-runs the whole refill once the PT page is mapped.) */
   if(s->cpr0[CPR0_SR] & SR_EXL)
     return;
+  /* EPC is a 64-bit register on R4000; keep the 32-bit (cpr0) and 64-bit
+   * (cpr0_64) views consistent.  Linux's exception entry saves EPC via
+   * `dmfc0 c0_epc` (reads cpr0_64) and restore_partial reloads it via
+   * `dmtc0`, then erets -- so leaving cpr0_64[EPC] stale made eret return to
+   * 0.  (IRIX read EPC via mfc0/eret, the 32-bit view, so it masked this.) */
   if(s->in_delay_slot) {
     s->cpr0[CPR0_EPC]    = (uint32_t)(s->pc - 4);
+    s->cpr0_64[CPR0_EPC] = (uint64_t)(s->pc - 4);
     s->cpr0[CPR0_CAUSE] |=  (1u << 31);
   } else {
     s->cpr0[CPR0_EPC]    = (uint32_t)s->pc;
+    s->cpr0_64[CPR0_EPC] = (uint64_t)s->pc;
     s->cpr0[CPR0_CAUSE] &= ~(1u << 31);
   }
 }
@@ -184,6 +191,24 @@ static inline void raise_common(state_t *s, uint32_t exccode) {
   s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2)) | (exccode << 2);
   s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
   s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
+}
+
+/* CP0 Count/Compare timer + interrupt delivery (R4000 internal timer, the IP22
+ * Linux clocksource/clockevent).  Called once per instruction step from the main
+ * loop.  Count advances; Count==Compare sets Cause.IP[7] (timer pending).  An Int
+ * exception (ExcCode 0) is taken at this instruction boundary when an enabled,
+ * unmasked interrupt is pending: IE=1, EXL=0, ERL=0, (Cause.IP & Status.IM) != 0.
+ * The kernel's timer ISR re-arms by writing Compare (which clears IP[7]; see the
+ * MTC0 handler). */
+void maybe_take_interrupt(state_t *s) {
+  s->cpr0[CPR0_COUNT] = (s->cpr0[CPR0_COUNT] + 1u) & 0xffffffffu;
+  if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
+    s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
+  uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
+  if((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (((cause & sr) & 0xff00u) != 0u)) {
+    set_exc_pc(s);
+    raise_common(s, 0u);                               /* ExcCode 0 = Int */
+  }
 }
 
 static void raise_adel(state_t *s) {
@@ -2590,6 +2615,8 @@ void execMips(state_t *s) {
 	    }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
+	  if(rd == CPR0_COMPARE)   /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
+	    s->cpr0[CPR0_CAUSE] &= ~(1u << 15);
 	  /* CP0 reg 7 is the simulator putchar port */
 	  if(rd == 7 && !s->silent) {
 	    fputc((int)(s->gpr[rt] & 0xff), stdout);

@@ -151,6 +151,7 @@ int main(int argc, char *argv[]) {
               (long)s->gpr[7], (long)s->gpr[8], (long)s->gpr[9]);
       if(++probe_hits >= 64) break;
     }
+    maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
     execMips(s);
   }
   if(globals::pctrace) fclose(globals::pctrace);

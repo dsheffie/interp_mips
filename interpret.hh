@@ -311,6 +311,7 @@ static inline uint32_t get_branch_target(uint32_t pc, uint32_t inst) {
 
 void initState(state_t *s);
 void execMips(state_t *s);
+void maybe_take_interrupt(state_t *s);  /* CP0 Count/Compare timer tick + Int delivery; call once per step */
 void raise_int(state_t *s, uint32_t epc);
 
 
