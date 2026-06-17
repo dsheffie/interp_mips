@@ -36,7 +36,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name;
+  std::string filename, arcs, retire_name, start_pc;
   uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("options");
@@ -44,7 +44,8 @@ int main(int argc, char *argv[]) {
       ("file,f",    po::value<std::string>(&filename), "ELF kernel image")
       ("arcs",      po::value<std::string>(&arcs),     "ARCS firmware blob (loaded at PA 0x1000)")
       ("retiretrace", po::value<std::string>(&retire_name), "emit boost retire_trace for rv64analyzer")
-      ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions");
+      ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions")
+      ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -67,7 +68,9 @@ int main(int argc, char *argv[]) {
   /* IRIX /unix entry ABI (ARCS): a0=argc, a1=argv, a2=envp. The pseudo-BIOS
    * synthesizes the real argv/envp handoff sash gives /unix (the kernel's
    * getargs/_envirn read these; a1=a2=0 made getargs derail -- MAME Q5). */
-  install_pseudo_bios(s, sm);
+  /* fake-BIOS (--start-pc): the arcs_irix boot stub does the argv/envp handoff
+   * itself (matching the FPGA), so skip the C++ pseudo-BIOS. */
+  if(start_pc.empty()) install_pseudo_bios(s, sm);
 
   if(!arcs.empty()) {
     int fd = open(arcs.c_str(), O_RDONLY);
@@ -89,7 +92,7 @@ int main(int argc, char *argv[]) {
      * jr ra; nop.  v0 -> 0xa0001f00 (kseg1, uncached).  Only applies to the IRIX
      * blob (stub_getenv @ 0xe68; blob is 0xf00 bytes); the Linux arcs_fw blob is
      * far smaller (752 bytes), so guard on size to avoid clobbering a small blob. */
-    if(st.st_size >= 0xe78) {
+    if(start_pc.empty() && st.st_size >= 0xe78) {
       uint8_t *base = (uint8_t*)sm->mem + 0x1000;
       const char *eaddr = "08:00:69:12:34:56";
       memcpy(base + 0xf00, eaddr, strlen(eaddr) + 1);
@@ -103,6 +106,13 @@ int main(int argc, char *argv[]) {
       put_be(0xe70, 0x03e00008);   /* jr    ra              */
       put_be(0xe74, 0x00000000);   /* nop                   */
     }
+  }
+
+  /* fake-BIOS: start at the firmware boot stub (e.g. arcs_boot @ 0xa0003000);
+   * the stub prints the SCC heartbeat, builds argv/envp, and jumps to /unix. */
+  if(!start_pc.empty()) {
+    s->pc = (int64_t)(int32_t)(uint32_t)strtoul(start_pc.c_str(), nullptr, 0);
+    std::cerr << "fake-bios: start pc = " << std::hex << (uint32_t)s->pc << std::dec << "\n";
   }
 
   retire_trace rt;

@@ -58,6 +58,13 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   else if(offs == 0x30004) {      /* gio_misc */
     return misc;
   }
+  else if(offs == 0x59858) {      /* IOC2 System ID register (phys 0x1fbd9858) */
+    /* 0x26 = guinness/Indy board id; getsysid uses bits [7:5] (->001) + bit 0
+     * to pick the system type. (MAME co-sim, MAME_QUESTIONS.md Q5 round-3.)
+     * Return it pre-byte-swapped (like the MC mconfig regs): the load path
+     * bswaps device reads, so the kernel sees 0x26 in byte [7:0]. */
+    return 0x26000000u;
+  }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
     DPRINTF("pio data on channel %u\n", id);

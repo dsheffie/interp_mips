@@ -119,8 +119,12 @@ void initState(state_t *s) {
   /* PRId: read-only processor id (R4000 family for now) */
   s->cpr0[CPR0_PRID] = PRID_VALUE;
   s->cpr0_64[CPR0_PRID] = PRID_VALUE;
-  /* Config: return the same constant as the RTL (cache geometry) */
-  s->cpr0[CPR0_CONFIG] = 0x00088200;
+  /* Config: R4600 cache geometry (16 KB I$ + 16 KB D$, 32-byte lines, K0=3),
+   * matching the real SGI Indy / MAME. mlreset derives cachecolormask from this;
+   * the r9999 RTL's 0x00088200 gives the wrong mask and pagecoloralign loops
+   * forever (MAME co-sim, MAME_QUESTIONS.md Q5 round-2). */
+  s->cpr0[CPR0_CONFIG] = 0x0002e4b3;
+  s->cpr0_64[CPR0_CONFIG] = 0x0002e4b3;
 }
 
 /* Raise MIPS Reserved Instruction exception (ExcCode=10).
@@ -447,6 +451,43 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   uint32_t code = (op == tlb_op::store) ? 3u : 2u;
   raise_tlb(s, va, code, /*is_refill=*/true, xtlb);
   return 0;
+}
+
+/* Read-only address probe for debug knobs: returns true and sets *pa if va maps
+ * to a valid (V=1) physical address, WITHOUT raising any TLB exception (mirrors
+ * va_translate's segment + 48-entry lookup, minus the fault paths). */
+static bool tlb_probe_ro(state_t *s, uint64_t va, uint32_t *pa) {
+  uint32_t hi32 = (uint32_t)(va >> 32);
+  uint32_t lo32 = (uint32_t)va;
+  if(hi32 == 0x00000000u || hi32 == 0xffffffffu) {
+    uint32_t seg = lo32 >> 29;
+    if(seg == 0x4 || seg == 0x5) { *pa = lo32 & 0x1fffffff; return true; }
+  } else if(((va >> 62) & 0x3) == 0x2) {
+    *pa = (uint32_t)(va & 0xffffffffffULL); return true;
+  }
+  bool wide = !(hi32 == 0x00000000u || hi32 == 0xffffffffu);
+  uint64_t cur_asid = s->cpr0_64[CPR0_ENTRYHI] & 0xffULL;
+  uint64_t cmp_mask = wide ? ~0x3ULL : 0xffffffffULL;
+  for(int i = 0; i < state_t::NUM_TLB_ENTRIES; i++) {
+    uint64_t pm     = s->tlb[i].page_mask & 0x1ffe000ULL;
+    uint64_t mask   = (~(uint64_t)(pm | 0x1fffULL)) & cmp_mask;
+    uint64_t e_hi   = s->tlb[i].entry_hi;
+    bool global     = (s->tlb[i].entry_lo0 & 1u) && (s->tlb[i].entry_lo1 & 1u);
+    bool vpn_match  = (va & mask) == (e_hi & mask);
+    if(wide) vpn_match = vpn_match && (((va >> 62) & 0x3) == ((e_hi >> 62) & 0x3));
+    bool asid_match = global || (cur_asid == (e_hi & 0xffULL));
+    if(!(vpn_match && asid_match)) continue;
+    uint64_t pair_mask = pm | 0x1fffULL;
+    uint64_t off_mask  = pair_mask >> 1;
+    uint64_t sel_bit   = (pair_mask + 1) >> 1;
+    bool odd           = (va & sel_bit) != 0;
+    uint64_t e_lo      = odd ? s->tlb[i].entry_lo1 : s->tlb[i].entry_lo0;
+    if(!(e_lo & 0x2u)) return false;               /* V == 0 */
+    uint64_t pfn = (e_lo >> 6) & 0xfffffffULL;
+    *pa = (uint32_t)((pfn << 12) | (va & off_mask));
+    return true;
+  }
+  return false;
 }
 
 template <typename T>
@@ -1896,6 +1937,106 @@ void execMips(state_t *s) {
       else if(op == 0 && (inst & 0x3f) == 9) /* jalr */
         fprintf(stderr, "[call] %lu %08x %08x\n", (unsigned long)s->icnt,
                 (uint32_t)s->pc, (uint32_t)s->gpr[(inst >> 21) & 31]);
+    }
+  }
+  if(getenv("ROMVEC")) {
+    /* Log every control transfer into the ARCS romvec stub blob (PA 0x1000..
+     * 0x1fff) -- jal/jalr/j/jr -- with args, so we can ask MAME what the real
+     * PROM returns for each. (call_prom uses jr tail-calls, not just jalr.) */
+    uint32_t op = inst >> 26, fn = inst & 0x3f, tgt = 0;
+    bool xfer = false;
+    if(op == 2 || op == 3) { tgt = (uint32_t)((s->pc & ~0xfffffffULL) | ((uint64_t)(inst & 0x3ffffff) << 2)); xfer = true; }
+    else if(op == 0 && (fn == 8 || fn == 9)) { tgt = (uint32_t)s->gpr[(inst >> 21) & 31]; xfer = true; }
+    if(xfer && (tgt & 0x1fffffff) >= 0x1000 && (tgt & 0x1fffffff) < 0x2000)
+      fprintf(stderr, "[romvec] icnt=%lu caller=%08x target=%08x a0=%016lx a1=%016lx a2=%016lx a3=%016lx ra=%08x\n",
+              (unsigned long)s->icnt, (uint32_t)s->pc, tgt,
+              (long)s->gpr[4], (long)s->gpr[5], (long)s->gpr[6], (long)s->gpr[7], (uint32_t)s->gpr[31]);
+  }
+  if((uint32_t)s->pc == 0x880162c8u && getenv("KMISSDBG")) {
+    /* kmiss entry: for a fault in the KPTEBASE self-map region [0xff800000,
+     * 0xffa00000), replicate the handler's PDA walk and dump whether the
+     * page-table-of-page-table root is backed. PDA base ptr lives at kseg3
+     * 0xffffa014; +0x378/+0x37c = two PT roots; +0x380 = entry limit. A zero
+     * entry0/entry1 here is exactly the "0xff800000 never gets backed" panic. */
+    uint32_t bv = (uint32_t)s->cpr0[CPR0_BADVADDR];
+    static int n = 0;
+    if(bv >= 0xff800000u && bv < 0xffa00000u && n++ < 8) {
+      auto rd32 = [&](uint64_t va, bool &ok) -> uint32_t {
+        uint32_t pa;
+        if(tlb_probe_ro(s, va, &pa)) { ok = true; return bswap<EL>(s->mem.get<uint32_t>(pa)); }
+        ok = false; return 0;
+      };
+      bool ok_pcb, ok_lim, ok_b0, ok_b1, ok_e0, ok_e1;
+      uint32_t idx = (bv - 0xff800000u) >> 12;
+      uint32_t pcb   = rd32(0xffffffffffffa014ULL, ok_pcb);   /* PDA base ptr  */
+      uint32_t lim   = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x380), ok_lim);
+      uint32_t base0 = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x378), ok_b0);
+      uint32_t base1 = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x37c), ok_b1);
+      uint32_t e0    = rd32((uint64_t)(int64_t)(int32_t)(base0 + idx*4), ok_e0);
+      uint32_t e1    = rd32((uint64_t)(int64_t)(int32_t)(base1 + idx*4), ok_e1);
+      bool ok_kpt, ok_klim;
+      uint32_t kptbl = rd32(0xffffffff8832cf58ULL, ok_kpt);   /* global kernel PT base */
+      uint32_t klim  = rd32(0xffffffff8832b588ULL, ok_klim);  /* kmissnxt limit */
+      fprintf(stderr, "[kmiss] icnt=%lu bva=%08x idx=%u pcb=%08x(%d) lim=%08x(%d) "
+              "base0=%08x(%d) e0=%08x(%d) base1=%08x(%d) e1=%08x(%d) "
+              "kptbl=%08x(%d) klim=%08x(%d)\n",
+              (unsigned long)s->icnt, bv, idx, pcb, ok_pcb, lim, ok_lim,
+              base0, ok_b0, e0, ok_e0, base1, ok_b1, e1, ok_e1,
+              kptbl, ok_kpt, klim, ok_klim);
+    }
+  }
+  if((uint32_t)s->pc == 0x880052a4u && getenv("KMISSDBG")) {   /* resume entry */
+    static unsigned long rc = 0;
+    if(rc < 4 || (rc % 1000) == 0)
+      fprintf(stderr, "[resume] #%lu icnt=%lu a0(thread)=%08x\n",
+              rc, (unsigned long)s->icnt, (uint32_t)s->gpr[4]);
+    rc++;
+  }
+  {
+    /* KMISSTRACE: once the c0000000 bzero fires, log every TLB-handler entry so we
+     * can see the routing for the 0xffb00000 page-table-region fault — does it reach
+     * kmissnxt (global) or fall into kmiss's per-process longway? */
+    static const bool kt = getenv("KMISSTRACE") != nullptr;
+    static bool armed = false;
+    if(kt) {
+      if((uint32_t)s->pc == 0x8801a860u && (uint32_t)s->gpr[4] == 0xc0000000u) armed = true;
+      if(armed) {
+        uint32_t pc = (uint32_t)s->pc;
+        const char *nm = pc==0x80000000u ? "refill_vec" : pc==0x80000180u ? "general_vec"
+                       : pc==0x880162c8u ? "kmiss"      : pc==0x880164fcu ? "kmissnxt"
+                       : pc==0x880165d4u ? "kmissnxt_c0" : pc==0x88015c10u ? "longway"
+                       : pc==0x88016498u ? "kmiss_pathB" : nullptr;
+        if(nm)
+          fprintf(stderr, "[ktrace] icnt=%lu %-11s pc=%08x bva=%08x ctx=%08x exl=%d epc=%08x\n",
+                  (unsigned long)s->icnt, nm, pc, s->cpr0[CPR0_BADVADDR], s->cpr0[CPR0_CONTEXT],
+                  (s->cpr0[CPR0_SR] & SR_EXL) ? 1 : 0, s->cpr0[CPR0_EPC]);
+      }
+    }
+  }
+  if(getenv("KVALDBG")) {
+    /* kvalloc PTE-write loop: 0x880fd07c = `sw a3,-4(s0)` (kvalloc+0x2dc), the PC
+     * MAME says writes the VALID leaf PTE into kptbl[c0000000] @ PA 0x08392000
+     * (value 0x4020f61f) before the bzero. s0=$16 (post-incr -> slot is s0-4),
+     * a3=$7 (PTE value). We log writes landing in the kptbl arena, plus read back
+     * kptbl[c0000000] at the bzero fault (pc 0x8801a860) for direct comparison. */
+    if((uint32_t)s->pc == 0x880fd07cu) {
+      static unsigned long wn = 0;
+      uint32_t va  = (uint32_t)s->gpr[16] - 4;     /* s0 - 4 */
+      uint32_t pa  = va & 0x1fffffffu;             /* s0 is kseg0 */
+      uint32_t val = (uint32_t)s->gpr[7];          /* a3 = PTE */
+      bool in_arena = (pa >= 0x08392000u && pa < 0x08393000u);
+      if(wn < 4 || in_arena)
+        fprintf(stderr, "[kval] #%lu icnt=%lu pc=880fd07c va=%08x pa=%08x val=%08x%s\n",
+                wn, (unsigned long)s->icnt, va, pa, val,
+                pa == 0x08392000u ? "  <== kptbl[c0000000]" : "");
+      wn++;
+    }
+    if((uint32_t)s->pc == 0x8801a860u && (uint32_t)s->gpr[4] == 0xc0000000u) {
+      static int once = 0;                          /* the c0000000 bzero store */
+      if(once++ < 2)
+        fprintf(stderr, "[kval] bzero(c0000000)@8801a860 icnt=%lu kptbl[c0000000]@pa08392000=%08x\n",
+                (unsigned long)s->icnt,
+                bswap<EL>(s->mem.get<uint32_t>(0x08392000u)));
     }
   }
 
