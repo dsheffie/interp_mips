@@ -293,6 +293,20 @@ static void raise_trap(state_t *s) {
   raise_common(s, 13u);
 }
 
+/* SYSCALL (ExcCode 8) / BREAK (ExcCode 9): trap into the kernel's general
+ * exception handler (0x80000180). EPC = the syscall/break pc (the kernel's
+ * handler advances past it before eret); set_exc_pc handles the delay-slot
+ * case. (interp_mips was originally a user-mode sim that halted here; in
+ * full-system OS mode these must vector to the kernel.) */
+static void raise_syscall(state_t *s) {
+  set_exc_pc(s);
+  raise_common(s, 8u);
+}
+static void raise_break(state_t *s) {
+  set_exc_pc(s);
+  raise_common(s, 9u);
+}
+
 void raise_int(state_t *s, uint32_t epc) {
   s->cpr0[CPR0_EPC]   = epc;
   s->cpr0[CPR0_CAUSE] = (1u << 15);  /* IP[7]=1 (timer), ExcCode=0, BD=0 */
@@ -2130,13 +2144,12 @@ void execMips(state_t *s) {
 	s->insn_histo[mipsInsn::JALR]++;
 	break;
       }
-      case 0x0C: /* syscall */
-      case 0x0D: /* break */
-	s->brk = 1;
-	s->pc += 4;    /* advance so the checker stays in sync */
-	if(!s->silent) {
-	  std::cout << "got break or syscall\n";
-	}
+      case 0x0C: /* syscall -> trap to kernel (ExcCode 8) */
+	raise_syscall(s);
+	s->insn_histo[mipsInsn::BREAK]++;
+	break;
+      case 0x0D: /* break -> trap to kernel (ExcCode 9) */
+	raise_break(s);
 	s->insn_histo[mipsInsn::BREAK]++;
 	break;
       case 0x0f: /* sync */
@@ -2542,13 +2555,18 @@ void execMips(state_t *s) {
 	  break;
 	}
 	case 24: { /* ERET -- exception return */
+	  /* EPC/ErrorEPC are 64-bit on R4000: read the full cpr0_64 view, not the
+	   * 32-bit cpr0[] (which truncates a user EPC like 0x120000190 -> 0x20000190,
+	   * so eret never reaches userspace). Kernel ckseg0 EPCs sign-extend either
+	   * way; userspace n64 EPCs need the full 64 bits. (-4 cancels the loop's
+	   * post-instruction pc+=4.) */
 	  if(s->cpr0[CPR0_SR] & SR_ERL) {
 	    /* Return from error: EPC = ErrorEPC, clear ERL */
-	    s->pc = (int32_t)s->cpr0[CPR0_ERROREPC] - 4;
+	    s->pc = (state_t::reg_t)s->cpr0_64[CPR0_ERROREPC] - 4;
 	    s->cpr0[CPR0_SR] &= ~SR_ERL;
 	  } else {
 	    /* Return from exception: PC = EPC, clear EXL */
-	    s->pc = (int32_t)s->cpr0[CPR0_EPC] - 4;
+	    s->pc = (state_t::reg_t)s->cpr0_64[CPR0_EPC] - 4;
 	    s->cpr0[CPR0_SR] &= ~SR_EXL;
 	  }
 	  s->insn_histo[mipsInsn::ERET]++;
