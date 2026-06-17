@@ -388,24 +388,22 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   }
 
   /* ---- TLB lookup over the 48 entries ---- */
-  bool wide = !(hi32 == 0x00000000u || hi32 == 0xffffffffu); /* 64-bit addressing */
-  bool xtlb = wide;
+  /* xtlb only selects the refill exception vector (XTLB vs TLB), keyed on 64-bit
+   * addressing (VA upper bits not a sign-extended 32-bit value). */
+  bool xtlb = !(hi32 == 0x00000000u || hi32 == 0xffffffffu);
   uint64_t cur_asid = s->cpr0_64[CPR0_ENTRYHI] & 0xffULL;
 
-  /* In 32-bit (compatibility) addressing the kernel writes EntryHi via 32-bit
-   * MTC0 (R field = 0) and the VA's sign-extended upper bits are not part of the
-   * tag, so compare only VPN2[31:13]. In 64-bit addressing compare the full
-   * VPN2[39:13] plus the R field [63:62]. */
-  uint64_t cmp_mask = wide ? ~0x3ULL : 0xffffffffULL;
-
+  /* Sail tlbEntryMatch / tlbSearch (mips_tlb.sail) -- UNCONDITIONAL full match:
+   *   r=VA[63:62], vpn2=VA[39:13];
+   *   valid & (r==entryR) & ((vpn2 & vpnMask)==(entryVPN & vpnMask)) & (asid|G).
+   * No narrow/wide and R is ALWAYS compared (the spec has no 32-bit shortcut). */
   for(int i = 0; i < state_t::NUM_TLB_ENTRIES; i++) {
     uint64_t pm     = s->tlb[i].page_mask & 0x1ffe000ULL; /* mask bits [24:13] */
-    uint64_t mask   = (~(uint64_t)(pm | 0x1fffULL)) & cmp_mask;
+    uint64_t vpnMask= (~(uint64_t)(pm | 0x1fffULL)) & 0x000000ffffffe000ULL; /* VPN2[39:13] */
     uint64_t e_hi   = s->tlb[i].entry_hi;
     bool global     = (s->tlb[i].entry_lo0 & 1u) && (s->tlb[i].entry_lo1 & 1u);
-    bool vpn_match  = (va & mask) == (e_hi & mask);
-    if(wide)   /* also match the region (R) field in 64-bit addressing */
-      vpn_match = vpn_match && (((va >> 62) & 0x3) == ((e_hi >> 62) & 0x3));
+    bool vpn_match  = ((va & vpnMask) == (e_hi & vpnMask))
+                   && (((va >> 62) & 0x3) == ((e_hi >> 62) & 0x3));
     bool asid_match = global || (cur_asid == (e_hi & 0xffULL));
     if(!(vpn_match && asid_match))
       continue;
@@ -2467,6 +2465,9 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
 	  }
+	  if(getenv("TLBLOG")) fprintf(stderr, "[TLBWI] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx pm=%08x\n",
+	     idx, (unsigned long long)s->cpr0_64[CPR0_ENTRYHI], (unsigned long long)s->cpr0_64[CPR0_ENTRYLO0],
+	     (unsigned long long)s->cpr0_64[CPR0_ENTRYLO1], s->cpr0[CPR0_PAGEMASK]);
 	  s->insn_histo[mipsInsn::TLBWI]++;
 	  break;
 	}
@@ -2485,6 +2486,9 @@ void execMips(state_t *s) {
 	    s->cpr0[CPR0_RANDOM] = (random <= wired)
 	      ? (uint32_t)(state_t::NUM_TLB_ENTRIES - 1) : (random - 1);
 	  }
+	  if(getenv("TLBLOG") && idx < 8) fprintf(stderr, "[TLBWR] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx\n",
+	     idx, (unsigned long long)s->cpr0_64[CPR0_ENTRYHI], (unsigned long long)s->cpr0_64[CPR0_ENTRYLO0],
+	     (unsigned long long)s->cpr0_64[CPR0_ENTRYLO1]);
 	  s->insn_histo[mipsInsn::TLBWR]++;
 	  break;
 	}
@@ -2574,8 +2578,17 @@ void execMips(state_t *s) {
 	  break;
 	case 0x4: /*mtc0*/
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
-	    s->cpr0[rd] = (uint32_t)s->gpr[rt];
-	    s->cpr0_64[rd] = (uint64_t)(uint32_t)s->gpr[rt];
+	    if(rd == CPR0_ENTRYHI) {
+	      /* Sail mips_insts.sail execute(MTC0 ...EntryHi): take R[63:62],
+	       * VPN2[39:13], ASID[7:0] from the FULL 64-bit GPR (no zero-extend;
+	       * MTC0 behaves like DMTC0 for this register's fields). */
+	      s->cpr0_64[rd] = (s->gpr[rt] & 0xc000000000000000ULL)   /* R    */
+	                     | (s->gpr[rt] & 0x000000ffffffe000ULL)   /* VPN2 */
+	                     | (s->gpr[rt] & 0xffULL);                /* ASID */
+	    } else {
+	      s->cpr0_64[rd] = (uint64_t)(uint32_t)s->gpr[rt];
+	    }
+	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
 	  /* CP0 reg 7 is the simulator putchar port */
 	  if(rd == 7 && !s->silent) {
