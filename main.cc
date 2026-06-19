@@ -37,7 +37,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc, disk;
+  std::string filename, arcs, retire_name, start_pc, disk, prom;
   uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("options");
@@ -47,7 +47,8 @@ int main(int argc, char *argv[]) {
       ("retiretrace", po::value<std::string>(&retire_name), "emit boost retire_trace for rv64analyzer")
       ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions")
       ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
-      ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)");
+      ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)")
+      ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -109,6 +110,21 @@ int main(int argc, char *argv[]) {
       put_be(0xe70, 0x03e00008);   /* jr    ra              */
       put_be(0xe74, 0x00000000);   /* nop                   */
     }
+  }
+
+  /* PROM firmware (henry_arcs.bin): a self-contained FSBL linked at the CPU
+   * reset vector 0xBFC00000 (phys 0x1fc00000).  It copies its SPB to phys 0x1000,
+   * stages argv/envp, reads the kernel entry from the kentry slot @0xBFC00008
+   * (default 0x88005960 = the IRIX /unix entry), and jumps to it.  Load the flat
+   * blob into the PROM region and boot via --start-pc 0xbfc00000. */
+  if(!prom.empty()) {
+    int fd = open(prom.c_str(), O_RDONLY);
+    if(fd < 0) { std::cerr << "cannot open prom " << prom << "\n"; return 1; }
+    struct stat st; fstat(fd, &st);
+    void *buf = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    memcpy(sm->mem + 0x1fc00000, buf, st.st_size);
+    std::cerr << "loaded PROM firmware (" << st.st_size << " bytes) at phys 0x1fc00000\n";
+    munmap(buf, st.st_size); close(fd);
   }
 
   /* fake-BIOS: start at the firmware boot stub (e.g. arcs_boot @ 0xa0003000);
