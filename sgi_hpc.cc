@@ -1,5 +1,6 @@
 #include "sgi_hpc.hh"
 #include "interpret.hh"
+#include "sgi_scsi.hh"
 #include <cassert>
 #include <cstdlib>
 
@@ -53,6 +54,61 @@ uint16_t sgi_hpc::t2_value() {
   return (uint16_t)(t2_load - dec);
 }
 
+/* read a big-endian 32-bit word from physical DRAM (descriptors are stored in
+ * guest big-endian byte order; sparse_mem holds raw guest bytes). */
+static inline uint32_t rd_be32(state_t *s, uint32_t pa) {
+  uint8_t *p = s->mem.get_raw_ptr(pa);
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+void sgi_hpc::scsi_fetch_chain(int ch) {
+  scsi_dma_t &d = scsi_dma[ch];
+  uint32_t desc = d.nbdp;
+  d.cbp   = rd_be32(s, desc);
+  d.bc    = rd_be32(s, desc + 4);
+  d.nbdp  = rd_be32(s, desc + 8);
+  d.count = d.bc & 0x3fff;
+}
+
+/* Descriptor-walk FSM, pumped while it can make progress.  CH_XFER drains the
+ * current descriptor against the WD33C93 byte-port until count==0 or DRQ drops
+ * (data exhausted on the device side); CH_DESC_DONE handles XIE/EOX and either
+ * advances to the next descriptor or deactivates the channel. */
+void sgi_hpc::scsi_run_dma(int ch) {
+  scsi_dma_t &d = scsi_dma[ch];
+  bool progress = true;
+  while(d.active && progress) {
+    progress = false;
+    switch(d.state) {
+    case CH_IDLE:
+      break;
+    case CH_FETCH:
+      scsi_fetch_chain(ch);
+      d.state = CH_XFER;
+      progress = true;
+      break;
+    case CH_XFER:
+      while(d.count != 0 && s->scsi && s->scsi->drq_pending()) {
+        uint8_t *p = s->mem.get_raw_ptr(d.cbp);
+        if(d.to_device) s->scsi->dma_w(*p);
+        else            *p = s->scsi->dma_r();
+        d.cbp++; d.count--;
+      }
+      if(d.count == 0) { d.state = CH_DESC_DONE; progress = true; }
+      break;  /* else DRQ dropped mid-descriptor: wait for the next DRQ */
+    case CH_DESC_DONE:
+      if(d.bc & 0x20000000u) intstat |= (0x100u << ch);    /* XIE -> SCSI channel IRQ */
+      if(d.bc & 0x80000000u) {                              /* EOX -> deactivate */
+        d.active = false; d.ctrl &= ~0x10u; d.state = CH_IDLE;
+      } else {
+        d.state = CH_FETCH;
+      }
+      progress = true;
+      break;
+    }
+  }
+}
+
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
   if(offs == 0x598bb) {           /* i8254 counter 2: return latched low then high byte */
@@ -65,8 +121,30 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
     DPRINTF("pbus dma read\n");
   }
-  else if(offs >= 0x00010000 and offs <= 0x0001ffff) { /* HD0/HD1/ENET DMA regs */
+  else if(offs >= 0x00010000 and offs <= 0x00013fff) { /* SCSI HD0/HD1 DMA channel regs */
+    int ch = (offs & 0x2000) ? 1 : 0;
+    uint32_t n = offs & ~0x2000u;
+    scsi_dma_t &d = scsi_dma[ch];
+    switch(n) {
+    case 0x10000: return d.cbp;
+    case 0x10004: return d.nbdp;
+    case 0x11000: return (d.count & 0x3fff) | (d.bc & ~0x3fffu);
+    case 0x11004: {                                      /* ctrl: read clears the IRQ bit */
+      uint32_t r = d.ctrl;
+      if(intstat & (0x100u << ch)) { r |= 0x01u; intstat &= ~(0x100u << ch); }
+      return r;
+    }
+    case 0x11010: return d.dmacfg;
+    case 0x11014: return d.piocfg;
+    default:      return 0;                              /* gio/dev fifo ptr */
+    }
+  }
+  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet read\n");
+  }
+  else if(offs >= 0x00044000 and offs <= 0x000443ff) { /* WD33C93 HD0 (SASR/SCMD) */
+    if(s->scsi) return s->scsi->pio_r(((offs - 0x44000) >> 2) & 1);
+    return 0;
   }
   else if(offs == 0x30000) {      /* istat0: interrupt status [4:0] */
     return intstat;
@@ -125,15 +203,48 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   if(offs <= 0x0000ffff) {        /* PBUS DMA channel registers */
     DPRINTF("pbus dma write\n");
   }
-  else if(offs >= 0x00010000 and offs <= 0x0001ffff) { /* HD0/HD1/ENET DMA regs */
+  else if(offs >= 0x00010000 and offs <= 0x00013fff) { /* SCSI HD0/HD1 DMA channel regs */
+    int ch = (offs & 0x2000) ? 1 : 0;
+    uint32_t n = offs & ~0x2000u;
+    scsi_dma_t &d = scsi_dma[ch];
+    switch(n) {
+    case 0x10004: d.nbdp   = x; break;
+    case 0x11000: d.bc     = x; break;
+    case 0x11010: d.dmacfg = x; break;
+    case 0x11014: d.piocfg = x; break;
+    case 0x11004: {                                   /* ctrl: arm / flush / reset the channel */
+      bool was_active = d.active;
+      if(x & 0x20u) {                                 /* AMASK: write-protect ch_active */
+        d.ctrl = x & ~0x01u & ~0x10u & ~0x20u;
+        if(was_active) d.ctrl |= 0x10u;
+      } else {
+        d.ctrl = x & ~0x01u & ~0x20u;
+        d.active = (d.ctrl & 0x10u);
+      }
+      d.to_device = (d.ctrl & 0x04u);                 /* DIR: 1 = mem->device */
+      if(!was_active && d.active) d.state = CH_FETCH;  /* arm -> start the FSM */
+      if((x & 0x40u) && s->scsi) s->scsi->reset();    /* CRESET */
+      if(x & 0x08u) { d.active = false; d.ctrl &= ~0x10u; d.state = CH_IDLE; }  /* FLUSH -> stop */
+      if(d.active) scsi_run_dma(ch);
+      break;
+    }
+    default: break;
+    }
+    return;
+  }
+  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet write\n");
     return;
   }
   else if(offs == 0x30004) {      /* gio_misc */
     misc = x&3;
   }
-  else if(offs >= 0x40000 and offs <= 0x47fff) { /* HD0 SCSI (WD33C93) device regs */
-    DPRINTF("scsi hd0 interface writes %x\n", x);
+  else if(offs >= 0x44000 and offs <= 0x443ff) { /* WD33C93 HD0 (SASR/SCMD) */
+    if(s->scsi) {
+      s->scsi->pio_w(((offs - 0x44000) >> 2) & 1, (uint8_t)x);
+      /* a COMMAND-register write may assert DRQ; service it if the channel is armed */
+      if(scsi_dma[0].active && s->scsi->drq_pending()) scsi_run_dma(0);
+    }
   }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;

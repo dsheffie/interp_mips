@@ -105,6 +105,7 @@ enum class fp_reg_state { unknown, sp, dp };
 class sgi_mc;
 class sgi_hpc;
 class sgi_scc;
+class sgi_scsi;
 
 class state_t{
 public:
@@ -144,6 +145,7 @@ public:
   sgi_mc *mc = nullptr;
   sgi_hpc *hpc = nullptr;
   sgi_scc *scc = nullptr;
+  sgi_scsi *scsi = nullptr;
 
   /* True while executing a branch/jump delay-slot instruction.  An exception in
    * a delay slot sets EPC = the branch pc and Cause.BD = 1 (matches the RTL,

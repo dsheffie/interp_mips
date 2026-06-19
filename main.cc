@@ -17,6 +17,7 @@
 #include "sgi_mc.hh"
 #include "sgi_hpc.hh"
 #include "sgi_scc.hh"
+#include "sgi_scsi.hh"
 #include "globals.hh"
 #include "inst_record.hh"
 
@@ -36,7 +37,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc;
+  std::string filename, arcs, retire_name, start_pc, disk;
   uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("options");
@@ -45,7 +46,8 @@ int main(int argc, char *argv[]) {
       ("arcs",      po::value<std::string>(&arcs),     "ARCS firmware blob (loaded at PA 0x1000)")
       ("retiretrace", po::value<std::string>(&retire_name), "emit boost retire_trace for rv64analyzer")
       ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions")
-      ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)");
+      ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
+      ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -59,6 +61,7 @@ int main(int argc, char *argv[]) {
   s->mc  = new sgi_mc(s);
   s->hpc = new sgi_hpc(s);
   s->scc = new sgi_scc(s);
+  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk);
   sm->st = s;
   sm->route_devices = true;
 
@@ -165,6 +168,6 @@ int main(int argc, char *argv[]) {
               << " retire_trace records to " << retire_name << "\n";
   }
 
-  delete s->mc; delete s->hpc; delete s->scc; delete s; delete sm;
+  delete s->mc; delete s->hpc; delete s->scc; delete s->scsi; delete s; delete sm;
   return 0;
 }

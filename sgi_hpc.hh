@@ -14,6 +14,26 @@ class sgi_hpc {
   uint32_t misc;                     /* reg 0x30004 (gio_misc) */
   uint32_t pbus_pio_config[10] = {0};/* reg 0x5d000 block: per-channel PIO config (10 ch) */
   uint32_t pbus_dma_config[8] = {0}; /* reg 0x5c000 block: per-channel DMA config (8 ch) */
+
+  /* HPC3 SCSI DMA channel (HD0/HD1).  Pure-physical scatter-gather: walk the
+   * {BP,BC,DP} descriptor chain via nbdp until EOX, moving bytes between DRAM
+   * and the WD33C93 on each DRQ.  Control is an explicit descriptor-walk FSM. */
+  enum dma_state_t { CH_IDLE, CH_FETCH, CH_XFER, CH_DESC_DONE };
+  struct scsi_dma_t {
+    uint32_t cbp = 0;       /* current buffer pointer (descriptor BP) */
+    uint32_t nbdp = 0;      /* next-descriptor pointer (descriptor DP) */
+    uint32_t bc = 0;        /* byte-count word: flags (EOX/XIE) + count */
+    uint32_t ctrl = 0;      /* DMA control register */
+    uint32_t count = 0;     /* live per-descriptor byte count */
+    uint32_t dmacfg = 0;
+    uint32_t piocfg = 0;
+    bool active = false;    /* ch_active */
+    bool to_device = false; /* DIR: 1 = mem->device (write) */
+    dma_state_t state = CH_IDLE;
+  };
+  scsi_dma_t scsi_dma[2];
+  void scsi_fetch_chain(int ch);   /* load {cbp,bc,nbdp,count} from nbdp */
+  void scsi_run_dma(int ch);       /* pump the descriptor-walk FSM */
   /* i8254 PIT counter 2 (IP22 timer calibration; tcnt2=offs 0x598bb,
    * tcword=offs 0x598bf).  ip22-time.c:dosample() programs cnt2, then polls the
    * latched value until its high byte reads 0, measuring CP0 Count across that
