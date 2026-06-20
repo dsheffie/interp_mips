@@ -52,12 +52,15 @@ device" to a mounted root is the work in progress.
 Linux uses an initramfs (`/init`), so no `--disk` is needed.
 
 **Status (WIP):** the current kernel boots with `console=arc`, so after the PROM
-hands off, Linux calls *back* into the ARC romvec `putchar` in the firmware --
-which currently hits an unimplemented instruction in the simulator and spins, so
-console output doesn't appear yet. (interp_mips previously booted IP22 Linux to
-the VFS root mount via the built-in pseudo-BIOS -- git `f40202f` -- before the
-kernel switched to `console=arc`.) IRIX is unaffected because it drives its own
-SCC console directly rather than the PROM romvec.
+hands off, Linux calls *back* into the ARC romvec console routine -- but the call
+lands in the romvec's **string data instead of code** (a romvec vector isn't
+wired to a real routine), so the sim "executes" ASCII as garbage instructions
+and spins (the bogus opcodes `0x1c`-`0x1f` are exactly what lowercase text
+decodes to). This is a romvec/firmware wiring issue, **not** a missing CPU
+instruction. (interp_mips previously booted IP22 Linux to the VFS root mount via
+the built-in pseudo-BIOS -- git `f40202f` -- before the kernel switched to
+`console=arc`.) IRIX is unaffected because it drives its own SCC console
+directly rather than the PROM romvec.
 
 ## Firmware / boot loaders
 
