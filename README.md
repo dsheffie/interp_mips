@@ -9,8 +9,12 @@ the place to get the **HPC3 SCSI-DMA + WD33C93 + disk** model right (`sgi_scsi.c
 ## Build
 
 ```sh
-make clean && make      # NOTE: no dependency tracking -- always `make clean` first
+make
 ```
+
+The Makefile tracks header/source dependencies (`-MMD` + `-include $(DEP)`), so an
+incremental `make` rebuilds what changed; `make clean` is only needed to force a
+full rebuild.
 
 ## Boot IRIX 6.5
 
