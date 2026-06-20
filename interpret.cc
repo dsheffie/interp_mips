@@ -16,6 +16,7 @@
 
 
 #include "interpret.hh"
+#include "sgi_hpc.hh"
 #include "disassemble.hh"
 #include "helper.hh"
 #include "globals.hh"
@@ -204,6 +205,10 @@ void maybe_take_interrupt(state_t *s) {
   s->cpr0[CPR0_COUNT] = (s->cpr0[CPR0_COUNT] + 1u) & 0xffffffffu;
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
+  /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
+   * sensitive: set while an unmasked local0 source is asserted, else clear. */
+  if(s->hpc && s->hpc->ioc2_ip2_pending()) s->cpr0[CPR0_CAUSE] |=  (1u << 10);
+  else                                     s->cpr0[CPR0_CAUSE] &= ~(1u << 10);
   uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
   if((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (((cause & sr) & 0xff00u) != 0u)) {
     set_exc_pc(s);

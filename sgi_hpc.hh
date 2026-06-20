@@ -12,6 +12,13 @@ class sgi_hpc {
   state_t *s;
   uint32_t intstat;                  /* reg 0x30000 (istat0): interrupt status [4:0] */
   uint32_t misc;                     /* reg 0x30004 (gio_misc) */
+  /* IOC2/INT2 local interrupt controller (guinness/Indy): local0 status/mask at
+   * IOC2 off 0x20/0x21 (abs 0x59883/0x59887), local1 at 0x22/0x23 (0x5988b/0x5988f).
+   * local0 -> CPU IP2, local1 -> IP3. SCSI0 INTRQ = local0 bit 0x02 (computed live
+   * from the WD33C93 intrq). */
+  uint8_t ioc2_local_status[2] = {0, 0};
+  uint8_t ioc2_local_mask[2]   = {0, 0};
+  uint8_t ioc2_local0_live();        /* local0 status incl. the live SCSI0 intrq bit */
   uint32_t pbus_pio_config[10] = {0};/* reg 0x5d000 block: per-channel PIO config (10 ch) */
   uint32_t pbus_dma_config[8] = {0}; /* reg 0x5c000 block: per-channel DMA config (8 ch) */
 
@@ -48,6 +55,8 @@ class sgi_hpc {
   bool     t2_loading = false;   /* an RW=both program is in progress */
   uint16_t t2_value();           /* live down-counted value, derived from CP0 Count */
 public:
+  /* true when an unmasked local0 interrupt is pending -> drive CP0 Cause IP2 */
+  bool ioc2_ip2_pending() { return (ioc2_local0_live() & ioc2_local_mask[0]) != 0; }
   sgi_hpc(state_t *s) : s(s), intstat(0), misc(0) {}
   uint32_t read(uint32_t offs, size_t sz);
   void write(uint32_t offs, uint32_t x, size_t sz);

@@ -112,6 +112,15 @@ void sgi_hpc::scsi_run_dma(int ch) {
   }
 }
 
+/* local0 interrupt status with the live SCSI0 INTRQ bit (0x02) folded in from the
+ * WD33C93 (level-sensitive: reflects intrq, cleared when IRIX reads SCSI Status). */
+uint8_t sgi_hpc::ioc2_local0_live() {
+  uint8_t st = ioc2_local_status[0];
+  if(s->scsi && s->scsi->intrq_pending()) st |= 0x02u;
+  else                                    st &= ~0x02u;
+  return st;
+}
+
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
   if(offs == 0x598bb) {           /* i8254 counter 2: return latched low then high byte */
@@ -128,19 +137,20 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
     int ch = (offs & 0x2000) ? 1 : 0;
     uint32_t n = offs & ~0x2000u;
     scsi_dma_t &d = scsi_dma[ch];
+    uint32_t r = 0;                                      /* 32-bit regs: BE load path will swap the result */
     switch(n) {
-    case 0x10000: return d.cbp;
-    case 0x10004: return d.nbdp;
-    case 0x11000: return (d.count & 0x3fff) | (d.bc & ~0x3fffu);
-    case 0x11004: {                                      /* ctrl: read clears the IRQ bit */
-      uint32_t r = d.ctrl;
+    case 0x10000: r = d.cbp; break;
+    case 0x10004: r = d.nbdp; break;
+    case 0x11000: r = (d.count & 0x3fff) | (d.bc & ~0x3fffu); break;
+    case 0x11004:                                        /* ctrl: read clears the IRQ bit */
+      r = d.ctrl;
       if(intstat & (0x100u << ch)) { r |= 0x01u; intstat &= ~(0x100u << ch); }
-      return r;
+      break;
+    case 0x11010: r = d.dmacfg; break;
+    case 0x11014: r = d.piocfg; break;
+    default:      r = 0; break;                          /* gio/dev fifo ptr */
     }
-    case 0x11010: return d.dmacfg;
-    case 0x11014: return d.piocfg;
-    default:      return 0;                              /* gio/dev fifo ptr */
-    }
+    return __builtin_bswap32(r);
   }
   else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet read\n");
@@ -164,6 +174,11 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
      * bswaps device reads, so the kernel sees 0x26 in byte [7:0]. */
     return 0x26000000u;
   }
+  /* IOC2/INT2 local interrupt status/mask (byte regs at IOC2 off N -> 0x59800+N*4+3) */
+  else if(offs == 0x59883) { return ioc2_local0_live(); }   /* local0 status */
+  else if(offs == 0x59887) { return ioc2_local_mask[0]; }   /* local0 mask   */
+  else if(offs == 0x5988b) { return ioc2_local_status[1]; } /* local1 status */
+  else if(offs == 0x5988f) { return ioc2_local_mask[1]; }   /* local1 mask   */
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
     DPRINTF("pio data on channel %u\n", id);
@@ -212,6 +227,10 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     int ch = (offs & 0x2000) ? 1 : 0;
     uint32_t n = offs & ~0x2000u;
     scsi_dma_t &d = scsi_dma[ch];
+    /* These are 32-bit registers; the BE store path delivers the word byte-
+     * swapped to MMIO handlers (byte accesses like the WD33C93 are unaffected).
+     * Swap back to the guest's intended value. */
+    x = __builtin_bswap32(x);
     switch(n) {
     case 0x10004: d.nbdp   = x; break;
     case 0x11000: d.bc     = x; break;
@@ -244,6 +263,9 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   else if(offs == 0x30004) {      /* gio_misc */
     misc = x&3;
   }
+  /* IOC2/INT2 local interrupt masks (byte regs); status regs are read-only */
+  else if(offs == 0x59887) { ioc2_local_mask[0] = (uint8_t)x; }
+  else if(offs == 0x5988f) { ioc2_local_mask[1] = (uint8_t)x; }
   else if(offs >= 0x40000 and offs <= 0x47fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
     if(s->scsi) {
       s->scsi->pio_w(((offs - 0x40000) >> 2) & 1, (uint8_t)x);
