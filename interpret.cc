@@ -603,6 +603,18 @@ static void execCoproc1x(uint32_t inst, state_t *s) {
 
 
 
+/* FASTDELAY: collapse calibrated busy-delay loops (e.g. IRIX us_delay/delayloop,
+ * Linux __delay). A delay loop is a conditional branch back to its OWN address
+ * (imm==-4: 2-insn loop = branch + its delay slot) that compares ONE register
+ * against zero; the delay slot only decrements/increments that register, touching
+ * no memory or device. Spinning the full faithful count is hundreds of millions
+ * of ISS instructions per call. When enabled, clamp the counter to the exit
+ * boundary so the loop terminates in one more iteration (the delay slot still
+ * does the final step, so the architectural state stays consistent). Off by
+ * default -- it skips wall-time the guest intended to burn, so leave it off for
+ * cycle-accurate co-sim. */
+static const bool g_fastdelay = getenv("FASTDELAY") != nullptr;
+
 template <bool EL, branch_type bt>
 void branch(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
@@ -710,6 +722,20 @@ void branch(uint32_t inst, state_t *s) {
     default:
       UNREACHABLE();
     }
+
+  /* FASTDELAY: self-branch compare-against-zero delay loop -> clamp the counter
+   * to the exit boundary so the (large) calibrated spin collapses to one more
+   * iteration. The delay slot below performs the final decrement/increment. */
+  if(g_fastdelay && takeBranch && !isLikely && imm == -4) {
+    state_t::reg_t v = s->gpr[rs];
+    switch(bt) {
+    case branch_type::bgtz: if(v >  0x10000) s->gpr[rs] =  1; break; /* exit rs<=0 */
+    case branch_type::bltz: if(v < -0x10000) s->gpr[rs] = -1; break; /* exit rs>=0 */
+    case branch_type::blez: if(v < -0x10000) s->gpr[rs] =  0; break; /* exit rs>0  */
+    case branch_type::bgez: if(v >  0x10000) s->gpr[rs] =  0; break; /* exit rs<0  */
+    default: break;
+    }
+  }
 
   s->pc += 4;
   if(isLikely) {

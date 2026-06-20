@@ -145,8 +145,10 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet read\n");
   }
-  else if(offs >= 0x00044000 and offs <= 0x000443ff) { /* WD33C93 HD0 (SASR/SCMD) */
-    if(s->scsi) return s->scsi->pio_r(((offs - 0x44000) >> 2) & 1);
+  else if(offs >= 0x00040000 and offs <= 0x00047fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
+    /* HPC3 map (MAME hpc3.cpp): HD0 SCSI0 = 0x40000-0x47fff, HD1 = 0x48000-0x4ffff.
+     * NOT 0x44000 -- that came from MAME's buggy unhandled-access log string. */
+    if(s->scsi) return s->scsi->pio_r(((offs - 0x40000) >> 2) & 1);
     return 0;
   }
   else if(offs == 0x30000) {      /* istat0: interrupt status [4:0] */
@@ -242,9 +244,9 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   else if(offs == 0x30004) {      /* gio_misc */
     misc = x&3;
   }
-  else if(offs >= 0x44000 and offs <= 0x443ff) { /* WD33C93 HD0 (SASR/SCMD) */
+  else if(offs >= 0x40000 and offs <= 0x47fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
     if(s->scsi) {
-      s->scsi->pio_w(((offs - 0x44000) >> 2) & 1, (uint8_t)x);
+      s->scsi->pio_w(((offs - 0x40000) >> 2) & 1, (uint8_t)x);
       /* a COMMAND-register write may assert DRQ; service it if the channel is armed */
       if(scsi_dma[0].active && s->scsi->drq_pending()) scsi_run_dma(0);
     }
