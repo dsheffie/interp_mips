@@ -45,11 +45,14 @@ static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
  */
 
 /* i8254 counter 2 counts DOWN at the chip's 1 MHz against CP0 Count (which we
- * tick once per retired insn); the >>3 ratio makes dosample()'s ~4000-count
- * poll window span ~32K insns -> a nonzero, run-to-run-stable r4k_tick. */
+ * tick once per retired insn).  dosample() (ip22-time.c) derives the CPU clock
+ * from Delta(c0_count) / (counter2 ticks at SGINT_TIMER_CLOCK=1MHz), so the
+ * reported mips_hpt_frequency = 1e6 * RATIO and reported CPU = 2 * RATIO MHz.
+ * RATIO=50 -> 100 MHz, matching the Ultra96 r9999 FPGA core clock. */
+static const uint32_t T2_RATIO = 50;
 uint16_t sgi_hpc::t2_value() {
   uint32_t elapsed = (uint32_t)(s->cpr0[CPR0_COUNT] - t2_count_at_load);
-  uint32_t dec = elapsed >> 3;
+  uint32_t dec = elapsed / T2_RATIO;
   if(dec >= t2_load) return 0;       /* counted down to (or past) zero */
   return (uint16_t)(t2_load - dec);
 }

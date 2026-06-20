@@ -49,18 +49,26 @@ device" to a mounted root is the work in progress.
   -m 120000000
 ```
 
-Linux uses an initramfs (`/init`), so no `--disk` is needed.
+Boots to the VFS root mount with full `console=arc` output -- kernel banner, MC
+memory probe, timer calibration, GIO probe, rootfs mount:
 
-**Status (WIP):** the current kernel boots with `console=arc`, so after the PROM
-hands off, Linux calls *back* into the ARC romvec console routine -- but the call
-lands in the romvec's **string data instead of code** (a romvec vector isn't
-wired to a real routine), so the sim "executes" ASCII as garbage instructions
-and spins (the bogus opcodes `0x1c`-`0x1f` are exactly what lowercase text
-decodes to). This is a romvec/firmware wiring issue, **not** a missing CPU
-instruction. (interp_mips previously booted IP22 Linux to the VFS root mount via
-the built-in pseudo-BIOS -- git `f40202f` -- before the kernel switched to
-`console=arc`.) IRIX is unaffected because it drives its own SCC console
-directly rather than the PROM romvec.
+```
+Linux version 7.1.0-rc7 ... ARCH: SGI-IP22
+MC: bank0:  16M @ 08000000
+Calibrating system timer... 200000 [100.0000 MHz CPU]
+Calibrating delay loop... 99.32 BogoMIPS (lpj=198656)
+VFS: Finished mounting rootfs on nullfs
+```
+
+The kernel cmdline is `root=scsi(0)disk(1)rdisk(0)partition(0)` with no initrd,
+so mounting a real root via the `sgi_scsi.cc` SCSI model (pass `--disk`) is the
+work in progress. Two fixes make the `console=arc` path work: the MC **System
+Memory Alias** (phys `0..0x7ffff` mirrors DRAM `0x08000000`, mc.pdf p.22) so the
+FSBL-staged SPB/romvec match the kernel's DRAM view, and the `--prom` loader
+patching the **kentry slot** `@0xBFC00008` with the loaded kernel's real entry
+(the firmware default is the IRIX entry; without the patch Linux jumps there and
+derails into the romvec string data). IRIX drives its own SCC console directly,
+so it was unaffected by the romvec issue.
 
 ## Firmware / boot loaders
 

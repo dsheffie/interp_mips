@@ -125,6 +125,18 @@ int main(int argc, char *argv[]) {
     memcpy(sm->mem + 0x1fc00000, buf, st.st_size);
     std::cerr << "loaded PROM firmware (" << st.st_size << " bytes) at phys 0x1fc00000\n";
     munmap(buf, st.st_size); close(fd);
+
+    /* Patch the kentry slot @0xBFC00008 (phys 0x1fc00008) with the loaded
+     * kernel's ELF entry, big-endian.  henry_arcs.S hardcodes 0x88005960 (the
+     * IRIX /unix entry) as the default and expects "the driver/TB" to patch the
+     * slot per kernel; the FSBL jumps there blindly (jr $k0).  Without this,
+     * Linux (entry 0x88325eb8) jumps to the IRIX entry and derails.  s->pc still
+     * holds the ELF entry here (the --start-pc override runs below). */
+    uint32_t kentry = (uint32_t)s->pc;
+    uint8_t *kslot = (uint8_t*)sm->mem + 0x1fc00008;
+    kslot[0] = (kentry >> 24) & 0xff; kslot[1] = (kentry >> 16) & 0xff;
+    kslot[2] = (kentry >>  8) & 0xff; kslot[3] = (kentry >>  0) & 0xff;
+    std::cerr << "patched kentry slot @0xbfc00008 = " << std::hex << kentry << std::dec << "\n";
   }
 
   /* fake-BIOS: start at the firmware boot stub (e.g. arcs_boot @ 0xa0003000);
