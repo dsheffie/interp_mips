@@ -17,6 +17,7 @@
 
 #include "interpret.hh"
 #include "sgi_hpc.hh"
+#include "sgi_scc.hh"
 #include "disassemble.hh"
 #include "helper.hh"
 #include "globals.hh"
@@ -202,21 +203,16 @@ static inline void raise_common(state_t *s, uint32_t exccode) {
  * The kernel's timer ISR re-arms by writing Compare (which clears IP[7]; see the
  * MTC0 handler). */
 void maybe_take_interrupt(state_t *s) {
+  if(s->scc) s->scc->tick();                           /* advance SCC TX timing */
   s->cpr0[CPR0_COUNT] = (s->cpr0[CPR0_COUNT] + 1u) & 0xffffffffu;
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
   /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
    * sensitive: set while an unmasked local0 source is asserted, else clear. */
-  if(s->hpc && s->hpc->ioc2_ip2_pending()) {
-    if(getenv("SCC_DBG")) { static uint64_t n=0; if((n++ % 200000)==0){ uint32_t sr=s->cpr0[CPR0_SR]; fprintf(stderr,"[ip2] pending #%llu pc=%08x IE=%d EXL=%d ERL=%d IM2=%d\n",(unsigned long long)n,(uint32_t)s->pc,(int)(sr&1),(int)((sr>>1)&1),(int)((sr>>2)&1),(int)((sr>>10)&1)); } }
-    s->cpr0[CPR0_CAUSE] |=  (1u << 10);
-  }
+  if(s->hpc && s->hpc->ioc2_ip2_pending()) s->cpr0[CPR0_CAUSE] |=  (1u << 10);
   else                                     s->cpr0[CPR0_CAUSE] &= ~(1u << 10);
   uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
   if((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (((cause & sr) & 0xff00u) != 0u)) {
-    if(getenv("SCC_DBG") && (cause & (1u<<10))) {
-      static uint64_t n=0; if((++n % 100000)==0) fprintf(stderr,"[ip2] take #%llu @pc=%08x\n",(unsigned long long)n,(uint32_t)s->pc);
-    }
     set_exc_pc(s);
     raise_common(s, 0u);                               /* ExcCode 0 = Int */
   }
@@ -752,7 +748,7 @@ void branch(uint32_t inst, state_t *s) {
   if(isLikely) {
     if(takeBranch) {
       if(saveReturn)
-	s->gpr[31] = sext32((uint32_t)(npc + 4));
+	s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
       if(!run_delay_slot<EL>(s))
 	s->pc = (imm+npc);
     }
@@ -764,7 +760,7 @@ void branch(uint32_t inst, state_t *s) {
     bool ds_faulted = run_delay_slot<EL>(s);
     if(takeBranch){
       if(saveReturn) {
-	s->gpr[31] = sext32((uint32_t)(npc + 4));
+	s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
       }
       if(!ds_faulted)
 	s->pc = (imm+npc);
@@ -1144,7 +1140,7 @@ void _lwl(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   
-  uint32_t ea = va_translate(s, (uint32_t)s->gpr[rs] + imm, tlb_op::load);
+  uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::load);
   if(s->tlb_fault) return;
   uint32_t u_ea = ea;
   uint32_t ma = ea & 3;
@@ -1183,7 +1179,7 @@ void _lwr(uint32_t inst, state_t *s) {
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
  
-  uint32_t ea = va_translate(s, (uint32_t)s->gpr[rs] + imm, tlb_op::load);
+  uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::load);
   if(s->tlb_fault) return;
   uint32_t u_ea = ea;
   uint32_t ma = ea & 3;
@@ -2174,7 +2170,7 @@ void execMips(state_t *s) {
       }
       case 0x09: { /* jalr */
 	state_t::reg_t jaddr = s->gpr[rs];
-	s->gpr[31] = sext32((uint32_t)(s->pc + 8));
+	s->gpr[31] = s->pc + 8;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
 	s->pc += 4;
 	if(!run_delay_slot<EL>(s))
 	  s->pc = jaddr;
@@ -2500,7 +2496,7 @@ void execMips(state_t *s) {
       s->insn_histo[mipsInsn::J]++;
     }
     else if(opcode==0x3) { /* jal */
-      s->gpr[31] = sext32((uint32_t)(s->pc + 8));
+      s->gpr[31] = s->pc + 8;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
       s->pc += 4;
       s->insn_histo[mipsInsn::JAL]++;
     }

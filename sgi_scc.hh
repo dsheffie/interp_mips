@@ -6,37 +6,43 @@
 
 struct state_t;
 
-/* Zilog Z8530 / SCC85230 (SGI IP22 IOC2 serial).  TX path + the Tx-buffer-empty
- * INTERRUPT, which the Linux ip22zilog tty driver needs to drain its write FIFO
- * (kernel console writes are polled and worked already; userspace /dev/console
- * output is interrupt-driven and did NOT, because the SCC raised no interrupt).
+/* Zilog Z85230 / SCC85230 (SGI IP22 IOC2 serial): TX path + the Tx interrupt.
  *
- * 4 byte-wide registers at 4-byte spacing, z80scc "ab_dc" order:
- *   +0x0 ctrl B  +0x4 data B  +0x8 ctrl A  +0xc data A
- * Control access uses the Z8530 two-step pointer: a write to control when the
- * pointer is 0 is WR0 (low 3 bits set the pointer; bits[5:3] are a command,
- * e.g. RES_Tx_P; "point high" adds 8); the next control access reads/writes
- * RR/WR<pointer>, then the pointer resets to 0.
+ * Tx-interrupt model cross-validated against four sources that all agree (MAME
+ * z80scc.cpp, the IRIS Rust Indy emulator z85c30.rs, and the Linux ip22zilog +
+ * NetBSD zstty drivers):
  *
- * TX model (instant transmit): a data write emits the byte to stdout; the Tx
- * buffer is then immediately empty, so if Tx-int is enabled (WR1.TxINT_ENAB) and
- * the master int is enabled (WR9.MIE) we latch a per-channel Tx-IP.  The kernel
- * ISR reads RR3 (chip-wide int-pending: CHATxIP/CHBTxIP), sends the next char
- * (re-arming Tx-IP) or, when its FIFO drains, issues RES_Tx_P (WR0) which clears
- * Tx-IP.  int_pending() (MIE & any Tx-IP) is the SCC INT line -> IOC2 vmeistat[5].
+ *   - Tx-IP is a stored one-shot set ONLY on transmit COMPLETION (a char finishes
+ *     shifting out), never on the data write.
+ *   - Writing the next data byte CLEARS Tx-IP (re-arm) -- this is the ISR's normal
+ *     "send next char" deassert, and it is what makes IP2 go LOW so the kernel can
+ *     eret back to userspace instead of instantly re-taking the interrupt (the
+ *     storm).  WR0=RES_Tx_P (0x28) also clears it.
+ *   - The pending Tx int is gated LIVE on WR1.TxINT_ENAB (so clearing TxIE
+ *     deasserts immediately).
  *
- * Base 0x1fbd9830 (IOC2 reg 0x0c).  RX not modeled (TX-only console). */
+ * Real transmit timing is required so IP2 is genuinely low between completions:
+ * a written char is "shifting out" (tx_busy, RR0 Tx-Buffer-Empty clear) for
+ * TX_DRAIN_TICKS instruction ticks, then completes (Tx-IP set).  The byte is
+ * echoed to stdout immediately on write (order preserved).  int_pending() (the
+ * SCC INT line) -> IOC2 vmeistat[5] -> local0 LIO2 -> CPU IP2.  RX not modeled.
+ *
+ * Window: +0x0 ctrl B  +0x4 data B  +0x8 ctrl A  +0xc data A (z80scc ab_dc). */
 class sgi_scc {
   state_t *s;
-  uint8_t  ptr[2]   = {0, 0};        /* RR/WR pointer per channel (0=B, 1=A) */
-  uint8_t  wr1[2]   = {0, 0};        /* WR1 per channel (TxINT_ENAB = bit1) */
-  uint8_t  wr9      = 0;             /* WR9 (chip-wide; MIE = bit3) */
-  bool     tx_ip[2] = {false, false};/* latched Tx-buffer-empty int pending */
+  uint8_t  ptr[2]      = {0, 0};        /* RR/WR pointer per channel (0=B, 1=A) */
+  uint8_t  wr1[2]      = {0, 0};        /* WR1 per channel (TxINT_ENAB = bit1) */
+  uint8_t  wr9         = 0;             /* WR9 (chip-wide; MIE = bit3) */
+  bool     tx_busy[2]  = {false, false};/* a char is shifting out (buffer full) */
+  uint64_t drain_at[2] = {0, 0};        /* tick at which the shifting char completes */
+  bool     tx_ip[2]    = {false, false};/* Tx-buffer-empty int pending (set on completion) */
+  uint64_t clk         = 0;             /* instruction-tick clock */
 public:
   sgi_scc(state_t *s) : s(s) {}
   uint8_t read(uint32_t offs);          /* offs within the 16-byte SCC window */
   void    write(uint32_t offs, uint8_t b);
-  bool    int_pending();                /* SCC INT line: MIE & any channel Tx-IP */
+  void    tick();                       /* advance TX timing; call once per insn */
+  bool    int_pending();                /* SCC INT line: any channel TxIE & Tx-IP */
 };
 
 #endif

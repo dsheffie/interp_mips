@@ -299,9 +299,9 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     misc = x&3;
   }
   /* IOC2/INT2 local interrupt masks (byte regs); status regs are read-only */
-  else if(offs == 0x59887) { ioc2_local_mask[0] = (uint8_t)x; if(getenv("SCC_DBG")) fprintf(stderr,"[ioc] imask0=%02x\n",(uint8_t)x); }
+  else if(offs == 0x59887) { ioc2_local_mask[0] = (uint8_t)x; }
   else if(offs == 0x5988f) { ioc2_local_mask[1] = (uint8_t)x; }
-  else if(offs == 0x59897) { ioc2_cmeimask[0] = (uint8_t)x; if(getenv("SCC_DBG")) fprintf(stderr,"[ioc] cmeimask0=%02x\n",(uint8_t)x); } /* map mask0 */
+  else if(offs == 0x59897) { ioc2_cmeimask[0] = (uint8_t)x; } /* map mask0 (cmeimask0) */
   else if(offs == 0x5989b) { ioc2_cmeimask[1] = (uint8_t)x; } /* map mask1 (cmeimask1) */
   else if(offs == 0x5989f) { ioc2_cmepol     = (uint8_t)x; } /* map polarity (cmepol)  */
   else if(offs >= 0x40000 and offs <= 0x47fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
