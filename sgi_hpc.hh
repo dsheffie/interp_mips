@@ -18,7 +18,14 @@ class sgi_hpc {
    * from the WD33C93 intrq). */
   uint8_t ioc2_local_status[2] = {0, 0};
   uint8_t ioc2_local_mask[2]   = {0, 0};
-  uint8_t ioc2_local0_live();        /* local0 status incl. the live SCSI0 intrq bit */
+  /* Mappable ("local2/local3", kernel's vmeistat/cmeimask) cascade: the SCC
+   * serial INT is mappable bit5.  Map status = vmeistat (live); Map masks =
+   * cmeimask0/1; a set bit in (vmeistat & cmeimask0) drives local0 LIO2 (bit7)
+   * -> IP2 (cmeimask1 -> local1 LIO3 -> IP3).  cmepol stored, unused. */
+  uint8_t ioc2_cmeimask[2] = {0, 0};
+  uint8_t ioc2_cmepol      = 0;
+  uint8_t ioc2_vmeistat_live();      /* live mappable status (bit5 = SCC serial INT) */
+  uint8_t ioc2_local0_live();        /* local0 status incl. live SCSI0 intrq + LIO2 */
   uint32_t pbus_pio_config[10] = {0};/* reg 0x5d000 block: per-channel PIO config (10 ch) */
   uint32_t pbus_dma_config[8] = {0}; /* reg 0x5c000 block: per-channel DMA config (8 ch) */
 

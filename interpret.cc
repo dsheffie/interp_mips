@@ -207,10 +207,16 @@ void maybe_take_interrupt(state_t *s) {
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
   /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
    * sensitive: set while an unmasked local0 source is asserted, else clear. */
-  if(s->hpc && s->hpc->ioc2_ip2_pending()) s->cpr0[CPR0_CAUSE] |=  (1u << 10);
+  if(s->hpc && s->hpc->ioc2_ip2_pending()) {
+    if(getenv("SCC_DBG")) { static uint64_t n=0; if((n++ % 200000)==0){ uint32_t sr=s->cpr0[CPR0_SR]; fprintf(stderr,"[ip2] pending #%llu pc=%08x IE=%d EXL=%d ERL=%d IM2=%d\n",(unsigned long long)n,(uint32_t)s->pc,(int)(sr&1),(int)((sr>>1)&1),(int)((sr>>2)&1),(int)((sr>>10)&1)); } }
+    s->cpr0[CPR0_CAUSE] |=  (1u << 10);
+  }
   else                                     s->cpr0[CPR0_CAUSE] &= ~(1u << 10);
   uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
   if((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (((cause & sr) & 0xff00u) != 0u)) {
+    if(getenv("SCC_DBG") && (cause & (1u<<10))) {
+      static uint64_t n=0; if((++n % 100000)==0) fprintf(stderr,"[ip2] take #%llu @pc=%08x\n",(unsigned long long)n,(uint32_t)s->pc);
+    }
     set_exc_pc(s);
     raise_common(s, 0u);                               /* ExcCode 0 = Int */
   }

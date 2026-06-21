@@ -1,6 +1,7 @@
 #include "sgi_hpc.hh"
 #include "interpret.hh"
 #include "sgi_scsi.hh"
+#include "sgi_scc.hh"
 #include <cassert>
 #include <cstdlib>
 
@@ -112,12 +113,24 @@ void sgi_hpc::scsi_run_dma(int ch) {
   }
 }
 
+/* Live mappable interrupt status (kernel's vmeistat).  bit5 = SCC serial INT
+ * (the Z8530 INT line: Tx-buffer-empty, and Rx when modeled). */
+uint8_t sgi_hpc::ioc2_vmeistat_live() {
+  uint8_t v = 0;
+  if(s->scc && s->scc->int_pending()) v |= 0x20u;   /* bit5 = SERIAL DUART */
+  return v;
+}
+
 /* local0 interrupt status with the live SCSI0 INTRQ bit (0x02) folded in from the
- * WD33C93 (level-sensitive: reflects intrq, cleared when IRIX reads SCSI Status). */
+ * WD33C93 (level-sensitive: reflects intrq, cleared when IRIX reads SCSI Status),
+ * plus LIO2 (bit7) = OR of the mappable cascade (vmeistat & cmeimask0) -- this is
+ * how the SCC serial INT reaches IP2. */
 uint8_t sgi_hpc::ioc2_local0_live() {
   uint8_t st = ioc2_local_status[0];
   if(s->scsi && s->scsi->intrq_pending()) st |= 0x02u;
   else                                    st &= ~0x02u;
+  if((ioc2_vmeistat_live() & ioc2_cmeimask[0]) != 0) st |= 0x80u;   /* LIO2 */
+  else                                               st &= ~0x80u;
   return st;
 }
 
@@ -179,6 +192,28 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   else if(offs == 0x59887) { return ioc2_local_mask[0]; }   /* local0 mask   */
   else if(offs == 0x5988b) { return ioc2_local_status[1]; } /* local1 status */
   else if(offs == 0x5988f) { return ioc2_local_mask[1]; }   /* local1 mask   */
+  else if(offs == 0x59893) { return ioc2_vmeistat_live(); } /* map status (vmeistat) */
+  else if(offs == 0x59897) { return ioc2_cmeimask[0]; }     /* map mask0 (cmeimask0) */
+  else if(offs == 0x5989b) { return ioc2_cmeimask[1]; }     /* map mask1 (cmeimask1) */
+  else if(offs == 0x5989f) { return ioc2_cmepol; }          /* map polarity (cmepol) */
+  /* DS1286/DS1386 RTC in the bbRAM window (byte-per-word x4: reg N at 0x60000+N*4).
+   * Return a fixed, valid BCD wall-clock so rtodc() converts cleanly instead of
+   * looping on garbage. Value in byte[31:24] -- the BE load path bswaps device
+   * reads (like the IOC2 SYSID at 0x59858). */
+  else if(offs >= 0x60000 and offs <= 0x6002f) {
+    uint8_t v;
+    switch(offs) {
+    case 0x60004: v = 0x00; break;  /* seconds (reg 1) */
+    case 0x60008: v = 0x00; break;  /* minutes (reg 2) */
+    case 0x60010: v = 0x00; break;  /* hours   (reg 4, BCD 00 = 00:00, 24h) */
+    case 0x60018: v = 0x01; break;  /* day-of-week (reg 6) */
+    case 0x60020: v = 0x01; break;  /* date    (reg 8, 1st) */
+    case 0x60024: v = 0x01; break;  /* month   (reg 9, January) */
+    case 0x60028: v = 0x00; break;  /* year    (reg 10, BCD 00 = 2000) */
+    default:      v = 0x00; break;  /* command/alarm/hundredths -> not-busy */
+    }
+    return (uint32_t)v << 24;
+  }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
     DPRINTF("pio data on channel %u\n", id);
@@ -264,8 +299,11 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     misc = x&3;
   }
   /* IOC2/INT2 local interrupt masks (byte regs); status regs are read-only */
-  else if(offs == 0x59887) { ioc2_local_mask[0] = (uint8_t)x; }
+  else if(offs == 0x59887) { ioc2_local_mask[0] = (uint8_t)x; if(getenv("SCC_DBG")) fprintf(stderr,"[ioc] imask0=%02x\n",(uint8_t)x); }
   else if(offs == 0x5988f) { ioc2_local_mask[1] = (uint8_t)x; }
+  else if(offs == 0x59897) { ioc2_cmeimask[0] = (uint8_t)x; if(getenv("SCC_DBG")) fprintf(stderr,"[ioc] cmeimask0=%02x\n",(uint8_t)x); } /* map mask0 */
+  else if(offs == 0x5989b) { ioc2_cmeimask[1] = (uint8_t)x; } /* map mask1 (cmeimask1) */
+  else if(offs == 0x5989f) { ioc2_cmepol     = (uint8_t)x; } /* map polarity (cmepol)  */
   else if(offs >= 0x40000 and offs <= 0x47fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
     if(s->scsi) {
       s->scsi->pio_w(((offs - 0x40000) >> 2) & 1, (uint8_t)x);
