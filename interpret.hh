@@ -124,7 +124,12 @@ public:
   uint64_t maxicnt = 0;
   sparse_mem &mem;
   fp_reg_state cpr1_state[32] = {fp_reg_state::unknown};
+  /* Vestigial per-opcode execution histogram: write-only (never read back).
+   * Compiled out by default via the HISTO() macro below -- the unordered_map
+   * operator[] cost ~11% of run time. Define ENABLE_INSN_HISTO to restore it. */
+#ifdef ENABLE_INSN_HISTO
   std::unordered_map<mipsInsn,uint64_t> insn_histo;
+#endif
 
   /* Software TLB -- mirrors the 48-entry fully-associative RTL TLB */
   static const int NUM_TLB_ENTRIES = 48;
@@ -161,6 +166,15 @@ public:
   state_t(sparse_mem &mem) : mem(mem) {}
   ~state_t();
 };
+
+/* Per-opcode execution histogram instrumentation. Disabled by default (empty
+ * expansion -> zero cost); define ENABLE_INSN_HISTO to record into
+ * state_t::insn_histo. See the member declaration above. */
+#ifdef ENABLE_INSN_HISTO
+#define HISTO(s, x) do { (s)->insn_histo[x]++; } while(0)
+#else
+#define HISTO(s, x) do { } while(0)
+#endif
 
 struct rtype_t {
   uint32_t opcode : 6;

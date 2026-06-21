@@ -202,11 +202,29 @@ static inline void raise_common(state_t *s, uint32_t exccode) {
  * unmasked interrupt is pending: IE=1, EXL=0, ERL=0, (Cause.IP & Status.IM) != 0.
  * The kernel's timer ISR re-arms by writing Compare (which clears IP[7]; see the
  * MTC0 handler). */
+/* How often to run the (relatively expensive) IOC2/INT2 device-interrupt poll +
+ * delivery. Must be a power of two. IP2's sources are level-sensitive (stay
+ * asserted until serviced), so polling every INT_POLL instructions only adds at
+ * most that many instructions of delivery latency -- negligible for a functional
+ * ISS -- while keeping ioc2_ip2_pending() (ioc2_local0_live + int_pending, ~10%
+ * of run time when recomputed every instruction) off the hot path. NB: the SCC
+ * TX drain (scc->tick) must stay exact every instruction -- the early PROM
+ * banner uses polled serial whose RR0 wait depends on the per-instruction drain
+ * timing, so throttling tick() hangs the boot. TODO: once every device is
+ * modeled, replace this poll with a device-sets-a-flag scheme (the "right way"). */
+static const uint64_t INT_POLL = 64;
+
 void maybe_take_interrupt(state_t *s) {
-  if(s->scc) s->scc->tick();                           /* advance SCC TX timing */
+  if(s->scc) s->scc->tick(1);                          /* serial TX timing: keep exact */
+  /* CP0 Count is architecturally visible and the kernel's delay/clock
+   * calibration reads it, so advance it (and latch the timer IP7) every
+   * instruction -- cheap, and keeps the timer cycle-accurate. */
   s->cpr0[CPR0_COUNT] = (s->cpr0[CPR0_COUNT] + 1u) & 0xffffffffu;
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
+
+  if((s->icnt & (INT_POLL - 1)) != 0) return;          /* poll devices periodically */
+
   /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
    * sensitive: set while an unmasked local0 source is asserted, else clear. */
   if(s->hpc && s->hpc->ioc2_ip2_pending()) s->cpr0[CPR0_CAUSE] |=  (1u << 10);
@@ -382,7 +400,8 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
   static const bool tlbdbg = getenv("TLBDBG") != nullptr;
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   tlb_set_fault_state(s, va);
-  if((uint32_t)va == 0xff800000u && getenv("KPTEDBG")) {
+  static const bool kptedbg = getenv("KPTEDBG") != nullptr;
+  if((uint32_t)va == 0xff800000u && kptedbg) {
     static int once = 0;
     if(once++ < 2) {
       fprintf(stderr, "[KPTE] fault on 0xff800000: faultPC=%08x EPC=%08x exl=%d code=%u refill=%d ctx=%08x icnt=%lu\n",
@@ -412,6 +431,21 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
  * 0 (the caller must check s->tlb_fault and abort the instruction). Otherwise
  * returns the physical address. Unmapped segments (kseg0/kseg1, xkphys) are a
  * fast path with no lookup. */
+/* Software micro-TLB: a direct-mapped cache of recent (VPN,ASID)->PPN mappings
+ * in front of the 48-entry architectural TLB CAM, so the common case skips the
+ * full linear scan on every fetch/load/store. The architectural s->tlb[] stays
+ * the source of truth -- this is purely a sim accelerator (mirrors the
+ * interp_rv64 lookup_tlb trick). Per-4KB-page keying makes it page-size
+ * agnostic: ppn=pa>>12 reconstructs the right PA for any PageMask. Flushed on
+ * any TLB write (TLBWI/TLBWR) -- the only ops that change a mapping -- so a hit
+ * can never diverge from what the CAM would return. ASID is part of the tag, so
+ * an ASID change needs no flush (stale entries simply miss and re-walk; global
+ * pages get cached per-ASID). */
+static const int UTLB_SZ = 64;          /* power of two */
+struct utlb_entry { uint64_t vpn, asid; uint32_t ppn; bool dirty, valid; };
+static utlb_entry g_utlb[UTLB_SZ];
+static inline void utlb_flush() { for(auto &e : g_utlb) e.valid = false; }
+
 static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   uint32_t hi32 = (uint32_t)(va >> 32);
   uint32_t lo32 = (uint32_t)va;
@@ -438,6 +472,15 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
    * addressing (VA upper bits not a sign-extended 32-bit value). */
   bool xtlb = !(hi32 == 0x00000000u || hi32 == 0xffffffffu);
   uint64_t cur_asid = s->cpr0_64[CPR0_ENTRYHI] & 0xffULL;
+
+  /* micro-TLB fast path: a hit gives the PA without scanning the CAM. A store to
+   * a cached-but-not-dirty page falls through to the CAM so it raises Modified. */
+  uint64_t vpn = va >> 12;
+  utlb_entry &ce = g_utlb[vpn & (UTLB_SZ - 1)];
+  if(ce.valid && ce.vpn == vpn && ce.asid == cur_asid &&
+     !(op == tlb_op::store && !ce.dirty)) {
+    return (ce.ppn << 12) | (uint32_t)(va & 0xfffULL);
+  }
 
   /* Sail tlbEntryMatch / tlbSearch (mips_tlb.sail) -- UNCONDITIONAL full match:
    *   r=VA[63:62], vpn2=VA[39:13];
@@ -475,6 +518,9 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
     }
     uint64_t pfn = (e_lo >> 6) & 0xfffffffULL;      /* PFN[33:6] -> 28 bits */
     uint64_t pa  = (pfn << 12) | (va & off_mask);
+    /* fill the micro-TLB for this 4KB sub-page (only reached for a V=1 hit) */
+    ce.vpn = vpn; ce.asid = cur_asid; ce.ppn = (uint32_t)(pa >> 12);
+    ce.dirty = (e_lo & 0x4u) != 0; ce.valid = true;
     return (uint32_t)pa;
   }
 
@@ -634,97 +680,97 @@ void branch(uint32_t inst, state_t *s) {
     {
     case branch_type::beql:
       takeBranch = (s->gpr[rt] == s->gpr[rs]);
-      s->insn_histo[mipsInsn::BEQL]++;
+      HISTO(s, mipsInsn::BEQL);
       isLikely = true;
       break;
     case branch_type::beq:
       takeBranch = (s->gpr[rt] == s->gpr[rs]);
-      s->insn_histo[mipsInsn::BEQ]++;
+      HISTO(s, mipsInsn::BEQ);
       break;
     case branch_type::bnel:
       isLikely = true;
       takeBranch = (s->gpr[rt] != s->gpr[rs]);
-      s->insn_histo[mipsInsn::BNEL]++;
+      HISTO(s, mipsInsn::BNEL);
       break;
     case branch_type::bne:
       takeBranch = (s->gpr[rt] != s->gpr[rs]);
-      s->insn_histo[mipsInsn::BNE]++;
+      HISTO(s, mipsInsn::BNE);
       break;
     case branch_type::blezl:
       isLikely = true;
       takeBranch = (s->gpr[rs] <= 0);
-      s->insn_histo[mipsInsn::BLEZL]++;
+      HISTO(s, mipsInsn::BLEZL);
       break;
     case branch_type::blez:
       takeBranch = (s->gpr[rs] <= 0);
-      s->insn_histo[mipsInsn::BLEZ]++;
+      HISTO(s, mipsInsn::BLEZ);
       break;
     case branch_type::bgtzl:
       isLikely = true;
       takeBranch = (s->gpr[rs] > 0);
-      s->insn_histo[mipsInsn::BGTZL]++;
+      HISTO(s, mipsInsn::BGTZL);
       break;
     case branch_type::bgtz:
       takeBranch = (s->gpr[rs] > 0);
-      s->insn_histo[mipsInsn::BGTZ]++;
+      HISTO(s, mipsInsn::BGTZ);
       break;
     case branch_type::bgezl:
       isLikely = true;
       takeBranch = (s->gpr[rs] >= 0);
-      s->insn_histo[mipsInsn::BGEZL]++;
+      HISTO(s, mipsInsn::BGEZL);
       break;      
     case branch_type::bgez:
       takeBranch = (s->gpr[rs] >= 0);
-      s->insn_histo[mipsInsn::BGEZ]++;
+      HISTO(s, mipsInsn::BGEZ);
       break;
     case branch_type::bltzl:
       isLikely = true;
       takeBranch = (s->gpr[rs] < 0);
-      s->insn_histo[mipsInsn::BLTZL]++;
+      HISTO(s, mipsInsn::BLTZL);
       break;
     case branch_type::bltz:
       takeBranch = (s->gpr[rs] < 0);
-      s->insn_histo[mipsInsn::BLTZ]++;
+      HISTO(s, mipsInsn::BLTZ);
       break;
     case branch_type::bgezal:
       takeBranch = (s->gpr[rs] >= 0);
-      s->insn_histo[mipsInsn::BGEZAL]++;
+      HISTO(s, mipsInsn::BGEZAL);
       saveReturn = true;
       break;
     case branch_type::bltzal:
       takeBranch = (s->gpr[rs] < 0);
-      s->insn_histo[mipsInsn::BLTZAL]++;
+      HISTO(s, mipsInsn::BLTZAL);
       saveReturn = true;
       break;
     case branch_type::bgezall:
       isLikely = true;
       takeBranch = (s->gpr[rs] >= 0);
-      s->insn_histo[mipsInsn::BGEZALL]++;
+      HISTO(s, mipsInsn::BGEZALL);
       saveReturn = true;
       break;
     case branch_type::bltzall:
       isLikely = true;
       takeBranch = (s->gpr[rs] < 0);
-      s->insn_histo[mipsInsn::BLTZALL]++;
+      HISTO(s, mipsInsn::BLTZALL);
       saveReturn = true;
       break;
     case branch_type::bc1tl:
       isLikely = true;
       takeBranch = getConditionCode(s,((inst>>18)&7))==1;
-      s->insn_histo[mipsInsn::BC1TL]++;
+      HISTO(s, mipsInsn::BC1TL);
       break;
     case branch_type::bc1t:
       takeBranch = getConditionCode(s,((inst>>18)&7))==1;
-      s->insn_histo[mipsInsn::BC1T]++;
+      HISTO(s, mipsInsn::BC1T);
       break;
     case branch_type::bc1fl:
       isLikely = true;
       takeBranch = getConditionCode(s,((inst>>18)&7))==0;
-      s->insn_histo[mipsInsn::BC1FL]++;
+      HISTO(s, mipsInsn::BC1FL);
       break;
     case branch_type::bc1f:
       takeBranch = getConditionCode(s,((inst>>18)&7))==0;
-      s->insn_histo[mipsInsn::BC1F]++;
+      HISTO(s, mipsInsn::BC1F);
       break;
     default:
       UNREACHABLE();
@@ -803,12 +849,12 @@ void _bgez_bltz(uint32_t inst, state_t *s) {
       int64_t simm = (int64_t)(int16_t)(inst & 0xffff);
       bool trap = false;
       switch(rt) {
-      case 8:  trap = (a >= simm);                           s->insn_histo[mipsInsn::TGEI]++;  break;
-      case 9:  trap = ((uint64_t)a >= (uint64_t)simm);       s->insn_histo[mipsInsn::TGEIU]++; break;
-      case 10: trap = (a < simm);                            s->insn_histo[mipsInsn::TLTI]++;  break;
-      case 11: trap = ((uint64_t)a < (uint64_t)simm);        s->insn_histo[mipsInsn::TLTIU]++; break;
-      case 12: trap = (a == simm);                           s->insn_histo[mipsInsn::TEQI]++;  break;
-      case 14: trap = (a != simm);                           s->insn_histo[mipsInsn::TNEI]++;  break;
+      case 8:  trap = (a >= simm);                           HISTO(s, mipsInsn::TGEI);  break;
+      case 9:  trap = ((uint64_t)a >= (uint64_t)simm);       HISTO(s, mipsInsn::TGEIU); break;
+      case 10: trap = (a < simm);                            HISTO(s, mipsInsn::TLTI);  break;
+      case 11: trap = ((uint64_t)a < (uint64_t)simm);        HISTO(s, mipsInsn::TLTIU); break;
+      case 12: trap = (a == simm);                           HISTO(s, mipsInsn::TEQI);  break;
+      case 14: trap = (a != simm);                           HISTO(s, mipsInsn::TNEI);  break;
       }
       if(trap) raise_trap(s); else s->pc += 4;
       break;
@@ -835,7 +881,7 @@ void _lw(uint32_t inst, state_t *s) {
   //s->gpr[rt]);
   //#undef TRACE_MEM
   s->pc += 4;
-  s->insn_histo[mipsInsn::LW]++;
+  HISTO(s, mipsInsn::LW);
 }
 
 template <bool EL>
@@ -855,7 +901,7 @@ void _lh(uint32_t inst, state_t *s) {
   printf("_lh from %x = %x\n", ea, s->gpr[rt]);
 #endif
   s->pc +=4;
-  s->insn_histo[mipsInsn::LH]++;  
+  HISTO(s, mipsInsn::LH);  
 }
 
 
@@ -872,7 +918,7 @@ static void _lb(uint32_t inst, state_t *s){
   printf("_lb from %x = %x\n", ea, s->gpr[rt]);
 #endif  
   s->pc += 4;
-  s->insn_histo[mipsInsn::LB]++;  
+  HISTO(s, mipsInsn::LB);  
 }
 
 static void _lbu(uint32_t inst, state_t *s){
@@ -886,7 +932,7 @@ static void _lbu(uint32_t inst, state_t *s){
   uint32_t zExt = s->mem.get<uint8_t>(ea);
   *((uint64_t*)&(s->gpr[rt])) = zExt;
   s->pc += 4;
-  s->insn_histo[mipsInsn::LBU]++;
+  HISTO(s, mipsInsn::LBU);
 }
 
 
@@ -904,7 +950,7 @@ void _lhu(uint32_t inst, state_t *s) {
   *((uint64_t*)&(s->gpr[rt])) = zExt;
   //printf("_lhu from %x = %x\n", ea, s->gpr[rt]);  
   s->pc += 4;
-  s->insn_histo[mipsInsn::LHU]++;  
+  HISTO(s, mipsInsn::LHU);  
 }
 
 
@@ -919,7 +965,7 @@ void _sw(uint32_t inst, state_t *s) {
   if(ea & 3) { raise_ades(s); return; }
   s->mem.set<int32_t>(ea,  bswap<EL>(static_cast<int32_t>(s->gpr[rt])));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SW]++;
+  HISTO(s, mipsInsn::SW);
 }
 
 template <bool EL>
@@ -932,7 +978,7 @@ void _sd(uint32_t inst, state_t *s) {
   if(ea & 7) { raise_ades(s); return; }
   s->mem.set<int64_t>(ea, bswap<EL>(s->gpr[rt]));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SD]++;
+  HISTO(s, mipsInsn::SD);
 }
 
 template <bool EL>
@@ -945,7 +991,7 @@ void _ld(uint32_t inst, state_t *s) {
   if(ea & 7) { raise_adel(s); return; }
   s->gpr[rt] = bswap<EL>(s->mem.get<int64_t>(ea));
   s->pc += 4;
-  s->insn_histo[mipsInsn::LD]++;
+  HISTO(s, mipsInsn::LD);
 }
 
 template <bool EL>
@@ -959,7 +1005,7 @@ void _sc(uint32_t inst, state_t *s) {
   s->mem.set<int32_t>(ea,  bswap<EL>(static_cast<int32_t>(s->gpr[rt])));
   s->gpr[rt] = 1;
   s->pc += 4;
-  s->insn_histo[mipsInsn::SC]++;
+  HISTO(s, mipsInsn::SC);
 }
 
 template <bool EL>
@@ -975,7 +1021,7 @@ void _scd(uint32_t inst, state_t *s) {
   s->mem.set<int64_t>(ea, bswap<EL>(static_cast<int64_t>(s->gpr[rt])));
   s->gpr[rt] = 1;
   s->pc += 4;
-  s->insn_histo[mipsInsn::SC]++;
+  HISTO(s, mipsInsn::SC);
 }
 
 
@@ -991,7 +1037,7 @@ void _sh(uint32_t inst, state_t *s) {
   if(ea & 1) { raise_ades(s); return; }
   s->mem.set<int16_t>(ea,  bswap<EL>(((int16_t)s->gpr[rt])));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SH]++;
+  HISTO(s, mipsInsn::SH);
 }
 
 static void _sb(uint32_t inst, state_t *s) {
@@ -1005,7 +1051,7 @@ static void _sb(uint32_t inst, state_t *s) {
   s->mem.set<uint8_t>(ea, static_cast<uint8_t>(s->gpr[rt]));
   
   s->pc +=4;
-  s->insn_histo[mipsInsn::SB]++;
+  HISTO(s, mipsInsn::SB);
 }
 
 static void _mtc1(uint32_t inst, state_t *s) {
@@ -1014,7 +1060,7 @@ static void _mtc1(uint32_t inst, state_t *s) {
   /* mips3/4 FR=1: FPR[fs] = sign_extend32(GPR[rt][31:0]) */
   s->cpr1[fs] = (uint64_t)(int64_t)(int32_t)(uint32_t)s->gpr[rt];
   s->pc += 4;
-  s->insn_histo[mipsInsn::MTC1]++;
+  HISTO(s, mipsInsn::MTC1);
 }
 
 static void _mfc1(uint32_t inst, state_t *s) {
@@ -1023,7 +1069,7 @@ static void _mfc1(uint32_t inst, state_t *s) {
   /* mips3/4 FR=1: GPR[rt] = sign_extend32(FPR[fs][31:0]) */
   s->gpr[rt] = (int64_t)(int32_t)(uint32_t)s->cpr1[fs];
   s->pc +=4;
-  s->insn_histo[mipsInsn::MFC1]++;
+  HISTO(s, mipsInsn::MFC1);
 }
 
 static void _dmtc1(uint32_t inst, state_t *s) {
@@ -1032,7 +1078,7 @@ static void _dmtc1(uint32_t inst, state_t *s) {
   /* FR=1: FPR[fs] = GPR[rt] (full 64-bit, no sign-ext) */
   s->cpr1[fs] = s->gpr[rt];
   s->pc += 4;
-  s->insn_histo[mipsInsn::DMTC1]++;
+  HISTO(s, mipsInsn::DMTC1);
 }
 
 static void _dmfc1(uint32_t inst, state_t *s) {
@@ -1041,7 +1087,7 @@ static void _dmfc1(uint32_t inst, state_t *s) {
   /* FR=1: GPR[rt] = FPR[fs] (full 64-bit) */
   s->gpr[rt] = s->cpr1[fs];
   s->pc += 4;
-  s->insn_histo[mipsInsn::DMFC1]++;
+  HISTO(s, mipsInsn::DMFC1);
 }
 
 /* map a raw FP control-register number to the compact fcr1[] index */
@@ -1063,7 +1109,7 @@ static void _cfc1(uint32_t inst, state_t *s) {
   uint32_t v = (cr == 0) ? 0x00000500u : (uint32_t)s->fcr1[fcr_index(cr)];
   s->gpr[rt] = (int64_t)(int32_t)v;
   s->pc += 4;
-  s->insn_histo[mipsInsn::CFC1]++;
+  HISTO(s, mipsInsn::CFC1);
 }
 
 static void _ctc1(uint32_t inst, state_t *s) {
@@ -1073,7 +1119,7 @@ static void _ctc1(uint32_t inst, state_t *s) {
   if(cr != 0)
     s->fcr1[fcr_index(cr)] = (uint32_t)s->gpr[rt];
   s->pc += 4;
-  s->insn_histo[mipsInsn::CTC1]++;
+  HISTO(s, mipsInsn::CTC1);
 }
 
 
@@ -1106,7 +1152,7 @@ void _swl(uint32_t inst, state_t *s) {
   
   s->mem.set<uint32_t>(ea, bswap<EL>(xx));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SWL]++;  
+  HISTO(s, mipsInsn::SWL);  
 }
 
 template <bool EL>
@@ -1130,7 +1176,7 @@ void _swr(uint32_t inst, state_t *s) {
   xx = (x << xs) | (rm & r);
   s->mem.set<uint32_t>(ea, bswap<EL>(xx));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SWR]++;
+  HISTO(s, mipsInsn::SWR);
 }
 
 template <bool EL>
@@ -1169,7 +1215,7 @@ void _lwl(uint32_t inst, state_t *s) {
   printf("_lwl from %x = %x\n", u_ea, s->gpr[rt]);
 #endif  
   s->pc += 4;
-  s->insn_histo[mipsInsn::LWL]++;  
+  HISTO(s, mipsInsn::LWL);  
 }
 
 template<bool EL>
@@ -1211,7 +1257,7 @@ void _lwr(uint32_t inst, state_t *s) {
 #endif  
   
   s->pc += 4;
-  s->insn_histo[mipsInsn::LWR]++;
+  HISTO(s, mipsInsn::LWR);
 }
 
 template <bool EL>
@@ -1240,7 +1286,7 @@ void _ldl(uint32_t inst, state_t *s) {
     case 7: s->gpr[rt] = (r & 0x00000000000000ffULL) << 56 | (x & 0x00ffffffffffffffULL); break;
   }
   s->pc += 4;
-  s->insn_histo[mipsInsn::LDL]++;
+  HISTO(s, mipsInsn::LDL);
 }
 
 template <bool EL>
@@ -1268,7 +1314,7 @@ void _ldr(uint32_t inst, state_t *s) {
     case 7: s->gpr[rt] = r; break;
   }
   s->pc += 4;
-  s->insn_histo[mipsInsn::LDR]++;
+  HISTO(s, mipsInsn::LDR);
 }
 
 template <bool EL>
@@ -1292,7 +1338,7 @@ void _sdl(uint32_t inst, state_t *s) {
   uint64_t merged = (r & m) | xs;
   s->mem.set<uint64_t>(ea, bswap<EL>(merged));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SDL]++;
+  HISTO(s, mipsInsn::SDL);
 }
 
 template <bool EL>
@@ -1316,7 +1362,7 @@ void _sdr(uint32_t inst, state_t *s) {
   uint64_t merged = (x << xs_bits) | (rm & r);
   s->mem.set<uint64_t>(ea, bswap<EL>(merged));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SDR]++;
+  HISTO(s, mipsInsn::SDR);
 }
 
 static inline char* get_open_string(sparse_mem &mem, uint32_t offset) {
@@ -1349,7 +1395,7 @@ void _ldc1(uint32_t inst, state_t *s) {
   if(s->tlb_fault) return;
   *reinterpret_cast<int64_t*>(s->cpr1 + ft) = bswap<EL>(s->mem.get<int64_t>(ea));
   s->pc += 4;
-  s->insn_histo[mipsInsn::LDC1]++;
+  HISTO(s, mipsInsn::LDC1);
 }
 
 template <bool EL>
@@ -1362,7 +1408,7 @@ void _sdc1(uint32_t inst, state_t *s) {
   if(s->tlb_fault) return;
   s->mem.set<int64_t>(ea,  bswap<EL>((*(int64_t*)(s->cpr1 + ft))));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SDC1]++;  
+  HISTO(s, mipsInsn::SDC1);  
 }
 
 template <bool EL>
@@ -1376,7 +1422,7 @@ void _lwc1(uint32_t inst, state_t *s) {
   uint32_t v = bswap<EL>(s->mem.get<uint32_t>(ea)); 
   *((float*)(s->cpr1 + ft)) = *((float*)&v);
   s->pc += 4;
-  s->insn_histo[mipsInsn::LWC1]++;
+  HISTO(s, mipsInsn::LWC1);
 }
 
 template <bool EL>
@@ -1390,7 +1436,7 @@ void _swc1(uint32_t inst, state_t *s) {
   uint32_t v = *((uint32_t*)(s->cpr1+ft));
   s->mem.set<uint32_t>(ea, bswap<EL>(v));
   s->pc += 4;
-  s->insn_histo[mipsInsn::SWC1]++;
+  HISTO(s, mipsInsn::SWC1);
 }
 
 static void _truncl(uint32_t inst, state_t *s) {
@@ -1415,12 +1461,12 @@ static void _truncw(uint32_t inst, state_t *s) {
       f = (*((float*)(s->cpr1 + fs)));
       //printf("f=%g\n", f);
       *ptr = (int32_t)f;
-      s->insn_histo[mipsInsn::TRUNC_SP_W]++;
+      HISTO(s, mipsInsn::TRUNC_SP_W);
       break;
     case FMT_D:
       d = (*((double*)(s->cpr1 + fs)));
       *ptr = (int32_t)d;
-      s->insn_histo[mipsInsn::TRUNC_DP_W]++;      
+      HISTO(s, mipsInsn::TRUNC_DP_W);      
       //printf("id=%d\n", *ptr);
       break;
     default:
@@ -1483,14 +1529,14 @@ static void _movcd(uint32_t inst, state_t *s) {
       s->cpr1[fd+0] = s->cpr1[fs+0];
       s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-    s->insn_histo[mipsInsn::FP_MOVF];    
+    HISTO(s, mipsInsn::FP_MOVF);    
   }
   else {
     if(getConditionCode(s,cc)==1) {
       s->cpr1[fd+0] = s->cpr1[fs+0];
       s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-    s->insn_histo[mipsInsn::FP_MOVT];    
+    HISTO(s, mipsInsn::FP_MOVT);    
   }
   s->pc += 4;
 }
@@ -1502,11 +1548,11 @@ static void _movcs(uint32_t inst, state_t *s) {
   uint32_t tf = (inst>>16) & 1;
   if(tf==0) {
     s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fd+0] : s->cpr1[fs+0];
-    s->insn_histo[mipsInsn::FP_MOVF];
+    HISTO(s, mipsInsn::FP_MOVF);
   }
   else {
     s->cpr1[fd+0] = getConditionCode(s, cc) ? s->cpr1[fs+0] : s->cpr1[fd+0];
-    s->insn_histo[mipsInsn::FP_MOVT];
+    HISTO(s, mipsInsn::FP_MOVT);
   }
   s->pc += 4;
 }
@@ -1520,12 +1566,12 @@ static void _movci(uint32_t inst, state_t *s) {
   if(tf==0) {
     /* movf */
     s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rd] : s->gpr[rs];
-    s->insn_histo[mipsInsn::MOVF]++;
+    HISTO(s, mipsInsn::MOVF);
   }
   else {
     /* movt */
     s->gpr[rd] = getConditionCode(s, cc) ? s->gpr[rs] : s->gpr[rd];
-    s->insn_histo[mipsInsn::MOVT]++;    
+    HISTO(s, mipsInsn::MOVT);    
   }
   s->pc += 4;
 }
@@ -1654,17 +1700,17 @@ static void fpCmp(uint32_t inst, state_t *s) {
       break;
     case COND_EQ:
       v = (Tfs == Tft);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_CMP_EQ, mipsInsn::SP_CMP_EQ)]++;            
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_CMP_EQ, mipsInsn::SP_CMP_EQ));            
       s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
       break;
     case COND_LT:
       v = (Tfs < Tft);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_CMP_LT, mipsInsn::SP_CMP_LT)]++;      
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_CMP_LT, mipsInsn::SP_CMP_LT));      
       s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
       break;
     case COND_LE:
       v = (Tfs <= Tft);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_CMP_LE, mipsInsn::SP_CMP_LE)]++;            
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_CMP_LE, mipsInsn::SP_CMP_LE));            
       s->fcr1[CP1_CR25] = setBit(s->fcr1[CP1_CR25],v,cc);
       break;
     default:
@@ -1718,27 +1764,27 @@ static void execFP(uint32_t inst, state_t *s) {
     {
     case fpOperation::abs:
       _fd = std::abs(_fs);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_ABS, mipsInsn::SP_ABS)]++;      
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ABS, mipsInsn::SP_ABS));      
       break;
     case fpOperation::neg:
       _fd = -_fs;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_NEG, mipsInsn::SP_NEG)]++;
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_NEG, mipsInsn::SP_NEG));
       break;
     case fpOperation::mov:
       _fd = _fs;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_MOV, mipsInsn::SP_MOV)]++;            
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_MOV, mipsInsn::SP_MOV));            
       break;
     case fpOperation::add:
       _fd = _fs + _ft;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_ADD, mipsInsn::SP_ADD)]++;            
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ADD, mipsInsn::SP_ADD));            
       break;
     case fpOperation::sub:
       _fd = _fs - _ft;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_SUB, mipsInsn::SP_SUB)]++;                  
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SUB, mipsInsn::SP_SUB));                  
       break;
     case fpOperation::mul:
       _fd = _fs * _ft;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_MUL, mipsInsn::SP_MUL)]++;      
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_MUL, mipsInsn::SP_MUL));      
       break;
     case fpOperation::div:
       if(_ft==0.0) {
@@ -1747,19 +1793,19 @@ static void execFP(uint32_t inst, state_t *s) {
       else {
 	_fd = _fs / _ft;
       }
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_DIV, mipsInsn::SP_DIV)]++;       
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_DIV, mipsInsn::SP_DIV));       
       break;
     case fpOperation::sqrt:
       _fd = std::sqrt(_fs);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_SQRT, mipsInsn::SP_SQRT)]++;      
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SQRT, mipsInsn::SP_SQRT));      
       break;
     case fpOperation::rsqrt:
       _fd = static_cast<T>(1.0) / std::sqrt(_fs);
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_RSQRT, mipsInsn::SP_RSQRT)]++;
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_RSQRT, mipsInsn::SP_RSQRT));
       break;
     case fpOperation::recip:
       _fd = static_cast<T>(1.0) / _fs;
-      s->insn_histo[select_fp_insn<T>(mipsInsn::DP_RECIP, mipsInsn::SP_RECIP)]++;
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_RECIP, mipsInsn::SP_RECIP));
       break;
     default:
       UNREACHABLE();
@@ -1987,7 +2033,13 @@ void execMips(state_t *s) {
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
   if(globals::trace_retirement and globals::retire_log) {
-    globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
+    /* optional TRACEWIN=lo:hi icnt window so a huge boot can emit a small,
+     * focused retire_trace (e.g. around a single XTLB refill) for mips-analyzer. */
+    static bool tw_init = false; static uint64_t tw_lo = 0, tw_hi = ~0ULL;
+    if(!tw_init) { tw_init = true; const char *tw = getenv("TRACEWIN");
+                   if(tw) sscanf(tw, "%lu:%lu", &tw_lo, &tw_hi); }
+    if(s->icnt >= tw_lo && s->icnt < tw_hi)
+      globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
   if(globals::pctrace) {
     if(!globals::pctrace_on && (uint32_t)s->pc == globals::pctrace_start) globals::pctrace_on = true;
@@ -2009,7 +2061,8 @@ void execMips(state_t *s) {
                 (uint32_t)s->pc, (uint32_t)s->gpr[(inst >> 21) & 31]);
     }
   }
-  if(getenv("ROMVEC")) {
+  static const bool romvec_dbg = getenv("ROMVEC") != nullptr;
+  if(romvec_dbg) {
     /* Log every control transfer into the ARCS romvec stub blob (PA 0x1000..
      * 0x1fff) -- jal/jalr/j/jr -- with args, so we can ask MAME what the real
      * PROM returns for each. (call_prom uses jr tail-calls, not just jalr.) */
@@ -2022,7 +2075,8 @@ void execMips(state_t *s) {
               (unsigned long)s->icnt, (uint32_t)s->pc, tgt,
               (long)s->gpr[4], (long)s->gpr[5], (long)s->gpr[6], (long)s->gpr[7], (uint32_t)s->gpr[31]);
   }
-  if((uint32_t)s->pc == 0x880162c8u && getenv("KMISSDBG")) {
+  static const bool kmissdbg = getenv("KMISSDBG") != nullptr;
+  if((uint32_t)s->pc == 0x880162c8u && kmissdbg) {
     /* kmiss entry: for a fault in the KPTEBASE self-map region [0xff800000,
      * 0xffa00000), replicate the handler's PDA walk and dump whether the
      * page-table-of-page-table root is backed. PDA base ptr lives at kseg3
@@ -2055,7 +2109,7 @@ void execMips(state_t *s) {
               kptbl, ok_kpt, klim, ok_klim);
     }
   }
-  if((uint32_t)s->pc == 0x880052a4u && getenv("KMISSDBG")) {   /* resume entry */
+  if((uint32_t)s->pc == 0x880052a4u && kmissdbg) {   /* resume entry */
     static unsigned long rc = 0;
     if(rc < 4 || (rc % 1000) == 0)
       fprintf(stderr, "[resume] #%lu icnt=%lu a0(thread)=%08x\n",
@@ -2083,7 +2137,8 @@ void execMips(state_t *s) {
       }
     }
   }
-  if(getenv("KVALDBG")) {
+  static const bool kvaldbg = getenv("KVALDBG") != nullptr;
+  if(kvaldbg) {
     /* kvalloc PTE-write loop: 0x880fd07c = `sw a3,-4(s0)` (kvalloc+0x2dc), the PC
      * MAME says writes the VALID leaf PTE into kptbl[c0000000] @ PA 0x08392000
      * (value 0x4020f61f) before the bzero. s0=$16 (post-incr -> slot is s0-4),
@@ -2126,10 +2181,10 @@ void execMips(state_t *s) {
 	s->gpr[rd] = static_cast<int32_t>(s->gpr[rt]) << sa;
 	s->pc += 4;
 	if(inst == 0) {
-	  s->insn_histo[mipsInsn::NOP]++;
+	  HISTO(s, mipsInsn::NOP);
 	}
 	else {
-	  s->insn_histo[mipsInsn::SLL]++;
+	  HISTO(s, mipsInsn::SLL);
 	}
 	break;
       case 0x01: /* movci */
@@ -2138,34 +2193,34 @@ void execMips(state_t *s) {
       case 0x02: /* srl */
 	s->gpr[rd] = sext64(((uint32_t)s->gpr[rt] >> sa));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SRL]++;
+	HISTO(s, mipsInsn::SRL);
 	break;
       case 0x03: /* sra */
 	s->gpr[rd] = static_cast<int32_t>(s->gpr[rt]) >> sa;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SRA]++;
+	HISTO(s, mipsInsn::SRA);
 	break;	
       case 0x04: /* sllv */
 	s->gpr[rd] = sext64(static_cast<uint32_t>(s->gpr[rt]) << (s->gpr[rs] & 0x1f));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SLLV]++;
+	HISTO(s, mipsInsn::SLLV);
 	break;
       case 0x06:  /* srlv: sign-extend the 32-bit logical-shift result (MIPS64) */
 	s->gpr[rd] = sext64((uint32_t)s->gpr[rt] >> (s->gpr[rs] & 0x1f));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SRLV]++;
+	HISTO(s, mipsInsn::SRLV);
 	break;
       case 0x07:  /* srav: 32-bit arithmetic shift, result sign-extended (MIPS64) */
 	s->gpr[rd] = static_cast<int32_t>(s->gpr[rt]) >> (s->gpr[rs] & 0x1f);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SRAV]++;
+	HISTO(s, mipsInsn::SRAV);
 	break;
       case 0x08: { /* jr */
 	state_t::reg_t jaddr = s->gpr[rs];
 	s->pc += 4;
 	if(!run_delay_slot<EL>(s))
 	  s->pc = jaddr;
-	s->insn_histo[mipsInsn::JR]++;
+	HISTO(s, mipsInsn::JR);
 	break;
       }
       case 0x09: { /* jalr */
@@ -2174,40 +2229,40 @@ void execMips(state_t *s) {
 	s->pc += 4;
 	if(!run_delay_slot<EL>(s))
 	  s->pc = jaddr;
-	s->insn_histo[mipsInsn::JALR]++;
+	HISTO(s, mipsInsn::JALR);
 	break;
       }
       case 0x0C: /* syscall -> trap to kernel (ExcCode 8) */
 	raise_syscall(s);
-	s->insn_histo[mipsInsn::BREAK]++;
+	HISTO(s, mipsInsn::BREAK);
 	break;
       case 0x0D: /* break -> trap to kernel (ExcCode 9) */
 	raise_break(s);
-	s->insn_histo[mipsInsn::BREAK]++;
+	HISTO(s, mipsInsn::BREAK);
 	break;
       case 0x0f: /* sync */
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SYNC]++;
+	HISTO(s, mipsInsn::SYNC);
 	break;
       case 0x10: /* mfhi */
 	s->gpr[rd] = s->hi;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MFHI]++;
+	HISTO(s, mipsInsn::MFHI);
 	break;
       case 0x11: /* mthi */ 
 	s->hi = s->gpr[rs];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MTHI]++;
+	HISTO(s, mipsInsn::MTHI);
 	break;
       case 0x12: /* mflo */
 	s->gpr[rd] = s->lo;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MFLO]++;	
+	HISTO(s, mipsInsn::MFLO);	
 	break;
       case 0x13: /* mtlo */
 	s->lo = s->gpr[rs];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MTLO]++;		
+	HISTO(s, mipsInsn::MTLO);		
 	break;
       case 0x18: { /* mult: 32x32 signed (operands are the low 32 bits) */
 	int64_t y;
@@ -2215,7 +2270,7 @@ void execMips(state_t *s) {
 	s->lo = (int32_t)(y & 0xffffffff);
 	s->hi = (int32_t)(y >> 32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MULT]++;			
+	HISTO(s, mipsInsn::MULT);			
 	break;
       }
       case 0x19: { /* multu */
@@ -2226,7 +2281,7 @@ void execMips(state_t *s) {
 	s->lo = sext64((uint32_t)y);
 	s->hi = sext64((uint32_t)(y>>32));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MULTU]++;
+	HISTO(s, mipsInsn::MULTU);
 	break;
       }
       case 0x1A: /* div: 32-bit signed, sign-extended (int64 avoids INT_MIN/-1 UB) */
@@ -2236,7 +2291,7 @@ void execMips(state_t *s) {
 	  s->hi = sext64((uint32_t)(int32_t)(a % b));
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DIV]++;
+	HISTO(s, mipsInsn::DIV);
 	break;
       case 0x1B: /* divu */
 	if(s->gpr[rt] != 0) {
@@ -2244,14 +2299,14 @@ void execMips(state_t *s) {
 	  s->hi = sext64((uint32_t)s->gpr[rs] % (uint32_t)s->gpr[rt]);
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DIVU]++;
+	HISTO(s, mipsInsn::DIVU);
 	break;
       case 0x1C: { /* dmult: signed 64x64 -> 128, hi:lo */
 	__int128 y = (__int128)s->gpr[rs] * (__int128)s->gpr[rt];
 	s->lo = (int64_t)(y & 0xffffffffffffffffULL);
 	s->hi = (int64_t)(y >> 64);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DMULT]++;
+	HISTO(s, mipsInsn::DMULT);
 	break;
       }
       case 0x1D: { /* dmultu: unsigned 64x64 -> 128, hi:lo */
@@ -2260,7 +2315,7 @@ void execMips(state_t *s) {
 	s->lo = (int64_t)(y & 0xffffffffffffffffULL);
 	s->hi = (int64_t)(uint64_t)(y >> 64);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DMULTU]++;
+	HISTO(s, mipsInsn::DMULTU);
 	break;
       }
       case 0x1E: /* ddiv: signed 64-bit divide */
@@ -2269,7 +2324,7 @@ void execMips(state_t *s) {
 	  s->hi = s->gpr[rs] % s->gpr[rt];
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DDIV]++;
+	HISTO(s, mipsInsn::DDIV);
 	break;
       case 0x1F: /* ddivu: unsigned 64-bit divide */
 	if(s->gpr[rt] != 0) {
@@ -2277,7 +2332,7 @@ void execMips(state_t *s) {
 	  s->hi = (int64_t)((uint64_t)s->gpr[rs] % (uint64_t)s->gpr[rt]);
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DDIVU]++;
+	HISTO(s, mipsInsn::DDIVU);
 	break;
       case 0x20: { /* add */
 	uint32_t u_rs = (uint32_t)s->gpr[rs];
@@ -2291,7 +2346,7 @@ void execMips(state_t *s) {
 	}
 	s->gpr[rd] = sext64(result);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::ADD]++;
+	HISTO(s, mipsInsn::ADD);
 	break;
       }
       case 0x21: { /* addu */
@@ -2299,7 +2354,7 @@ void execMips(state_t *s) {
 	uint32_t u_rt = (uint32_t)s->gpr[rt];
 	s->gpr[rd] = sext64(u_rs + u_rt);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::ADDU]++;
+	HISTO(s, mipsInsn::ADDU);
 	break;
       }
       case 0x22: { /* sub */
@@ -2314,7 +2369,7 @@ void execMips(state_t *s) {
 	}
 	s->gpr[rd] = sext64(result);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SUB]++;
+	HISTO(s, mipsInsn::SUB);
 	break;
       }
       case 0x23:{ /*subu*/  
@@ -2323,71 +2378,71 @@ void execMips(state_t *s) {
 	uint32_t y = u_rs - u_rt;
 	s->gpr[rd] = sext64(y);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SUBU]++;
+	HISTO(s, mipsInsn::SUBU);
 	break;
       }
       case 0x24: /* and */
 	s->gpr[rd] = s->gpr[rs] & s->gpr[rt];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::AND]++;
+	HISTO(s, mipsInsn::AND);
 	break;
       case 0x25: /* or */
 	if(rd != 0) {
 	  s->gpr[rd] = s->gpr[rs] | s->gpr[rt];
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::OR]++;
+	HISTO(s, mipsInsn::OR);
 	break;
       case 0x26: /* xor */
 	s->gpr[rd] = s->gpr[rs] ^ s->gpr[rt];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::XOR]++;	
+	HISTO(s, mipsInsn::XOR);	
 	break;
       case 0x27: /* nor */
 	s->gpr[rd] = ~(s->gpr[rs] | s->gpr[rt]);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::NOR]++;
+	HISTO(s, mipsInsn::NOR);
 	break;
       case 0x2A: /* slt */
 	s->gpr[rd] = s->gpr[rs] < s->gpr[rt];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SLT]++;	
+	HISTO(s, mipsInsn::SLT);	
 	break;
       case 0x2B: { /* sltu */
 	s->gpr[rd] = ((uint64_t)s->gpr[rs] < (uint64_t)s->gpr[rt]);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SLTU]++;
+	HISTO(s, mipsInsn::SLTU);
 	break;
       }
       case 0x0B: /* movn */
 	s->gpr[rd] = (s->gpr[rt] != 0) ? s->gpr[rs] : s->gpr[rd];
 	s->pc +=4;
-	s->insn_histo[mipsInsn::MOVN]++;
+	HISTO(s, mipsInsn::MOVN);
 	break;
       case 0x0A: /* movz */
 	s->gpr[rd] = (s->gpr[rt] == 0) ? s->gpr[rs] : s->gpr[rd];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::MOVZ]++;	
+	HISTO(s, mipsInsn::MOVZ);	
 	break;
       case 0x30: /* tge  */
 	if((int64_t)s->gpr[rs] >= (int64_t)s->gpr[rt]) { raise_trap(s); return; }
-	s->pc += 4; s->insn_histo[mipsInsn::TGE]++; break;
+	s->pc += 4; HISTO(s, mipsInsn::TGE); break;
       case 0x31: /* tgeu */
 	if((uint64_t)s->gpr[rs] >= (uint64_t)s->gpr[rt]) { raise_trap(s); return; }
-	s->pc += 4; s->insn_histo[mipsInsn::TGEU]++; break;
+	s->pc += 4; HISTO(s, mipsInsn::TGEU); break;
       case 0x32: /* tlt  */
 	if((int64_t)s->gpr[rs] < (int64_t)s->gpr[rt]) { raise_trap(s); return; }
-	s->pc += 4; s->insn_histo[mipsInsn::TLT]++; break;
+	s->pc += 4; HISTO(s, mipsInsn::TLT); break;
       case 0x33: /* tltu */
 	if((uint64_t)s->gpr[rs] < (uint64_t)s->gpr[rt]) { raise_trap(s); return; }
-	s->pc += 4; s->insn_histo[mipsInsn::TLTU]++; break;
+	s->pc += 4; HISTO(s, mipsInsn::TLTU); break;
       case 0x34: /* teq */
 	if(s->gpr[rs] == s->gpr[rt]) {
 	  raise_trap(s);
 	  return;
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::TEQ]++;
+	HISTO(s, mipsInsn::TEQ);
 	break;
       case 0x36: /* tne */
 	if(s->gpr[rs] != s->gpr[rt]) {
@@ -2395,7 +2450,7 @@ void execMips(state_t *s) {
 	  return;
 	}
 	s->pc += 4;
-	s->insn_histo[mipsInsn::TNE]++;
+	HISTO(s, mipsInsn::TNE);
 	break;
       case 0x2C: { /* dadd */
 	uint64_t u_rs = (uint64_t)s->gpr[rs];
@@ -2408,13 +2463,13 @@ void execMips(state_t *s) {
 	}
 	s->gpr[rd] = (int64_t)result;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DADD]++;
+	HISTO(s, mipsInsn::DADD);
 	break;
       }
       case 0x2D: /* daddu */
 	s->gpr[rd] = s->gpr[rs] + s->gpr[rt];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DADDU]++;
+	HISTO(s, mipsInsn::DADDU);
 	break;
       case 0x2E: { /* dsub */
 	uint64_t u_rs = (uint64_t)s->gpr[rs];
@@ -2428,58 +2483,58 @@ void execMips(state_t *s) {
 	}
 	s->gpr[rd] = (int64_t)result;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSUB]++;
+	HISTO(s, mipsInsn::DSUB);
 	break;
       }
       case 0x2F: /* dsubu */
 	s->gpr[rd] = s->gpr[rs] - s->gpr[rt];
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSUBU]++;
+	HISTO(s, mipsInsn::DSUBU);
 	break;
       case 0x14: /* dsllv: rd = rt << rs[5:0] */
 	s->gpr[rd] = s->gpr[rt] << (s->gpr[rs] & 63);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSLLV]++;
+	HISTO(s, mipsInsn::DSLLV);
 	break;
       case 0x16: /* dsrlv: rd = rt >> rs[5:0] (logical) */
 	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] >> (s->gpr[rs] & 63));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRLV]++;
+	HISTO(s, mipsInsn::DSRLV);
 	break;
       case 0x17: /* dsrav: rd = rt >> rs[5:0] (arithmetic) */
 	s->gpr[rd] = s->gpr[rt] >> (s->gpr[rs] & 63);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRAV]++;
+	HISTO(s, mipsInsn::DSRAV);
 	break;
       case 0x38: /* dsll: rd = rt << sa */
 	s->gpr[rd] = s->gpr[rt] << sa;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSLL]++;
+	HISTO(s, mipsInsn::DSLL);
 	break;
       case 0x3A: /* dsrl: rd = rt >> sa (logical) */
 	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] >> sa);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRL]++;
+	HISTO(s, mipsInsn::DSRL);
 	break;
       case 0x3B: /* dsra: rd = rt >> sa (arithmetic) */
 	s->gpr[rd] = s->gpr[rt] >> sa;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRA]++;
+	HISTO(s, mipsInsn::DSRA);
 	break;
       case 0x3C: /* dsll32: rd = rt << (sa + 32) */
 	s->gpr[rd] = s->gpr[rt] << (sa + 32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSLL32]++;
+	HISTO(s, mipsInsn::DSLL32);
 	break;
       case 0x3E: /* dsrl32: rd = rt >> (sa + 32) (logical) */
 	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] >> (sa + 32));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRL32]++;
+	HISTO(s, mipsInsn::DSRL32);
 	break;
       case 0x3F: /* dsra32: rd = rt >> (sa + 32) (arithmetic) */
 	s->gpr[rd] = s->gpr[rt] >> (sa + 32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DSRA32]++;
+	HISTO(s, mipsInsn::DSRA32);
 	break;
       default:
 	raise_ri(s, inst);
@@ -2493,12 +2548,12 @@ void execMips(state_t *s) {
     jaddr <<= 2;
     if(opcode==0x2) { /* j */
       s->pc += 4;
-      s->insn_histo[mipsInsn::J]++;
+      HISTO(s, mipsInsn::J);
     }
     else if(opcode==0x3) { /* jal */
       s->gpr[31] = s->pc + 8;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
       s->pc += 4;
-      s->insn_histo[mipsInsn::JAL]++;
+      HISTO(s, mipsInsn::JAL);
     }
     else {
       printf("Unknown JType instruction\n");
@@ -2525,7 +2580,7 @@ void execMips(state_t *s) {
 	    s->cpr0[CPR0_ENTRYLO1]    = (uint32_t)s->tlb[idx].entry_lo1;
 	    s->cpr0[CPR0_PAGEMASK]    = s->tlb[idx].page_mask;
 	  }
-	  s->insn_histo[mipsInsn::TLBR]++;
+	  HISTO(s, mipsInsn::TLBR);
 	  break;
 	}
 	case 0x2: { /* TLBWI -- write staging regs to TLB[Index] */
@@ -2536,10 +2591,12 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
 	  }
-	  if(getenv("TLBLOG")) fprintf(stderr, "[TLBWI] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx pm=%08x\n",
+	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
+	  static const bool tlblog = getenv("TLBLOG") != nullptr;
+	  if(tlblog) fprintf(stderr, "[TLBWI] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx pm=%08x\n",
 	     idx, (unsigned long long)s->cpr0_64[CPR0_ENTRYHI], (unsigned long long)s->cpr0_64[CPR0_ENTRYLO0],
 	     (unsigned long long)s->cpr0_64[CPR0_ENTRYLO1], s->cpr0[CPR0_PAGEMASK]);
-	  s->insn_histo[mipsInsn::TLBWI]++;
+	  HISTO(s, mipsInsn::TLBWI);
 	  break;
 	}
 	case 0x6: { /* TLBWR -- write staging regs to TLB[Random] */
@@ -2550,6 +2607,7 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
 	  }
+	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
 	  /* Decrement Random, wrap to NUM_TLB_ENTRIES-1 when it reaches Wired */
 	  {
 	    uint32_t wired  = s->cpr0[CPR0_WIRED] & 63;
@@ -2557,10 +2615,11 @@ void execMips(state_t *s) {
 	    s->cpr0[CPR0_RANDOM] = (random <= wired)
 	      ? (uint32_t)(state_t::NUM_TLB_ENTRIES - 1) : (random - 1);
 	  }
-	  if(getenv("TLBLOG") && idx < 8) fprintf(stderr, "[TLBWR] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx\n",
+	  static const bool tlblog = getenv("TLBLOG") != nullptr;
+	  if(tlblog && idx < 8) fprintf(stderr, "[TLBWR] idx=%2u hi=%016llx lo0=%016llx lo1=%016llx\n",
 	     idx, (unsigned long long)s->cpr0_64[CPR0_ENTRYHI], (unsigned long long)s->cpr0_64[CPR0_ENTRYLO0],
 	     (unsigned long long)s->cpr0_64[CPR0_ENTRYLO1]);
-	  s->insn_histo[mipsInsn::TLBWR]++;
+	  HISTO(s, mipsInsn::TLBWR);
 	  break;
 	}
 	case 0x8: { /* TLBP -- probe TLB for matching entry */
@@ -2584,7 +2643,7 @@ void execMips(state_t *s) {
 	  if(!found) {
 	    s->cpr0[CPR0_INDEX] |= (1u << 31); /* P=1 (probe failed) */
 	  }
-	  s->insn_histo[mipsInsn::TLBP]++;
+	  HISTO(s, mipsInsn::TLBP);
 	  break;
 	}
 	case 24: { /* ERET -- exception return */
@@ -2602,7 +2661,7 @@ void execMips(state_t *s) {
 	    s->pc = (state_t::reg_t)s->cpr0_64[CPR0_EPC] - 4;
 	    s->cpr0[CPR0_SR] &= ~SR_EXL;
 	  }
-	  s->insn_histo[mipsInsn::ERET]++;
+	  HISTO(s, mipsInsn::ERET);
 	  break;
 	}
 	case 32: //WAIT
@@ -2611,7 +2670,7 @@ void execMips(state_t *s) {
 		   s->pc, VA2PA(s->pc));
 	    exit(-1);
 	  }
-	  s->insn_histo[mipsInsn::WAIT]++;
+	  HISTO(s, mipsInsn::WAIT);
 	  break;
 	default:
 	  exit(-1);
@@ -2624,7 +2683,7 @@ void execMips(state_t *s) {
 	s->gpr[rt] = s->cpr0[CPR0_SR];
       }
       s->cpr0[CPR0_SR] &= (~1U);
-      s->insn_histo[mipsInsn::DI]++;
+      HISTO(s, mipsInsn::DI);
     }
     else if( (((inst >> 21) & 31) == 11 ) &&
 	     ((inst & 65535) == 0x6020) ) {
@@ -2633,7 +2692,7 @@ void execMips(state_t *s) {
 	s->gpr[rt] = s->cpr0[CPR0_SR];
       }
       s->cpr0[CPR0_SR] |= 1U;
-      s->insn_histo[mipsInsn::EI]++;
+      HISTO(s, mipsInsn::EI);
     }
 
     else {
@@ -2646,11 +2705,11 @@ void execMips(state_t *s) {
 	    /* mfc0 sign-extends the 32-bit CP0 value to 64 bits, matching HW. */
 	    s->gpr[rt] = sext32(s->cpr0[rd]);
 	  }
-	  s->insn_histo[mipsInsn::MFC0]++;
+	  HISTO(s, mipsInsn::MFC0);
 	  break;
 	case 0x1: /*dmfc0 -- read full 64-bit CP0 register */
 	  s->gpr[rt] = s->cpr0_64[rd];
-	  s->insn_histo[mipsInsn::DMFC0]++;
+	  HISTO(s, mipsInsn::DMFC0);
 	  break;
 	case 0x4: /*mtc0*/
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
@@ -2673,7 +2732,7 @@ void execMips(state_t *s) {
 	    fputc((int)(s->gpr[rt] & 0xff), stdout);
 	    fflush(stdout);
 	  }
-	  s->insn_histo[mipsInsn::MTC0]++;
+	  HISTO(s, mipsInsn::MTC0);
 	  break;
 	case 0x5: /*dmtc0 -- write full 64-bit CP0 register */
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
@@ -2684,7 +2743,7 @@ void execMips(state_t *s) {
 	    fputc((int)(s->gpr[rt] & 0xff), stdout);
 	    fflush(stdout);
 	  }
-	  s->insn_histo[mipsInsn::DMTC0]++;
+	  HISTO(s, mipsInsn::DMTC0);
 	  break;
 	default:
 	  std::cerr << "unhandled cpr0 instruction @ "
@@ -2735,44 +2794,44 @@ void execMips(state_t *s) {
       case 0x08: /* addi */
 	s->gpr[rt] = s->gpr[rs] + simm32;  
 	s->pc+=4;
-	s->insn_histo[mipsInsn::ADDI]++;
+	HISTO(s, mipsInsn::ADDI);
 	break;
       case 0x09: /* addiu: 32-bit add, result sign-extended (MIPS64) */
 	tmp = sext64((uint32_t)(s->gpr[rs] + simm32));
 	s->gpr[rt] = tmp;
 	s->pc+=4;
-	s->insn_histo[mipsInsn::ADDIU]++;
+	HISTO(s, mipsInsn::ADDIU);
 	break;
       case 0x0A: /* slti */
 	s->gpr[rt] = (s->gpr[rs] < simm32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SLTI]++;
+	HISTO(s, mipsInsn::SLTI);
 	break;
       case 0x0B:/* sltiu */
 	s->gpr[rt] = ((uint64_t)s->gpr[rs] < (uint64_t)(int64_t)simm32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::SLTIU]++;
+	HISTO(s, mipsInsn::SLTIU);
 	break;
       case 0x0c: /* andi */
 	s->gpr[rt] = s->gpr[rs] & uimm32;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::ANDI]++;
+	HISTO(s, mipsInsn::ANDI);
 	break;
       case 0x0d: /* ori */
 	s->gpr[rt] = s->gpr[rs] | uimm32;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::ORI]++;
+	HISTO(s, mipsInsn::ORI);
 	break;
       case 0x0e: /* xori */
 	s->gpr[rt] = s->gpr[rs] ^ uimm32;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::XORI]++;
+	HISTO(s, mipsInsn::XORI);
 	break;
       case 0x0F: /* lui */
 	uimm32 <<= 16;
 	s->gpr[rt] = sext64(uimm32);
 	s->pc += 4;
-	s->insn_histo[mipsInsn::LUI]++;
+	HISTO(s, mipsInsn::LUI);
 	break;
       case 0x14:
 	branch<EL,branch_type::beql>(inst, s); 
@@ -2797,13 +2856,13 @@ void execMips(state_t *s) {
 	}
 	s->gpr[rt] = (int64_t)result;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DADDI]++;
+	HISTO(s, mipsInsn::DADDI);
 	break;
       }
       case 0x19: /* daddiu */
 	s->gpr[rt] = s->gpr[rs] + simm32;
 	s->pc += 4;
-	s->insn_histo[mipsInsn::DADDIU]++;
+	HISTO(s, mipsInsn::DADDIU);
 	break;
       case 0x1a:
 	_ldl<EL>(inst, s);
@@ -2835,7 +2894,7 @@ void execMips(state_t *s) {
 	if(ea & 3) { raise_adel(s); break; }
 	s->gpr[rt_] = (uint64_t)(uint32_t)bswap<EL>(s->mem.get<int32_t>(ea));
 	s->pc += 4;
-	s->insn_histo[mipsInsn::LWU]++;
+	HISTO(s, mipsInsn::LWU);
 	break;
       }
       case 0x25:

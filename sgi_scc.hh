@@ -41,7 +41,7 @@ public:
   sgi_scc(state_t *s) : s(s) {}
   uint8_t read(uint32_t offs);          /* offs within the 16-byte SCC window */
   void    write(uint32_t offs, uint8_t b);
-  void    tick();                       /* advance TX timing; call once per insn */
+  void    tick(uint64_t dticks);        /* advance TX timing by dticks instruction ticks */
   bool    int_pending();                /* SCC INT line: any channel TxIE & Tx-IP */
 };
 

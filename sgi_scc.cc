@@ -30,10 +30,12 @@ static inline int  chan(uint32_t offs)        { return (int)((offs >> 3) & 1u); 
  * Z8530 get_ip(): clearing TxIE deasserts immediately). */
 static inline bool tx_int(uint8_t wr1, bool ip) { return (wr1 & TxINT_ENAB) && ip; }
 
-/* advance transmit timing: a shifting char completes -> raise the Tx-IP edge.
- * Called once per executed instruction. */
-void sgi_scc::tick() {
-  clk++;
+/* advance transmit timing by dticks instruction ticks: a shifting char that
+ * finishes draining raises the Tx-IP edge.  Called periodically (every INT_POLL
+ * instructions) with dticks = instructions elapsed, so TX timing stays in
+ * instruction units regardless of the poll period. */
+void sgi_scc::tick(uint64_t dticks) {
+  clk += dticks;
   for(int ch = 0; ch < 2; ch++) {
     if(tx_busy[ch] && clk >= drain_at[ch]) {
       tx_busy[ch] = false;                   /* shift complete: buffer empty */
