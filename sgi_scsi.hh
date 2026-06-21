@@ -43,6 +43,7 @@ private:
   bool     intrq = false;           /* INTRQ pending (command complete) */
   uint64_t wr_lba = 0;              /* pending WRITE target (drained from buf) */
   uint8_t  sense[18] = {0};         /* REQUEST SENSE fixed-format data */
+  uint8_t  tgt_status = 0;          /* target STATUS byte -> WD33C93 reg 0x0f after a transfer */
   std::unordered_map<uint64_t, std::vector<uint8_t>> overlay; /* COW writes */
 
   void block_read(uint64_t lba, uint8_t *dst);     /* 512 bytes */

@@ -87,6 +87,11 @@ void sgi_scsi::finish() {
 
 void sgi_scsi::complete(uint8_t scsi_status) {
   regs[WD_SCSI_STATUS]   = scsi_status;
+  /* After Select-and-Transfer the WD33C93 leaves the target STATUS byte in reg
+   * 0x0f (Target LUN). IRIX reads it to tell GOOD (0x00) from CHECK CONDITION
+   * (0x02). We must write it -- otherwise IRIX reads back the LUN it programmed
+   * and mistakes lun>=2 for a CHECK CONDITION (an INQUIRY/REQUEST-SENSE loop). */
+  regs[WD_TARGET_LUN]    = tgt_status;
   regs[WD_COMMAND_PHASE] = 0x60;          /* command complete */
   regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
   regs[WD_AUX_STATUS]   |= AUX_INT;
@@ -100,9 +105,23 @@ void sgi_scsi::select_and_transfer() {
   regs[WD_AUX_STATUS] |= (AUX_CIP | AUX_BSY);
   const uint8_t *cdb = &regs[WD_CDB];
   const uint8_t op = cdb[0];
+  uint8_t lun = regs[WD_TARGET_LUN] & 7;   /* capture before complete() overwrites 0x0f */
   SPRINTF("sgi_scsi: CDB %02x %02x %02x %02x %02x %02x ... dest=%u lun=%u\n",
           cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],
-          regs[WD_DEST_ID]&7, regs[WD_TARGET_LUN]&7);
+          regs[WD_DEST_ID]&7, lun);
+
+  tgt_status = 0x00;                        /* GOOD unless we set CHECK below */
+
+  /* Only LUN 0 exists. For any other LUN, return CHECK CONDITION with sense
+   * key ILLEGAL REQUEST / ASC 0x25 (LOGICAL UNIT NOT SUPPORTED) and no data, so
+   * the probe records "no device" and stops instead of looping. REQUEST SENSE
+   * itself must still succeed so IRIX can read that sense. */
+  if(lun != 0 && op != 0x03) {
+    sense[0] = 0x70; sense[2] = 0x05; sense[7] = 0x0a; sense[12] = 0x25; sense[13] = 0x00;
+    tgt_status = 0x02;                      /* CHECK CONDITION */
+    finish();
+    return;
+  }
 
   switch(op) {
   case 0x00:   /* TEST UNIT READY  */
