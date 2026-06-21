@@ -101,13 +101,44 @@ void sgi_scsi::complete(uint8_t scsi_status) {
 
 /* ---- command decode ------------------------------------------------------ */
 
+void sgi_scsi::pause_transfer() {
+  /* The HPC3 DMA descriptor chain ended (EOX) before this data phase finished:
+   * IRIX deliberately programmed the WD33C93 transfer count for fewer bytes than
+   * the SCSI command's full length (a chunked/scatter transfer). The real
+   * WD33C93 raises an interrupt when its transfer count hits zero, leaving the
+   * data phase active; IRIX then reprograms the DMA and re-issues SEL_ATN_XFER to
+   * move the rest (see the resume path in select_and_transfer). Status/phase
+   * codes match the validated iris WD33C93 model (ST_UNEX_SDATA on a data-in
+   * read / ST_UNEX_RDATA on a data-out write). buf + pos are preserved. */
+  drq = false;                            /* no data movement until resumed */
+  regs[WD_SCSI_STATUS]   = (phase == PH_DATA_OUT) ? 0x48 : 0x49;
+  regs[WD_COMMAND_PHASE] = 0x46;          /* transfer count exhausted */
+  regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
+  regs[WD_AUX_STATUS]   |= AUX_INT;
+  intrq = true;
+  SPRINTF("sgi_scsi: %s paused at %zu/%zu (chunked) -> INTRQ\n",
+          phase == PH_DATA_OUT ? "data-out" : "data-in", pos, buf.size());
+}
+
 void sgi_scsi::select_and_transfer() {
+  /* Resume a chunked transfer paused at a DMA EOX boundary: IRIX has
+   * reprogrammed the DMA channel for the remaining bytes and re-issued
+   * SEL_ATN_XFER. Continue the data phase from pos -- do NOT re-decode the CDB
+   * (the HPC3 DMA pump after this command write moves the rest). */
+  if((phase == PH_DATA_IN || phase == PH_DATA_OUT) && pos > 0 && pos < buf.size()) {
+    SPRINTF("sgi_scsi: %s resume from %zu/%zu\n",
+            phase == PH_DATA_OUT ? "data-out" : "data-in", pos, buf.size());
+    regs[WD_AUX_STATUS] |= (AUX_CIP | AUX_BSY);
+    drq = true;
+    return;
+  }
+
   regs[WD_AUX_STATUS] |= (AUX_CIP | AUX_BSY);
   const uint8_t *cdb = &regs[WD_CDB];
   const uint8_t op = cdb[0];
   uint8_t lun = regs[WD_TARGET_LUN] & 7;   /* capture before complete() overwrites 0x0f */
-  SPRINTF("sgi_scsi: CDB %02x %02x %02x %02x %02x %02x ... dest=%u lun=%u\n",
-          cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],
+  SPRINTF("sgi_scsi: CDB %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x dest=%u lun=%u\n",
+          cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],
           regs[WD_DEST_ID]&7, lun);
 
   tgt_status = 0x00;                        /* GOOD unless we set CHECK below */

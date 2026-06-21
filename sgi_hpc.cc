@@ -72,6 +72,10 @@ void sgi_hpc::scsi_fetch_chain(int ch) {
   d.bc    = rd_be32(s, desc + 4);
   d.nbdp  = rd_be32(s, desc + 8);
   d.count = d.bc & 0x3fff;
+  static const bool dbg = getenv("SCSIDBG") != nullptr;
+  if(dbg) fprintf(stderr, "sgi_hpc: ch%d FETCH desc=%08x cbp=%08x bc=%08x count=%u next=%08x %s%s\n",
+                  ch, desc, d.cbp, d.bc, d.count, d.nbdp,
+                  (d.bc & 0x80000000u) ? "EOX " : "", (d.bc & 0x20000000u) ? "XIE" : "");
 }
 
 /* Descriptor-walk FSM, pumped while it can make progress.  CH_XFER drains the
@@ -103,6 +107,12 @@ void sgi_hpc::scsi_run_dma(int ch) {
     case CH_DESC_DONE:
       if(d.bc & 0x20000000u) intstat |= (0x100u << ch);    /* XIE -> SCSI channel IRQ */
       if(d.bc & 0x80000000u) {                              /* EOX -> deactivate */
+        /* Chunked transfer: IRIX programs the WD33C93 transfer count (and this
+         * DMA chain) for fewer bytes than the SCSI command's full length, then
+         * resumes with a fresh chain + SEL_ATN_XFER. If the device data-in buffer
+         * isn't fully drained when the chain ends (EOX), post a transfer-paused
+         * interrupt so IRIX continues, rather than stalling with no INTRQ. */
+        if(s->scsi && s->scsi->residual() > 0) s->scsi->pause_transfer();
         d.active = false; d.ctrl &= ~0x10u; d.state = CH_IDLE;
       } else {
         d.state = CH_FETCH;

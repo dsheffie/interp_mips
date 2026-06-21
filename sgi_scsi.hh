@@ -70,6 +70,13 @@ public:
   void reset();
   bool drq_pending()   const { return drq; }
   bool intrq_pending() const { return intrq; }
+  /* device bytes still pending in the data buffer (undrained read / unfilled write) */
+  size_t residual() const {
+    return (phase == PH_DATA_IN || phase == PH_DATA_OUT) ? buf.size() - pos : 0;
+  }
+  /* HPC3 DMA chain hit EOX before the data phase finished (chunked transfer):
+   * post a transfer-paused interrupt; IRIX resumes via a fresh SEL_ATN_XFER. */
+  void pause_transfer();
 };
 
 #endif
