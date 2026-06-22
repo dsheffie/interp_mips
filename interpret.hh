@@ -14,7 +14,7 @@
 #define IS_LITTLE_ENDIAN false
 
 enum class fpMode {
-  mipsii, mipsiv, mips32
+  mipsii, mipsiv, mips3
 };
 
 enum class fpOperation {

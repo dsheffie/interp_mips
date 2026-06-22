@@ -23,7 +23,7 @@
 #include "globals.hh"
 #include "inst_record.hh"
 
-static fpMode currFpMode = fpMode::mipsii;
+static fpMode currFpMode = fpMode::mips3;  /* IRIX N32 = MIPS-III, FR=1 flat 64-bit FP regs (odd regs legal, no fd+1 pairing) */
 
 state_t::~state_t() {
   //std::cout << mem.bytes_allocated() << " bytes present in memory image\n";
@@ -1445,8 +1445,25 @@ void _swc1(uint32_t inst, state_t *s) {
 }
 
 static void _truncl(uint32_t inst, state_t *s) {
-  printf("%s\n",__func__);
-  exit(-1);
+  uint32_t fmt = (inst >> 21) & 31;
+  uint32_t fd = (inst>>6) & 31;
+  uint32_t fs = (inst>>11) & 31;
+  int64_t *ptr = ((int64_t*)(s->cpr1 + fd));   /* trunc.l: 64-bit fixed result */
+  switch(fmt)
+    {
+    case FMT_S:
+      *ptr = (int64_t)(*((float*)(s->cpr1 + fs)));
+      break;
+    case FMT_D:
+      *ptr = (int64_t)(*((double*)(s->cpr1 + fs)));
+      break;
+    default:
+      printf("%s @ %d: unhandled fmt=%u inst=%08x pc=%08x\n", __func__, __LINE__, fmt, inst, (uint32_t)s->pc);
+      exit(-1);
+      break;
+    }
+  s->cpr1_state[fd] = fp_reg_state::dp;
+  s->pc += 4;
 }
 
 static void _truncw(uint32_t inst, state_t *s) {
@@ -1456,7 +1473,7 @@ static void _truncw(uint32_t inst, state_t *s) {
   float f;
   double d;
   int32_t *ptr = ((int32_t*)(s->cpr1 + fd));
-  if(currFpMode != fpMode::mips32) {
+  if(currFpMode != fpMode::mips3) {
     assert((fd & 1) == 0);
     assert((fs & 1) == 0);
   }  
@@ -1479,7 +1496,7 @@ static void _truncw(uint32_t inst, state_t *s) {
       exit(-1);
       break;
     }
-  if(currFpMode != fpMode::mips32) {
+  if(currFpMode != fpMode::mips3) {
     s->cpr1[fd + 1] = 0;
   }      
   s->pc += 4;
@@ -1491,7 +1508,8 @@ static void _movnd(uint32_t inst, state_t *s) {
   uint32_t rt = (inst>>16) & 31;
   bool notZero = (s->gpr[rt] != 0);
   s->cpr1[fd+0] = notZero ? s->cpr1[fs+0] : s->cpr1[fd+0];
-  s->cpr1[fd+1] = notZero ? s->cpr1[fs+1] : s->cpr1[fd+1];
+  if(currFpMode != fpMode::mips3)   /* FR=0 only: the double's high word is a separate reg */
+    s->cpr1[fd+1] = notZero ? s->cpr1[fs+1] : s->cpr1[fd+1];
   s->pc += 4;
 }
 
@@ -1510,7 +1528,8 @@ static void _movzd(uint32_t inst, state_t *s) {
   uint32_t rt = (inst>>16) & 31;
  
   s->cpr1[fd+0] = (s->gpr[rt] == 0) ? s->cpr1[fs+0] : s->cpr1[fd+0];
-  s->cpr1[fd+1] = (s->gpr[rt] == 0) ? s->cpr1[fs+1] : s->cpr1[fd+1];
+  if(currFpMode != fpMode::mips3)   /* FR=0 only: the double's high word is a separate reg */
+    s->cpr1[fd+1] = (s->gpr[rt] == 0) ? s->cpr1[fs+1] : s->cpr1[fd+1];
   s->pc += 4;
 }
 
@@ -1532,16 +1551,16 @@ static void _movcd(uint32_t inst, state_t *s) {
   if(tf==0) {
     if(getConditionCode(s,cc)==0) {
       s->cpr1[fd+0] = s->cpr1[fs+0];
-      s->cpr1[fd+1] = s->cpr1[fs+1];
+      if(currFpMode != fpMode::mips3) s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-    HISTO(s, mipsInsn::FP_MOVF);    
+    HISTO(s, mipsInsn::FP_MOVF);
   }
   else {
     if(getConditionCode(s,cc)==1) {
       s->cpr1[fd+0] = s->cpr1[fs+0];
-      s->cpr1[fd+1] = s->cpr1[fs+1];
+      if(currFpMode != fpMode::mips3) s->cpr1[fd+1] = s->cpr1[fs+1];
     }
-    HISTO(s, mipsInsn::FP_MOVT);    
+    HISTO(s, mipsInsn::FP_MOVT);
   }
   s->pc += 4;
 }
@@ -1585,7 +1604,7 @@ static void _cvts(uint32_t inst, state_t *s) {
   uint32_t fmt = (inst >> 21) & 31;
   uint32_t fd = (inst>>6) & 31;
   uint32_t fs = (inst>>11) & 31;
-  if(currFpMode != fpMode::mips32) {
+  if(currFpMode != fpMode::mips3) {
     assert((fd & 1) == 0);
     assert((fs & 1) == 0);
   }
@@ -1593,19 +1612,25 @@ static void _cvts(uint32_t inst, state_t *s) {
     {
     case FMT_D:
       *((float*)(s->cpr1 + fd)) = (float)(*((double*)(s->cpr1 + fs)));
-      if(currFpMode != fpMode::mips32) {
+      if(currFpMode != fpMode::mips3) {
 	s->cpr1[fd+1] = 0;
       }
       s->cpr1_state[fd] = fp_reg_state::sp;      
       break;
     case FMT_W:
       *((float*)(s->cpr1 + fd)) = (float)(*((int32_t*)(s->cpr1 + fs)));
-      if(currFpMode != fpMode::mips32) {
+      if(currFpMode != fpMode::mips3) {
+	*((float*)(s->cpr1 + fd + 1)) = 0;
+      }
+      break;
+    case FMT_L:    /* cvt.s.l: 64-bit fixed -> single */
+      *((float*)(s->cpr1 + fd)) = (float)(*((int64_t*)(s->cpr1 + fs)));
+      if(currFpMode != fpMode::mips3) {
 	*((float*)(s->cpr1 + fd + 1)) = 0;
       }
       break;
     default:
-      printf("%s @ %d\n", __func__, __LINE__);
+      printf("%s @ %d: unhandled fmt=%u inst=%08x pc=%08x\n", __func__, __LINE__, fmt, inst, (uint32_t)s->pc);
       exit(-1);
       break;
     }
@@ -1625,8 +1650,12 @@ static void _cvtd(uint32_t inst, state_t *s) {
     case FMT_W:
      *((double*)(s->cpr1 + fd)) = (double)(*((int32_t*)(s->cpr1 + fs)));
       break;
+    case FMT_L:    /* cvt.d.l: 64-bit fixed -> double */
+      *((double*)(s->cpr1 + fd)) = (double)(*((int64_t*)(s->cpr1 + fs)));
+      s->cpr1_state[fd] = fp_reg_state::dp;
+      break;
     default:
-      printf("%s @ %d\n", __func__, __LINE__);
+      printf("%s @ %d: unhandled fmt=%u inst=%08x pc=%08x\n", __func__, __LINE__, fmt, inst, (uint32_t)s->pc);
       exit(-1);
       break;
     }
@@ -1822,12 +1851,14 @@ template <fpOperation op>
 void do_fp_op(uint32_t inst, state_t *s) {
   int fd=(inst>>6)&31;
   switch((inst>>21)&31) {
-  case FMT_S: 
-    assert((fd&1) == 0);
+  case FMT_S:
     execFP<float,op>(inst,s);
-    s->cpr1[fd+1] = 0;
     s->cpr1_state[fd] = fp_reg_state::sp;
-    s->cpr1_state[fd+1] = fp_reg_state::unknown;
+    if(currFpMode != fpMode::mips3) {   /* FR=0 pairing: even-only, scrub the high reg */
+      assert((fd&1) == 0);
+      s->cpr1[fd+1] = 0;
+      s->cpr1_state[fd+1] = fp_reg_state::unknown;
+    }
     break;
   case FMT_D:
     execFP<double,op>(inst,s);
