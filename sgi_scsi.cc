@@ -93,6 +93,12 @@ void sgi_scsi::complete(uint8_t scsi_status) {
    * and mistakes lun>=2 for a CHECK CONDITION (an INQUIRY/REQUEST-SENSE loop). */
   regs[WD_TARGET_LUN]    = tgt_status;
   regs[WD_COMMAND_PHASE] = 0x60;          /* command complete */
+  /* The WD33C93 decrements its 24-bit Transfer Count (regs 0x12-0x14) as bytes
+   * move; at completion it has counted down to 0. We transfer exactly the
+   * programmed amount, so post a zero residual -- otherwise the sgiwd93 driver
+   * reads the leftover programmed count as a short transfer and sets b_error on
+   * the buffer, which makes xfs_read_file bail (chunkread -> b_error -> ENOEXEC). */
+  regs[0x12] = regs[0x13] = regs[0x14] = 0;
   regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
   regs[WD_AUX_STATUS]   |= AUX_INT;
   intrq = true;
@@ -113,6 +119,7 @@ void sgi_scsi::pause_transfer() {
   drq = false;                            /* no data movement until resumed */
   regs[WD_SCSI_STATUS]   = (phase == PH_DATA_OUT) ? 0x48 : 0x49;
   regs[WD_COMMAND_PHASE] = 0x46;          /* transfer count exhausted */
+  regs[0x12] = regs[0x13] = regs[0x14] = 0;  /* WD33C93 count counted down to 0 at the chunk boundary */
   regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
   regs[WD_AUX_STATUS]   |= AUX_INT;
   intrq = true;
