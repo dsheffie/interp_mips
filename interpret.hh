@@ -163,6 +163,13 @@ public:
    * redirected pc to the refill/general vector. Cleared at the top of execMips. */
   bool tlb_fault = false;
 
+  /* Set by a device when it raises an interrupt (e.g. WD33C93 INTRQ) so the next
+   * maybe_take_interrupt() runs the device poll + delivery immediately instead of
+   * waiting for the throttled (every-INT_POLL) poll. The SCSI completion is
+   * effectively synchronous and the kernel needs the IP2 delivered right after the
+   * command, so a throttled delay loses it (60s timeout). Cleared once polled. */
+  bool irq_poke = false;
+
   state_t(sparse_mem &mem) : mem(mem) {}
   ~state_t();
 };

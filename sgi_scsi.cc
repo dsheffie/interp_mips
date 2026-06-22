@@ -101,7 +101,7 @@ void sgi_scsi::complete(uint8_t scsi_status) {
   regs[0x12] = regs[0x13] = regs[0x14] = 0;
   regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
   regs[WD_AUX_STATUS]   |= AUX_INT;
-  intrq = true;
+  intrq = true; s->irq_poke = true;
   SPRINTF("sgi_scsi: complete status=0x%02x\n", scsi_status);
 }
 
@@ -122,7 +122,7 @@ void sgi_scsi::pause_transfer() {
   regs[0x12] = regs[0x13] = regs[0x14] = 0;  /* WD33C93 count counted down to 0 at the chunk boundary */
   regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
   regs[WD_AUX_STATUS]   |= AUX_INT;
-  intrq = true;
+  intrq = true; s->irq_poke = true;
   SPRINTF("sgi_scsi: %s paused at %zu/%zu (chunked) -> INTRQ\n",
           phase == PH_DATA_OUT ? "data-out" : "data-in", pos, buf.size());
 }
@@ -242,7 +242,7 @@ void sgi_scsi::exec_command(uint8_t cc) {
     reset();
     regs[WD_SCSI_STATUS] = ST_RESET;
     regs[WD_AUX_STATUS] |= AUX_INT;
-    intrq = true;
+    intrq = true; s->irq_poke = true;
     break;
   case CMD_SEL_ATN_XFER:
   case CMD_SEL_XFER:

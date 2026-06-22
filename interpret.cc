@@ -223,7 +223,12 @@ void maybe_take_interrupt(state_t *s) {
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
 
-  if((s->icnt & (INT_POLL - 1)) != 0) return;          /* poll devices periodically */
+  /* Poll devices every INT_POLL instructions, OR immediately when a device just
+   * raised an interrupt (irq_poke). The SCSI completion is synchronous and the
+   * kernel needs IP2 delivered right after the command -- a throttled delay loses
+   * it and the wd93 driver hits its 60s timeout + bus reset. */
+  if(!s->irq_poke && (s->icnt & (INT_POLL - 1)) != 0) return;
+  s->irq_poke = false;
 
   /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
    * sensitive: set while an unmasked local0 source is asserted, else clear. */
