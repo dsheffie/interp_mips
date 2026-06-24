@@ -20,8 +20,17 @@
 #include "sgi_scsi.hh"
 #include "globals.hh"
 #include "inst_record.hh"
+#include <csignal>
 
 namespace po = boost::program_options;
+
+/* Async control via signals (checked once per instruction in the run loop):
+ *   SIGUSR1 -> dump the current IRIX process (comm/pid/pc)
+ *   SIGUSR2 -> flush the SCSI COW overlay to its --disk-delta sidecar  */
+static volatile sig_atomic_t g_sig_dumpproc   = 0;
+static volatile sig_atomic_t g_sig_flushdelta = 0;
+static void on_sigusr1(int) { g_sig_dumpproc   = 1; }
+static void on_sigusr2(int) { g_sig_flushdelta = 1; }
 namespace globals {
   bool enClockFuncts = false;
   uint64_t icountMIPS = 0;
@@ -37,7 +46,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc, disk, prom;
+  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta;
   uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("options");
@@ -48,6 +57,7 @@ int main(int argc, char *argv[]) {
       ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions")
       ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
       ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)")
+      ("disk-delta", po::value<std::string>(&disk_delta), "persistent COW sidecar for --disk: writes survive across runs (image stays read-only); flushed on exit + SIGUSR2")
       ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -62,7 +72,7 @@ int main(int argc, char *argv[]) {
   s->mc  = new sgi_mc(s);
   s->hpc = new sgi_hpc(s);
   s->scc = new sgi_scc(s);
-  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk);
+  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk, disk_delta);
   sm->st = s;
   sm->route_devices = true;
 
@@ -169,7 +179,12 @@ int main(int argc, char *argv[]) {
   if(pcto) globals::pctrace = fopen(pcto, "w");
   const char *pcs = getenv("PCTRACE_START");
   if(pcs) globals::pctrace_start = (uint32_t)strtoull(pcs, nullptr, 0);
+  signal(SIGUSR1, on_sigusr1);   /* kill -USR1 <pid> -> dump current IRIX process */
+  signal(SIGUSR2, on_sigusr2);   /* kill -USR2 <pid> -> flush --disk-delta sidecar */
+
   while(s->brk == 0 && s->icnt < s->maxicnt) {
+    if(g_sig_dumpproc)   { g_sig_dumpproc = 0;   dump_current_process(s); }
+    if(g_sig_flushdelta) { g_sig_flushdelta = 0; if(s->scsi) s->scsi->flush_delta(); }
     if(pcsample && (s->icnt % pcsample) == 0)
       fprintf(stderr, "[pc] icnt=%lu pc=%08x ra=%08x sp=%08x\n",
               (unsigned long)s->icnt, (uint32_t)s->pc, (uint32_t)s->gpr[31], (uint32_t)s->gpr[29]);
@@ -185,6 +200,9 @@ int main(int argc, char *argv[]) {
     maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
     execMips(s);
   }
+
+  if(s->scsi) s->scsi->flush_delta();   /* persist COW overlay on clean exit (no-op without --disk-delta) */
+
   if(globals::pctrace) fclose(globals::pctrace);
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
 

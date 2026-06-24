@@ -22,7 +22,8 @@ enum { CMD_RESET=0x00, CMD_SEL_ATN_XFER=0x08, CMD_SEL_XFER=0x09, CMD_XFER_INFO=0
 /* SCSI Status completion codes (reg 0x17) */
 enum { ST_RESET=0x00, ST_SELECT_TRANSFER_SUCCESS=0x16 };
 
-sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path) : s(s) {
+sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path)
+  : s(s), delta_path(delta_path) {
   fd = open(disk_path.c_str(), O_RDONLY);
   if(fd < 0) {
     fprintf(stderr, "sgi_scsi: cannot open disk image '%s'\n", disk_path.c_str());
@@ -35,6 +36,42 @@ sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path) : s(s) {
   reset();
   SPRINTF("sgi_scsi: '%s' = %llu blocks (%llu MB)\n", disk_path.c_str(),
           (unsigned long long)nblocks, (unsigned long long)(nblocks/2048));
+  if(!this->delta_path.empty()) load_delta();
+}
+
+/* delta sidecar format: 8-byte magic "IMDELTA1" then repeated records of
+ * { uint64_t lba; uint8_t block[512]; } in host byte order (host-local cache). */
+static const char DELTA_MAGIC[8] = {'I','M','D','E','L','T','A','1'};
+
+void sgi_scsi::load_delta() {
+  FILE *f = fopen(delta_path.c_str(), "rb");
+  if(!f) return;                         /* no prior delta -> start from the image */
+  char magic[8];
+  if(fread(magic, 1, 8, f) != 8 || memcmp(magic, DELTA_MAGIC, 8) != 0) {
+    fprintf(stderr, "sgi_scsi: ignoring delta '%s' (bad magic)\n", delta_path.c_str());
+    fclose(f);
+    return;
+  }
+  uint64_t lba; std::vector<uint8_t> blk(512); size_t n = 0;
+  while(fread(&lba, sizeof(lba), 1, f) == 1 && fread(blk.data(), 1, 512, f) == 512) {
+    overlay[lba] = blk; n++;
+  }
+  fclose(f);
+  fprintf(stderr, "sgi_scsi: loaded %zu delta blocks from '%s'\n", n, delta_path.c_str());
+}
+
+void sgi_scsi::flush_delta() const {
+  if(delta_path.empty()) return;
+  FILE *f = fopen(delta_path.c_str(), "wb");
+  if(!f) { fprintf(stderr, "sgi_scsi: cannot write delta '%s'\n", delta_path.c_str()); return; }
+  fwrite(DELTA_MAGIC, 1, 8, f);
+  for(const auto &kv : overlay) {
+    uint64_t lba = kv.first;
+    fwrite(&lba, sizeof(lba), 1, f);
+    fwrite(kv.second.data(), 1, 512, f);
+  }
+  fclose(f);
+  fprintf(stderr, "sgi_scsi: wrote %zu delta blocks to '%s'\n", overlay.size(), delta_path.c_str());
 }
 
 sgi_scsi::~sgi_scsi() { if(fd >= 0) close(fd); }

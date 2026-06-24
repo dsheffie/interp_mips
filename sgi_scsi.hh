@@ -45,7 +45,9 @@ private:
   uint8_t  sense[18] = {0};         /* REQUEST SENSE fixed-format data */
   uint8_t  tgt_status = 0;          /* target STATUS byte -> WD33C93 reg 0x0f after a transfer */
   std::unordered_map<uint64_t, std::vector<uint8_t>> overlay; /* COW writes */
+  std::string delta_path;           /* optional sidecar persisting the overlay */
 
+  void load_delta();                /* populate overlay from delta_path if present */
   void block_read(uint64_t lba, uint8_t *dst);     /* 512 bytes */
   void block_write(uint64_t lba, const uint8_t *src);
   void exec_command(uint8_t cc);    /* a WD33C93 command was written to reg 0x18 */
@@ -55,9 +57,14 @@ private:
   void finish();                    /* data phase drained -> status + INTRQ */
   void complete(uint8_t scsi_status);
 public:
-  sgi_scsi(state_t *s, const std::string &disk_path);
+  sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path = "");
   ~sgi_scsi();
   bool ok() const { return fd >= 0; }
+
+  /* Persist the in-memory COW overlay to delta_path (write-back so the SGIindex
+   * and other writes survive across runs while the backing image stays pristine).
+   * Called post-loop on clean exit and on SIGUSR2. No-op without --disk-delta. */
+  void flush_delta() const;
 
   /* CPU PIO to the WD33C93 indirect register file (port 0 = SASR, 1 = SCMD). */
   void    pio_w(uint32_t port, uint8_t v);

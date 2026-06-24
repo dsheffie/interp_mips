@@ -328,6 +328,46 @@ static void raise_trap(state_t *s) {
  * handler advances past it before eret); set_exc_pc handles the delay-slot
  * case. (interp_mips was originally a user-mode sim that halted here; in
  * full-system OS mode these must vector to the kernel.) */
+static bool tlb_probe_ro(state_t *s, uint64_t va, uint32_t *pa);
+/* read a 32-bit big-endian word from a guest VA, non-faulting (returns false if
+ * the VA is unmapped). Used to walk IRIX's curproc pointer chain. */
+static bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out) {
+  uint32_t pa;
+  if(!tlb_probe_ro(s, va, &pa)) return false;
+  *out = __builtin_bswap32(s->mem.get<uint32_t>(pa));   /* guest is big-endian */
+  return true;
+}
+/* One-shot dump of the IRIX "current process" -- comm name + pid + the pc/mode
+ * it is executing. Wired to SIGUSR1 in main() so the live emulator can be asked
+ * "what is IRIX running right now?" from another shell (kill -USR1 <pid>). */
+void dump_current_process(state_t *s) {
+  uint32_t ut, proc;
+  if(!guest_rd32_be(s, 0xFFFFFFFFFFFFA014ULL, &ut) || ut == 0) {
+    fprintf(stderr, "[curproc] icnt=%lu pc=%08x: no current uthread\n",
+            (unsigned long)s->icnt, (uint32_t)s->pc);
+    return;
+  }
+  if(!guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)ut + 488, &proc) || proc == 0) {
+    fprintf(stderr, "[curproc] icnt=%lu pc=%08x: ut=%08x has no proc\n",
+            (unsigned long)s->icnt, (uint32_t)s->pc, ut);
+    return;
+  }
+  uint64_t pbase = (uint64_t)(int64_t)(int32_t)proc;
+  char comm[33]; int ci = 0;
+  for(; ci < 32; ci++) {
+    uint32_t pa;
+    if(!tlb_probe_ro(s, pbase + 1512 + ci, &pa)) break;
+    uint8_t c = s->mem.get<uint8_t>(pa);
+    if(c == 0) break;
+    comm[ci] = (c >= 32 && c < 127) ? (char)c : '.';
+  }
+  comm[ci] = 0;
+  uint32_t pid = 0; guest_rd32_be(s, pbase + 420, &pid);   /* p_pid (prgetpsinfo: proc+420) */
+  bool user = (uint32_t)s->pc < 0x80000000u;
+  fprintf(stderr, "[curproc] icnt=%lu pc=%08x (%s) proc=%08x pid=%u comm='%s'\n",
+          (unsigned long)s->icnt, (uint32_t)s->pc, user ? "user" : "kernel",
+          proc, pid, comm);
+}
 static void raise_syscall(state_t *s) {
   set_exc_pc(s);
   raise_common(s, 8u);
