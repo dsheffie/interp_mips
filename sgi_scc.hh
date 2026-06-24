@@ -25,7 +25,13 @@ struct state_t;
  * a written char is "shifting out" (tx_busy, RR0 Tx-Buffer-Empty clear) for
  * TX_DRAIN_TICKS instruction ticks, then completes (Tx-IP set).  The byte is
  * echoed to stdout immediately on write (order preserved).  int_pending() (the
- * SCC INT line) -> IOC2 vmeistat[5] -> local0 LIO2 -> CPU IP2.  RX not modeled.
+ * SCC INT line) -> IOC2 vmeistat[5] -> local0 LIO2 -> CPU IP2.
+ *
+ * RX (console input): host stdin -> 8-deep chanA/B Rx FIFO; the DATA read
+ * returns+pops the front byte, RR0 bit0 = Rx-Char-Avail, and RR3 carries the
+ * per-channel Rx-IP (chanA 0x20 / chanB 0x04) gated on WR1's Rx-int mode -- so
+ * the login getty's serial ISR sees a real Rx interrupt and reads the char.
+ * (Contract mirrors henry-the-wannabe-ip22-soc rtl/ioc.sv + the iris z85c30.)
  *
  * Window: +0x0 ctrl B  +0x4 data B  +0x8 ctrl A  +0xc data A (z80scc ab_dc). */
 class sgi_scc {
@@ -37,12 +43,23 @@ class sgi_scc {
   uint64_t drain_at[2] = {0, 0};        /* tick at which the shifting char completes */
   bool     tx_ip[2]    = {false, false};/* Tx-buffer-empty int pending (set on completion) */
   uint64_t clk         = 0;             /* instruction-tick clock */
+
+  /* RX (console input), ported from henry-the-wannabe-ip22-soc rtl/ioc.sv:
+   * host stdin -> 8-deep chanA Rx FIFO; the chanA DATA read returns+pops the
+   * front byte, RR0 bit0 = Rx-Char-Avail while non-empty, and rx_avail (FIFO
+   * non-empty) joins the Tx-int on the Serial-DUART source -> IOC2 cmeimask0 ->
+   * LIO2 -> CPU IP2 (level-triggered). */
+  uint8_t  rx_fifo[8]  = {0};
+  uint8_t  rx_wptr = 0, rx_rptr = 0, rx_count = 0;
+  bool     rx_init = false;             /* stdin put into non-blocking mode once */
+  uint64_t rx_poll_at = 0;              /* next clk at which to drain host stdin */
+  void     rx_poll();                   /* pull available host stdin bytes into the FIFO */
 public:
   sgi_scc(state_t *s) : s(s) {}
   uint8_t read(uint32_t offs);          /* offs within the 16-byte SCC window */
   void    write(uint32_t offs, uint8_t b);
   void    tick(uint64_t dticks);        /* advance TX timing by dticks instruction ticks */
-  bool    int_pending();                /* SCC INT line: any channel TxIE & Tx-IP */
+  bool    int_pending();                /* SCC INT line: TxIE & Tx-IP, or Rx char available */
 };
 
 #endif
