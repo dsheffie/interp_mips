@@ -4,6 +4,7 @@
 #include "sgi_scc.hh"
 #include <cassert>
 #include <cstdlib>
+#include <ctime>
 
 /* device-trace spew is off by default (it floods the console stream and slows the
  * boot to a crawl); set DEVTRACE=1 to re-enable. */
@@ -207,20 +208,26 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   else if(offs == 0x5989b) { return ioc2_cmeimask[1]; }     /* map mask1 (cmeimask1) */
   else if(offs == 0x5989f) { return ioc2_cmepol; }          /* map polarity (cmepol) */
   /* DS1286/DS1386 RTC in the bbRAM window (byte-per-word x4: reg N at 0x60000+N*4).
-   * Return a fixed, valid BCD wall-clock so rtodc() converts cleanly instead of
-   * looping on garbage. Value in byte[31:24] -- the BE load path bswaps device
-   * reads (like the IOC2 SYSID at 0x59858). */
+   * Return the live host wall-clock in BCD so IRIX boots with a sane date instead
+   * of 1970/2000 -- a bogus clock makes the man-page index (makewhatis/sgindex)
+   * look perpetually stale, triggering a full rebuild on every boot. Value in
+   * byte[31:24] -- the BE load path bswaps device reads (like SYSID at 0x59858).
+   * localtime() is read fresh per access; the few reads of a full clock snapshot
+   * land within microseconds of each other, so the fields stay coherent. */
   else if(offs >= 0x60000 and offs <= 0x6002f) {
+    time_t now = ::time(nullptr);
+    struct tm lt; localtime_r(&now, &lt);
+    auto bcd = [](int n) -> uint8_t { return (uint8_t)(((n / 10) << 4) | (n % 10)); };
     uint8_t v;
     switch(offs) {
-    case 0x60004: v = 0x00; break;  /* seconds (reg 1) */
-    case 0x60008: v = 0x00; break;  /* minutes (reg 2) */
-    case 0x60010: v = 0x00; break;  /* hours   (reg 4, BCD 00 = 00:00, 24h) */
-    case 0x60018: v = 0x01; break;  /* day-of-week (reg 6) */
-    case 0x60020: v = 0x01; break;  /* date    (reg 8, 1st) */
-    case 0x60024: v = 0x01; break;  /* month   (reg 9, January) */
-    case 0x60028: v = 0x00; break;  /* year    (reg 10, BCD 00 = 2000) */
-    default:      v = 0x00; break;  /* command/alarm/hundredths -> not-busy */
+    case 0x60004: v = bcd(lt.tm_sec);        break;  /* seconds (reg 1) */
+    case 0x60008: v = bcd(lt.tm_min);        break;  /* minutes (reg 2) */
+    case 0x60010: v = bcd(lt.tm_hour);       break;  /* hours   (reg 4, 24h BCD) */
+    case 0x60018: v = bcd(lt.tm_wday + 1);   break;  /* day-of-week (reg 6, 1-7) */
+    case 0x60020: v = bcd(lt.tm_mday);       break;  /* date    (reg 8, 1-31) */
+    case 0x60024: v = bcd(lt.tm_mon + 1);    break;  /* month   (reg 9, 1-12) */
+    case 0x60028: v = bcd(lt.tm_year % 100); break;  /* year    (reg 10, BCD 2-digit) */
+    default:      v = 0x00;                  break;  /* command/alarm/hundredths -> not-busy */
     }
     return (uint32_t)v << 24;
   }
