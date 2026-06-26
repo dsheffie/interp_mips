@@ -2617,8 +2617,16 @@ void execMips(state_t *s) {
 	break;
       }
   }
-  else if(isSpecial2 || isSpecial3)
-    raise_ri(s, inst);   /* MIPS32 SPECIAL2/SPECIAL3 are not in MIPS-III (R4000) */
+  else if(isSpecial2 || isSpecial3) {
+    /* RDHWR (SPECIAL3, funct 0x3b) is not in MIPS-III; Linux emulates it via the
+     * RI handler (simulate_rdhwr) for the TLS thread pointer etc.  Raise RI
+     * SILENTLY (matches r9999: unknown SPECIAL3 -> II -> ResI) so the guest
+     * kernel emulates it without spamming the "unimplemented" diagnostic. */
+    if(isSpecial3 && (inst & 0x3fu) == 0x3b)
+      take_exception_ri(s);
+    else
+      raise_ri(s, inst);   /* MIPS32 SPECIAL2/SPECIAL3 are not in MIPS-III (R4000) */
+  }
   else if(isJType) {
     state_t::reg_t jaddr = inst & ((1<<26)-1);
     jaddr <<= 2;
@@ -2666,6 +2674,7 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo0 = s->cpr0_64[CPR0_ENTRYLO0];
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
+	    assert(s->tlb[idx].page_mask == 0);
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
 	  static const bool tlblog = getenv("TLBLOG") != nullptr;
@@ -2682,6 +2691,7 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo0 = s->cpr0_64[CPR0_ENTRYLO0];
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
+	    assert(s->tlb[idx].page_mask == 0);	    
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
 	  /* Decrement Random, wrap to NUM_TLB_ENTRIES-1 when it reaches Wired */
