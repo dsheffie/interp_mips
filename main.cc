@@ -46,7 +46,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta;
+  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out;
   uint64_t maxinsns = ~(0UL);
   try {
     po::options_description desc("options");
@@ -58,13 +58,15 @@ int main(int argc, char *argv[]) {
       ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
       ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)")
       ("disk-delta", po::value<std::string>(&disk_delta), "persistent COW sidecar for --disk: writes survive across runs (image stays read-only); flushed on exit + SIGUSR2")
-      ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000");
+      ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000")
+      ("checkpoint-at",  po::value<std::string>(&ckpt_at)->default_value(""),  "dump a full-state checkpoint when this PC (hex) first retires, then exit")
+      ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
   } catch(...) { std::cerr << "bad args\n"; return 1; }
 
-  if(filename.empty()) { std::cerr << "need --file <kernel>\n"; return 1; }
+  //if(filename.empty()) { std::cerr << "need --file <kernel>\n"; return 1; }
 
   sparse_mem *sm = new sparse_mem();
   s = new state_t(*sm);
@@ -77,7 +79,9 @@ int main(int argc, char *argv[]) {
   sm->route_devices = true;
 
   initState(s);                    /* CP0 reset state: PRId, Config, SR, Random */
-  load_elf(filename.c_str(), s);   /* sets s->pc to the entry */
+  if(not(filename.empty())) {
+    load_elf(filename.c_str(), s);   /* sets s->pc to the entry */
+  }
 
   /* IRIX /unix entry ABI (ARCS): a0=argc, a1=argv, a2=envp. The pseudo-BIOS
    * synthesizes the real argv/envp handoff sash gives /unix (the kernel's
@@ -172,6 +176,7 @@ int main(int argc, char *argv[]) {
   const char *a1after = getenv("A1PROBE_AFTER"); /* only start probing past this icnt */
   uint64_t probe_after = a1after ? strtoull(a1after, nullptr, 0) : 0;
   int probe_hits = 0;
+  uint32_t ckpt_pc = ckpt_at.empty() ? 0 : (uint32_t)strtoull(ckpt_at.c_str(), nullptr, 0);
   /* PCTRACEOUT=<file>: co-sim trace -- one hex virtual PC per retired
    * instruction (delay slots included; emitted inside execMips), starting when
    * execution first reaches PCTRACE_START (default kernel entry 0x88005960). */
@@ -179,9 +184,16 @@ int main(int argc, char *argv[]) {
   if(pcto) globals::pctrace = fopen(pcto, "w");
   const char *pcs = getenv("PCTRACE_START");
   if(pcs) globals::pctrace_start = (uint32_t)strtoull(pcs, nullptr, 0);
+  /* VALTRACE=<file>: per-USER-instruction "pc dst val" co-sim value trace
+   * (dst = the GPR changed by the instruction, -1 if none; via before/after diff). */
+  const char *vto = getenv("VALTRACE");
+  FILE *valt = vto ? fopen(vto, "w") : nullptr;
+  uint64_t gprsnap[32];
+  
   signal(SIGUSR1, on_sigusr1);   /* kill -USR1 <pid> -> dump current IRIX process */
   signal(SIGUSR2, on_sigusr2);   /* kill -USR2 <pid> -> flush --disk-delta sidecar */
 
+  double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
     if(g_sig_dumpproc)   { g_sig_dumpproc = 0;   dump_current_process(s); }
     if(g_sig_flushdelta) { g_sig_flushdelta = 0; if(s->scsi) s->scsi->flush_delta(); }
@@ -197,15 +209,29 @@ int main(int argc, char *argv[]) {
               (long)s->gpr[7], (long)s->gpr[8], (long)s->gpr[9]);
       if(++probe_hits >= 64) break;
     }
+    if(ckpt_pc && (uint32_t)s->pc == ckpt_pc) {
+      fprintf(stderr, "[ckpt] reached pc=%08x at icnt=%lu -> dumping %s\n",
+              ckpt_pc, (unsigned long)s->icnt, ckpt_out.c_str());
+      dumpState(*s, ckpt_out);
+      break;
+    }
+    if(valt) { for(int gi=0; gi<32; gi++) gprsnap[gi]=(uint64_t)s->gpr[gi]; }
     maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
+    uint64_t valt_pc = (uint64_t)s->pc;
     execMips(s);
+    if(valt && valt_pc>=0x120000000ULL && valt_pc<0x120640000ULL) {
+      int vd=-1; for(int gi=1; gi<32; gi++) if((uint64_t)s->gpr[gi]!=gprsnap[gi]) { vd=gi; break; }
+      fprintf(valt, "%llx %d %llx\n", (unsigned long long)valt_pc, vd,
+              (unsigned long long)(vd<0?0:(uint64_t)s->gpr[vd]));
+    }
   }
+  t0 = timestamp() - t0;
 
   if(s->scsi) s->scsi->flush_delta();   /* persist COW overlay on clean exit (no-op without --disk-delta) */
 
   if(globals::pctrace) fclose(globals::pctrace);
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
-
+  std::cout << (static_cast<double>(s->icnt) / t0)*1e-6 << " minsns/sec\n";
   if(!retire_name.empty() && !rt.empty()) {
     std::ofstream ofs(retire_name, std::ios::binary);
     boost::archive::binary_oarchive oa(ofs);

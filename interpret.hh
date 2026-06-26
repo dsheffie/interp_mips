@@ -334,6 +334,10 @@ static inline uint32_t get_branch_target(uint32_t pc, uint32_t inst) {
 
 void initState(state_t *s);
 void execMips(state_t *s);
+
+/* checkpoint save/restore (saveState.cc) -- full arch state + non-zero pages */
+void dumpState(const state_t &s, const std::string &filename);
+void loadState(state_t &s, const std::string &filename);
 void maybe_take_interrupt(state_t *s);  /* CP0 Count/Compare timer tick + Int delivery; call once per step */
 void dump_current_process(state_t *s);  /* print IRIX curproc comm/pid/pc (SIGUSR1 handler) */
 void raise_int(state_t *s, uint32_t epc);
