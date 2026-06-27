@@ -105,6 +105,16 @@ uint8_t sgi_scc::read(uint32_t offs) {
     if(rx_count > 0 && rx_int_en(wr1[0])) r3 |= CHBRxIP;   /* console Rx avail (chanB) */
     return r3;
   }
+  if(p == 1) {
+    /* RR1 = Rx special-condition / error status (async): D4 Parity, D5 Rx
+     * Overrun, D6 CRC/Framing error, D0 All Sent.  The du (Z8530) console ISR
+     * reads RR1 right before pulling the data byte and DROPS the char if any
+     * error bit is set.  We must report a clean receive (no errors) -- previously
+     * this fell through to the RR0 path, whose All-Sent bit (0x40) aliases RR1's
+     * framing-error bit (D6), so every received console char was discarded as a
+     * framing error and never delivered up the stream (post-login console hang). */
+    return tx_busy[ch] ? 0x00 : 0x01;        /* D0 All Sent; all error bits clear */
+  }
   /* RR0: Tx Buffer Empty + All Sent iff no char is shifting out; bit0 = Rx avail */
   uint8_t rr0 = tx_busy[ch] ? 0 : (RR0_TX_EMPTY | RR0_ALL_SENT);
   if(rx_count > 0) rr0 |= RR0_RX_AVAIL;
