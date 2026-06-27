@@ -18,6 +18,7 @@
 #include "sgi_hpc.hh"
 #include "sgi_scc.hh"
 #include "sgi_scsi.hh"
+#include "gdbstub.hh"
 #include "globals.hh"
 #include "inst_record.hh"
 #include <csignal>
@@ -48,6 +49,7 @@ static state_t *s = nullptr;
 int main(int argc, char *argv[]) {
   std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out;
   uint64_t maxinsns = ~(0UL);
+  int gdb_port = 0;
   try {
     po::options_description desc("options");
     desc.add_options()
@@ -60,7 +62,8 @@ int main(int argc, char *argv[]) {
       ("disk-delta", po::value<std::string>(&disk_delta), "persistent COW sidecar for --disk: writes survive across runs (image stays read-only); flushed on exit + SIGUSR2")
       ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000")
       ("checkpoint-at",  po::value<std::string>(&ckpt_at)->default_value(""),  "dump a full-state checkpoint when this PC (hex) first retires, then exit")
-      ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at");
+      ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at")
+      ("gdb", po::value<int>(&gdb_port)->default_value(0), "listen for gdb on this TCP port (RSP stub); boots full-speed until a client attaches");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -192,6 +195,7 @@ int main(int argc, char *argv[]) {
   
   signal(SIGUSR1, on_sigusr1);   /* kill -USR1 <pid> -> dump current IRIX process */
   signal(SIGUSR2, on_sigusr2);   /* kill -USR2 <pid> -> flush --disk-delta sidecar */
+  if(gdb_port) s->gdb = new gdb_stub(gdb_port);
 
   double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
@@ -217,6 +221,7 @@ int main(int argc, char *argv[]) {
     }
     if(valt) { for(int gi=0; gi<32; gi++) gprsnap[gi]=(uint64_t)s->gpr[gi]; }
     maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
+    if(s->gdb) s->gdb->step_hook(s);   /* gdb RSP: breakpoints / attach / step */
     uint64_t valt_pc = (uint64_t)s->pc;
     execMips(s);
     if(valt && valt_pc>=0x120000000ULL && valt_pc<0x120640000ULL) {

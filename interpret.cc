@@ -337,6 +337,25 @@ static bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out) {
   *out = __builtin_bswap32(s->mem.get<uint32_t>(pa));   /* guest is big-endian */
   return true;
 }
+/* non-faulting byte-wise guest memory access for the gdb stub. Translates each
+ * byte's VA (handles page crossings) and touches raw guest bytes -- the guest
+ * is big-endian, so the bytes are already in target order for gdb. */
+bool gdb_mem_read(state_t *s, uint64_t va, uint8_t *buf, uint32_t len) {
+  for(uint32_t i = 0; i < len; i++) {
+    uint32_t pa;
+    if(!tlb_probe_ro(s, va + i, &pa)) return false;
+    buf[i] = *s->mem.get_raw_ptr(pa);
+  }
+  return true;
+}
+bool gdb_mem_write(state_t *s, uint64_t va, const uint8_t *buf, uint32_t len) {
+  for(uint32_t i = 0; i < len; i++) {
+    uint32_t pa;
+    if(!tlb_probe_ro(s, va + i, &pa)) return false;
+    *s->mem.get_raw_ptr(pa) = buf[i];
+  }
+  return true;
+}
 /* One-shot dump of the IRIX "current process" -- comm name + pid + the pc/mode
  * it is executing. Wired to SIGUSR1 in main() so the live emulator can be asked
  * "what is IRIX running right now?" from another shell (kill -USR1 <pid>). */

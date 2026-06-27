@@ -106,6 +106,7 @@ class sgi_mc;
 class sgi_hpc;
 class sgi_scc;
 class sgi_scsi;
+class gdb_stub;
 
 class state_t{
 public:
@@ -151,6 +152,7 @@ public:
   sgi_hpc *hpc = nullptr;
   sgi_scc *scc = nullptr;
   sgi_scsi *scsi = nullptr;
+  gdb_stub *gdb = nullptr;
 
   /* True while executing a branch/jump delay-slot instruction.  An exception in
    * a delay slot sets EPC = the branch pc and Cause.BD = 1 (matches the RTL,
@@ -340,6 +342,10 @@ void dumpState(const state_t &s, const std::string &filename);
 void loadState(state_t &s, const std::string &filename);
 void maybe_take_interrupt(state_t *s);  /* CP0 Count/Compare timer tick + Int delivery; call once per step */
 void dump_current_process(state_t *s);  /* print IRIX curproc comm/pid/pc (SIGUSR1 handler) */
+/* non-faulting guest-VA memory access for the gdb stub (translate via the TLB,
+ * read/write raw guest bytes); returns false if a VA is unmapped. */
+bool gdb_mem_read(state_t *s, uint64_t va, uint8_t *buf, uint32_t len);
+bool gdb_mem_write(state_t *s, uint64_t va, const uint8_t *buf, uint32_t len);
 void raise_int(state_t *s, uint32_t epc);
 
 
