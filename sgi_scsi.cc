@@ -20,7 +20,11 @@ enum { AUX_DBR=0x01, AUX_CIP=0x10, AUX_BSY=0x20, AUX_LCI=0x40, AUX_INT=0x80 };
 /* WD33C93 commands (low 7 bits of reg 0x18) */
 enum { CMD_RESET=0x00, CMD_SEL_ATN_XFER=0x08, CMD_SEL_XFER=0x09, CMD_XFER_INFO=0x20 };
 /* SCSI Status completion codes (reg 0x17) */
-enum { ST_RESET=0x00, ST_SELECT_TRANSFER_SUCCESS=0x16 };
+enum { ST_RESET=0x00, ST_SELECT_TRANSFER_SUCCESS=0x16, ST_SELECTION_TIMEOUT=0x42 };
+/* The single emulated disk lives at this SCSI target ID (SGI Indy system disk =
+ * ID 1; IRIX roots on /hw/scsi_ctlr/0/target/1/...). Selecting any other ID
+ * times out so the bus scan reports one drive, not one per target. */
+static const uint8_t DISK_TARGET = 1;
 
 sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path)
   : s(s), delta_path(delta_path) {
@@ -174,6 +178,22 @@ void sgi_scsi::select_and_transfer() {
             phase == PH_DATA_OUT ? "data-out" : "data-in", pos, buf.size());
     regs[WD_AUX_STATUS] |= (AUX_CIP | AUX_BSY);
     drq = true;
+    return;
+  }
+
+  /* Only one device on the bus, at DISK_TARGET. Selecting any other target ID
+   * gets a selection timeout (no device responded) -- matches the iris WD33C93
+   * model: command-phase DISCONNECTED + status SELECTION_TIMEOUT + INTRQ. Without
+   * this the fused model answered as a disk for every target and IRIX's hinv
+   * reported 7 drives (one per probed ID). */
+  if((regs[WD_DEST_ID] & 7) != DISK_TARGET) {
+    regs[WD_AUX_STATUS]   &= ~(AUX_CIP | AUX_BSY);
+    regs[WD_AUX_STATUS]   |= AUX_INT;
+    regs[WD_SCSI_STATUS]   = ST_SELECTION_TIMEOUT;
+    regs[WD_COMMAND_PHASE] = 0x00;          /* DISCONNECTED: no device selected */
+    intrq = true; s->irq_poke = true;
+    SPRINTF("sgi_scsi: select target %u -> no device (selection timeout)\n",
+            regs[WD_DEST_ID] & 7);
     return;
   }
 
