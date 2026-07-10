@@ -6,7 +6,7 @@
 
 /* device-trace spew off by default; set DEVTRACE=1 to re-enable. */
 static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
-#define DPRINTF(...) do { if(dev_verbose) printf(__VA_ARGS__); } while(0)
+#define DPRINTF(...) do { if(dev_verbose) fprintf(stderr, __VA_ARGS__); } while(0)
 
 /* https://erikarn.github.io/sgi/indy/datasheets/sgi_indy_mc.pdf */
 
@@ -64,7 +64,7 @@ When the processor is running in little endian mode the even word addresses,
  */
 
 uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
-  DPRINTF("read access to MC, reg %x\n", offs);    
+  DPRINTF("read access to MC, reg %x pc %lx\n", offs, (unsigned long)s->pc);
   uint32_t x = 0;
   switch(offs)
     {
@@ -118,7 +118,7 @@ static uint8_t byte = 0;
 static uint32_t cbyte = 0;
 
 void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
-  DPRINTF("write access to MC, reg %x, value %x, size %lu\n", offs, x, sz);
+  DPRINTF("write access to MC, reg %x, value %x, size %lu pc %lx\n", offs, x, sz, (unsigned long)s->pc);
   
   switch(offs)
     {

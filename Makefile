@@ -1,6 +1,6 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o pseudo_bios.o loadelf.o disassemble.o helper.o interpret.o sparse_mem.o sgi_mc.o sgi_hpc.o sgi_scc.o sgi_scsi.o saveState.o gdbstub.o githash.o
+OBJ = main.o pseudo_bios.o loadelf.o disassemble.o helper.o interpret.o sparse_mem.o sgi_mc.o sgi_hpc.o sgi_scc.o sgi_scsi.o saveState.o gdbstub.o githash.o shmem.o cosim.o
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native #-flto

@@ -9,7 +9,22 @@
 /* device-trace spew is off by default (it floods the console stream and slows the
  * boot to a crawl); set DEVTRACE=1 to re-enable. */
 static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
-#define DPRINTF(...) do { if(dev_verbose) printf(__VA_ARGS__); } while(0)
+#define DPRINTF(...) do { if(dev_verbose) fprintf(stderr, __VA_ARGS__); } while(0)
+
+/* RTC time source. Default: the live host wall-clock. Deterministic-time mode
+ * (DETTIME env -- set on BOTH interp_mips and the JIT sim for reproducible
+ * lockstep co-sim): a fixed plausible epoch advanced by retired-instruction
+ * count, so the DS1286 clock is identical run-to-run instead of reading
+ * ::time(nullptr). The base + rate must match the JIT sim's rtc_now exactly. */
+static time_t rtc_now(state_t *s) {
+  static const bool det = getenv("DETTIME") != nullptr;
+  if(det) {
+    static const time_t   DETTIME_BASE = 1717200000;     /* 2024-06-01 00:00:00 UTC */
+    static const uint64_t DETTIME_RATE = 100000000ull;   /* ~100 M retired insns / simulated sec */
+    return DETTIME_BASE + (time_t)(s->icnt / DETTIME_RATE);
+  }
+  return ::time(nullptr);
+}
 
 /*
  * HPC3 (High Performance Peripheral Controller, 3rd gen) register map.
@@ -179,6 +194,24 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet read\n");
   }
+  else if(offs >= 0x00054000 and offs <= 0x0005401f) {
+    /* Seeq 8003/80C03 ENET device regs: 8 byte-registers, word-spaced (reg N at
+     * +N*4). Model the Indy as "ethernet present, cable unplugged": reg0
+     * collision counter = 0 (the ec driver reads this as 0 to identify the SGI
+     * 80C03 EDLC, i.e. controller present), reg5 flags = NO_CARRIER, and the
+     * rx/tx status regs report OLD (stale, nothing pending). No packets are
+     * ever delivered, so a process polling the interface stops blocking once it
+     * sees "no carrier" instead of waiting forever on a controller-less ISS. */
+    uint32_t idx = ((offs - 0x54000) >> 2) & 7;
+    uint8_t v;
+    switch(idx) {
+    case 5:  v = 0x02; break;        /* flags: SEQ_XS_NO_CARRIER */
+    case 6:  v = 0x80; break;        /* RX status: OLD (already read / stale) */
+    case 7:  v = 0x80; break;        /* TX status: OLD (already read / stale) */
+    default: v = 0x00; break;        /* station addr / collision counters */
+    }
+    return (sz == 1) ? v : ((uint32_t)v << 24);
+  }
   else if(offs >= 0x00040000 and offs <= 0x00047fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
     /* HPC3 map (MAME hpc3.cpp): HD0 SCSI0 = 0x40000-0x47fff, HD1 = 0x48000-0x4ffff.
      * NOT 0x44000 -- that came from MAME's buggy unhandled-access log string. */
@@ -215,7 +248,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
    * localtime() is read fresh per access; the few reads of a full clock snapshot
    * land within microseconds of each other, so the fields stay coherent. */
   else if(offs >= 0x60000 and offs <= 0x6002f) {
-    time_t now = ::time(nullptr);
+    time_t now = rtc_now(s);
     struct tm lt; localtime_r(&now, &lt);
     auto bcd = [](int n) -> uint8_t { return (uint8_t)(((n / 10) << 4) | (n % 10)); };
     uint8_t v;
@@ -310,6 +343,9 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   }
   else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
     DPRINTF("enet write\n");
+    return;
+  }
+  else if(offs >= 0x00054000 and offs <= 0x0005401f) { /* Seeq ENET device regs: accept + ignore (no-carrier stub) */
     return;
   }
   else if(offs == 0x30004) {      /* gio_misc */

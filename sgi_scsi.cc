@@ -81,6 +81,7 @@ void sgi_scsi::flush_delta() const {
 sgi_scsi::~sgi_scsi() { if(fd >= 0) close(fd); }
 
 void sgi_scsi::reset() {
+  SPRINTF("sgi_scsi: reset() called @icnt=%llu (intrq->false)\n", (unsigned long long)s->icnt);
   sasr = 0; pos = 0; drq = false; intrq = false; phase = PH_IDLE;
   buf.clear();
   regs[WD_AUX_STATUS] = 0;
@@ -121,6 +122,12 @@ void sgi_scsi::finish() {
     size_t blocks = buf.size() / 512;
     for(size_t i = 0; i < blocks; i++)
       block_write(wr_lba + i, buf.data() + i * 512);
+    if(getenv("SCSIHASH")) {                 /* golden per-WRITE payload hash (vs FPGA) */
+      uint64_t h = 1469598103934665603ULL;
+      for(size_t i = 0; i < buf.size(); i++) { h ^= buf[i]; h *= 1099511628211ULL; }
+      fprintf(stderr, "[scsiwhash] op=2a lba=%llu nblk=%zu bytes=%zu hash=%016llx\n",
+              (unsigned long long)wr_lba, blocks, buf.size(), (unsigned long long)h);
+    }
   }
   phase = PH_IDLE; drq = false;
   complete(ST_SELECT_TRANSFER_SUCCESS);
@@ -144,6 +151,8 @@ void sgi_scsi::complete(uint8_t scsi_status) {
   regs[WD_AUX_STATUS]   |= AUX_INT;
   intrq = true; s->irq_poke = true;
   SPRINTF("sgi_scsi: complete status=0x%02x\n", scsi_status);
+  { static const bool g_si = getenv("SCSIICNT") != nullptr;
+    if(g_si) fprintf(stderr, "[scsi-icnt] %llu\n", (unsigned long long)s->icnt); }
 }
 
 /* ---- command decode ------------------------------------------------------ */
@@ -201,7 +210,8 @@ void sgi_scsi::select_and_transfer() {
   const uint8_t *cdb = &regs[WD_CDB];
   const uint8_t op = cdb[0];
   uint8_t lun = regs[WD_TARGET_LUN] & 7;   /* capture before complete() overwrites 0x0f */
-  SPRINTF("sgi_scsi: CDB %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x dest=%u lun=%u\n",
+  SPRINTF("sgi_scsi: icnt=%llu CDB %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x dest=%u lun=%u\n",
+          (unsigned long long)s->icnt,
           cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],
           regs[WD_DEST_ID]&7, lun);
 
@@ -272,6 +282,12 @@ void sgi_scsi::select_and_transfer() {
     buf.assign((size_t)len * 512, 0);
     for(uint32_t i = 0; i < len; i++)
       block_read(lba + i, buf.data() + (size_t)i * 512);
+    if(getenv("SCSIHASH")) {                 /* golden per-READ payload hash (vs FPGA) */
+      uint64_t h = 1469598103934665603ULL;
+      for(size_t i = 0; i < buf.size(); i++) { h ^= buf[i]; h *= 1099511628211ULL; }
+      fprintf(stderr, "[scsihash] op=28 lba=%llu nblk=%u bytes=%zu hash=%016llx\n",
+              (unsigned long long)lba, len, buf.size(), (unsigned long long)h);
+    }
     pos = 0;
     if(len == 0) { finish(); break; }
     phase = PH_DATA_IN; drq = true;
@@ -300,6 +316,7 @@ void sgi_scsi::exec_command(uint8_t cc) {
     regs[WD_SCSI_STATUS] = ST_RESET;
     regs[WD_AUX_STATUS] |= AUX_INT;
     intrq = true; s->irq_poke = true;
+    SPRINTF("sgi_scsi: exec CMD_RESET @icnt=%llu -> intrq=true\n", (unsigned long long)s->icnt);
     break;
   case CMD_SEL_ATN_XFER:
   case CMD_SEL_XFER:
@@ -330,6 +347,10 @@ uint8_t sgi_scsi::pio_r(uint32_t port) {
     uint8_t a = 0;
     if(intrq) a |= AUX_INT;
     if(drq)   a |= AUX_DBR;
+    { static int auxlog = 0;
+      if(scsi_verbose && auxlog < 12) {
+        fprintf(stderr, "sgi_scsi: pio_r AUX -> %02x (intrq=%d) @icnt=%llu\n",
+                a, (int)intrq, (unsigned long long)s->icnt); auxlog++; } }
     return a;
   }
   /* SCMD: read the selected register */

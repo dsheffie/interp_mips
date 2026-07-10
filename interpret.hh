@@ -397,7 +397,7 @@ bool is_store_insn(state_t *s);
  * PRId and selects per-CPU init (cache config, TLB-refill handler variant,
  * cache-op handling) by the IMP field; presenting R4000 (imp 0x04) makes IRIX
  * run the wrong path. (Confirmed via MAME co-sim, MAME_QUESTIONS.md Q5.) */
-#define PRID_VALUE  PRID_R4600
+#define PRID_VALUE  PRID_R4400
 
 #define VA2PA(x) ((x & 0x1fffffff))
 

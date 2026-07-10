@@ -39,6 +39,8 @@ void execMips(state_t *s) {
   execMips<IS_LITTLE_ENDIAN>(s);
 }
 
+static const bool g_cache_dbg = getenv("CACHEDBG") != nullptr;
+
 uint64_t sext64(uint32_t x) {
   int64_t xx = static_cast<int64_t>(x);
   return (xx << 32) >> 32;
@@ -119,8 +121,8 @@ void initState(state_t *s) {
   /* Random starts at max TLB index; it cycles downward to Wired */
   s->cpr0[CPR0_RANDOM] = state_t::NUM_TLB_ENTRIES - 1;
   /* PRId: read-only processor id (R4000 family for now) */
-  s->cpr0[CPR0_PRID] = PRID_VALUE;
-  s->cpr0_64[CPR0_PRID] = PRID_VALUE;
+  { const char *pe = getenv("PRID"); uint32_t pv = pe ? (uint32_t)strtoull(pe,0,0) : PRID_VALUE;
+    s->cpr0[CPR0_PRID] = pv; s->cpr0_64[CPR0_PRID] = pv; }
   /* Config: R4600 cache geometry (16 KB I$ + 16 KB D$, 32-byte lines, K0=3),
    * matching the real SGI Indy / MAME. mlreset derives cachecolormask from this;
    * the r9999 RTL's 0x00088200 gives the wrong mask and pagecoloralign loops
@@ -212,8 +214,12 @@ static inline void raise_common(state_t *s, uint32_t exccode) {
  * banner uses polled serial whose RR0 wait depends on the per-instruction drain
  * timing, so throttling tick() hangs the boot. TODO: once every device is
  * modeled, replace this poll with a device-sets-a-flag scheme (the "right way"). */
-static const uint64_t INT_POLL = 64;
+static const uint64_t INT_POLL = getenv("INT_POLL") ? strtoull(getenv("INT_POLL"),0,0) : 1;
 
+/* env-gated TLB/timer tally (TLBTALLY=1): compare against the FPGA bad-istack trigger */
+static uint64_t g_ty_timer=0, g_ty_tlbmiss=0, g_ty_idle_tlbmiss=0, g_ty_timer_in_tlbmiss=0, g_ty_timer_idle=0, g_ty_pda_miss=0;
+static inline bool ty_in_tlbmiss(uint32_t pc){ return pc>=0x880196bcu && pc<=0x880196e0u; }
+static inline bool ty_idle_sp(uint32_t sp){ return (sp & 0xfffff000u)==0x8834a000u; }
 void maybe_take_interrupt(state_t *s) {
   if(s->scc) s->scc->tick(1);                          /* serial TX timing: keep exact */
   /* CP0 Count is architecturally visible and the kernel's delay/clock
@@ -222,6 +228,28 @@ void maybe_take_interrupt(state_t *s) {
   s->cpr0[CPR0_COUNT] = (s->cpr0[CPR0_COUNT] + 1u) & 0xffffffffu;
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
+
+  static const bool g_tally = getenv("TLBTALLY") != nullptr;
+  if(g_tally) {
+    if((uint32_t)s->pc == 0x880196bcu) { g_ty_tlbmiss++;
+      uint32_t bv=(uint32_t)s->cpr0[CPR0_BADVADDR];
+      if(bv>=0xffffa000u && bv<0xffffc000u){ g_ty_pda_miss++; if(g_ty_pda_miss<=8) fprintf(stderr,"[tally] PDA-region TLB miss bv=%08x icnt=%lu\n",bv,(unsigned long)s->icnt); }
+      if(ty_idle_sp((uint32_t)s->gpr[29])) g_ty_idle_tlbmiss++; }
+    if((s->icnt & 0x3ffffff) == 0) {
+      fprintf(stderr, "[tally icnt=%lu] timer_irq=%lu tlbmiss=%lu idle_tlbmiss=%lu timer_in_tlbmiss=%lu timer_in_IDLE_tlbmiss=%lu pda_miss=%lu\n",
+        (unsigned long)s->icnt,(unsigned long)g_ty_timer,(unsigned long)g_ty_tlbmiss,(unsigned long)g_ty_idle_tlbmiss,(unsigned long)g_ty_timer_in_tlbmiss,(unsigned long)g_ty_timer_idle,(unsigned long)g_ty_pda_miss);
+      uint64_t pva=0xffffffffffffa020ULL; int pidx=-1; uint64_t phi=0,plo0=0,plo1=0;
+      for(int i=0;i<state_t::NUM_TLB_ENTRIES;i++){
+        uint64_t pm=s->tlb[i].page_mask&0x1ffe000ULL;
+        uint64_t vm=(~(uint64_t)(pm|0x1fffULL))&0x000000ffffffe000ULL;
+        uint64_t ehi=s->tlb[i].entry_hi;
+        if(((pva&vm)==(ehi&vm))&&(((pva>>62)&3)==((ehi>>62)&3))){ pidx=i; phi=ehi; plo0=s->tlb[i].entry_lo0; plo1=s->tlb[i].entry_lo1; break; }
+      }
+      fprintf(stderr,"[tlbprobe] PDA(0xffffa020) idx=%d Wired=%u => %s  hi=%016llx lo0=%016llx lo1=%016llx\n",
+        pidx,(unsigned)s->cpr0[CPR0_WIRED], (pidx>=0&&pidx<(int)s->cpr0[CPR0_WIRED])?"WIRED":(pidx>=0?"resident-NOT-wired":"ABSENT"),
+        (unsigned long long)phi,(unsigned long long)plo0,(unsigned long long)plo1);
+    }
+  }
 
   /* Poll devices every INT_POLL instructions, OR immediately when a device just
    * raised an interrupt (irq_poke). The SCSI completion is synchronous and the
@@ -236,6 +264,12 @@ void maybe_take_interrupt(state_t *s) {
   else                                     s->cpr0[CPR0_CAUSE] &= ~(1u << 10);
   uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
   if((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (((cause & sr) & 0xff00u) != 0u)) {
+    if(g_tally) {
+      if((cause & sr) & (1u<<15)) g_ty_timer++;
+      if(ty_in_tlbmiss((uint32_t)s->pc)) { g_ty_timer_in_tlbmiss++;
+        if(ty_idle_sp((uint32_t)s->gpr[29])) { g_ty_timer_idle++;
+          fprintf(stderr, "[tally] *** TIMER-IN-IDLE-TLBMISS EPC=%08x sp=%08x icnt=%lu ***\n", (uint32_t)s->pc,(uint32_t)s->gpr[29],(unsigned long)s->icnt); } }
+    }
     set_exc_pc(s);
     raise_common(s, 0u);                               /* ExcCode 0 = Int */
   }
@@ -2140,6 +2174,17 @@ void execMips(state_t *s) {
     if(!globals::pctrace_on && (uint32_t)s->pc == globals::pctrace_start) globals::pctrace_on = true;
     if(globals::pctrace_on) fprintf(globals::pctrace, "%08x\n", (uint32_t)s->pc);
   }
+  /* TEMP: at resumeidle+0x30 (0x88003568, just after `lw sp,-24156(zero)`), dump the
+   * idle sp the ISS loads + the source global mem[0xFFFFA164]. FPGA got 0x8834afb8. */
+  if((uint32_t)s->pc==0x88002200u){
+    static int hc=0;
+    if(hc++ < 8){
+      uint32_t sp=(uint32_t)s->gpr[29];
+      uint64_t va=(uint64_t)(int64_t)(-24156); uint32_t pa=va_translate(s, va, tlb_op::load);
+      uint32_t g=__builtin_bswap32(s->mem.get<uint32_t>(pa));
+      fprintf(stderr,"[GLOB%d] icnt=%llu mem[0xFFFFA164] pa=%08x val=%08x (idle sp global; FPGA loaded 0x8834afb8)\n",hc,(unsigned long long)s->icnt,pa,g);
+    }
+  }
   {
     /* CALLWIN=lo:hi -- log every jal/jalr (caller pc -> callee target) in the
      * icnt window, for diffing the kernel call sequence against MAME. */
@@ -2693,6 +2738,8 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo0 = s->cpr0_64[CPR0_ENTRYLO0];
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
+	    if(idx==0 && getenv("TLBTALLY")) { static uint64_t pv=~0ull; uint64_t c=s->tlb[0].entry_lo1;
+	      if(c!=pv){ fprintf(stderr,"[iss-idx0-wr] hi=%llx lo0=%llx lo1=%llx v1=%d icnt=%lu\n",(unsigned long long)s->tlb[0].entry_hi,(unsigned long long)s->tlb[0].entry_lo0,(unsigned long long)c,(int)((c>>1)&1),(unsigned long)s->icnt); pv=c; } }
 	    assert(s->tlb[idx].page_mask == 0);
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
@@ -2747,6 +2794,7 @@ void execMips(state_t *s) {
 	  }
 	  if(!found) {
 	    s->cpr0[CPR0_INDEX] |= (1u << 31); /* P=1 (probe failed) */
+	    if(getenv("TLBP_ZERO_ON_MISS")) s->cpr0[CPR0_INDEX] = (1u << 31); /* mimic r9999: index=0 on TLBP miss */
 	  }
 	  HISTO(s, mipsInsn::TLBP);
 	  break;
@@ -2832,6 +2880,28 @@ void execMips(state_t *s) {
 	  }
 	  if(rd == CPR0_COMPARE)   /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
 	    s->cpr0[CPR0_CAUSE] &= ~(1u << 15);
+	  /* EXPERIMENT (env MTC0_IRQ_PC=<hexpc>): replicate the r9999-precise
+	   * MTC0->Status[IE] CP0 hazard *violation* -- inject a timer IP[7] right
+	   * after the mtc0 that writes c0_sr at the given PC, so the timer fires in
+	   * the mtc0 shadow (the very next instruction).  If the FPGA bad-istack is
+	   * this hazard, the ISS -- which boots past today -- should now panic too. */
+	  if(rd == CPR0_SR) {
+	    static const char *ip = getenv("MTC0_IRQ_PC");
+	    if(ip) {
+	      uint32_t pc = (uint32_t)s->pc;
+	      bool all  = (ip[0] == 'a');                            /* "all" */
+	      bool excl = (pc >= 0x88002200u && pc < 0x88002a00u);   /* int-handler region: skip (storm) */
+	      static uint64_t last = 0;
+	      bool fire = all ? (!excl && (s->icnt - last > 5000)) : (pc == (uint32_t)strtoul(ip,0,0));
+	      if(fire) {
+	        s->cpr0[CPR0_CAUSE] |= (1u << 15);   /* IP[7] timer pending -> fires next insn */
+	        last = s->icnt;
+	        static int nf = 0;
+	        if(nf++ < 20) fprintf(stderr, "[INJECT] timer IP7 after mtc0 c0_sr @pc=%08x SR=%08x icnt=%llu\n",
+	                              pc, s->cpr0[CPR0_SR], (unsigned long long)s->icnt);
+	      }
+	    }
+	  }
 	  /* CP0 reg 7 is the simulator putchar port */
 	  if(rd == 7 && !s->silent) {
 	    fputc((int)(s->gpr[rt] & 0xff), stdout);
@@ -3029,7 +3099,16 @@ void execMips(state_t *s) {
       case 0x2e:
 	_swr<EL>(inst, s);
 	break;
-      case 0x2f: /* cache -- treated as NOP for now */
+      case 0x2f: /* cache -- treated as NOP for now (logged for coherency analysis) */
+	if(g_cache_dbg) {
+	  uint32_t rs  = (inst >> 21) & 31;
+	  uint32_t cop = (inst >> 16) & 31;       /* [20:18]=op  [17:16]=cache(0=I,1=D,2=SI,3=SD) */
+	  int16_t  himm = (int16_t)(inst & 0xffff);
+	  uint64_t va  = s->gpr[rs] + (int32_t)himm;
+	  fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx pa~=%08x\n",
+		  (unsigned long long)s->icnt, (uint32_t)s->pc, cop,
+		  (unsigned long long)va, (uint32_t)(va & 0x1fffffff));
+	}
 	s->pc += 4;
 	break;
       case 0x31:

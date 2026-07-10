@@ -21,9 +21,15 @@
 #include "gdbstub.hh"
 #include "globals.hh"
 #include "inst_record.hh"
+#include "cosim.hh"
 #include <csignal>
 
 namespace po = boost::program_options;
+
+/* debug watchpoint globals (declared extern in sparse_mem.hh) */
+uint32_t g_watch_pa = 0, g_watch_ldpc = 0;
+uint64_t g_watch_lo = 0, g_watch_hi = ~0ULL;
+uint64_t g_cur_pc = 0, g_cur_icnt = 0;
 
 /* Async control via signals (checked once per instruction in the run loop):
  *   SIGUSR1 -> dump the current IRIX process (comm/pid/pc)
@@ -48,7 +54,9 @@ static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
   std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out;
+  std::string cosim;   /* "server"|"client": lockstep co-sim vs the JIT sim */
   uint64_t maxinsns = ~(0UL);
+  uint64_t ckpt_icnt = 0;
   int gdb_port = 0;
   try {
     po::options_description desc("options");
@@ -62,8 +70,10 @@ int main(int argc, char *argv[]) {
       ("disk-delta", po::value<std::string>(&disk_delta), "persistent COW sidecar for --disk: writes survive across runs (image stays read-only); flushed on exit + SIGUSR2")
       ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000")
       ("checkpoint-at",  po::value<std::string>(&ckpt_at)->default_value(""),  "dump a full-state checkpoint when this PC (hex) first retires, then exit")
+      ("checkpoint-icnt", po::value<uint64_t>(&ckpt_icnt)->default_value(0),    "dump a full-state checkpoint when icnt first reaches this value, then exit")
       ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at")
-      ("gdb", po::value<int>(&gdb_port)->default_value(0), "listen for gdb on this TCP port (RSP stub); boots full-speed until a client attaches");
+      ("gdb", po::value<int>(&gdb_port)->default_value(0), "listen for gdb on this TCP port (RSP stub); boots full-speed until a client attaches")
+      ("cosim", po::value<std::string>(&cosim), "lockstep co-sim: 'server' (golden) or 'client'; run both sims with DETTIME=1");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -191,11 +201,24 @@ int main(int argc, char *argv[]) {
    * (dst = the GPR changed by the instruction, -1 if none; via before/after diff). */
   const char *vto = getenv("VALTRACE");
   FILE *valt = vto ? fopen(vto, "w") : nullptr;
+  const bool valt_all = getenv("VALTRACE_ALL") != nullptr;  /* trace all insns (kernel co-sim) */
   uint64_t gprsnap[32];
   
   signal(SIGUSR1, on_sigusr1);   /* kill -USR1 <pid> -> dump current IRIX process */
   signal(SIGUSR2, on_sigusr2);   /* kill -USR2 <pid> -> flush --disk-delta sidecar */
   if(gdb_port) s->gdb = new gdb_stub(gdb_port);
+  if(cosim == "server")      cosim_init(true);
+  else if(cosim == "client") cosim_init(false);
+  const char *mnenv = getenv("COSIM_MEMN");
+  uint64_t cosim_memn = mnenv ? strtoull(mnenv, nullptr, 0) : 4000000;  /* co-sim RAM-hash interval */
+  const char *msenv = getenv("COSIM_MEMSTART");
+  uint64_t cosim_memstart = msenv ? strtoull(msenv, nullptr, 0) : 0;
+  { const char *e;   /* memory-op watchpoints (see sparse_mem.hh) */
+    if((e = getenv("WATCHPA")))   g_watch_pa   = (uint32_t)strtoull(e, 0, 0);
+    if((e = getenv("WATCHLDPC"))) g_watch_ldpc = (uint32_t)strtoull(e, 0, 0);
+    if((e = getenv("WATCH_LO")))  g_watch_lo   = strtoull(e, 0, 0);
+    if((e = getenv("WATCH_HI")))  g_watch_hi   = strtoull(e, 0, 0);
+  }
 
   double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
@@ -219,16 +242,43 @@ int main(int argc, char *argv[]) {
       dumpState(*s, ckpt_out);
       break;
     }
+    if(ckpt_icnt && s->icnt >= ckpt_icnt) {
+      fprintf(stderr, "[ckpt] reached icnt=%lu (pc=%08x) -> dumping %s\n",
+              (unsigned long)s->icnt, (uint32_t)s->pc, ckpt_out.c_str());
+      dumpState(*s, ckpt_out);
+      break;
+    }
     if(valt) { for(int gi=0; gi<32; gi++) gprsnap[gi]=(uint64_t)s->gpr[gi]; }
     maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
     if(s->gdb) s->gdb->step_hook(s);   /* gdb RSP: breakpoints / attach / step */
     uint64_t valt_pc = (uint64_t)s->pc;
+    g_cur_pc = (uint64_t)s->pc; g_cur_icnt = s->icnt;   /* context for memory watchpoints */
+    if(g_watch_ldpc && (uint32_t)s->pc == g_watch_ldpc &&
+       s->icnt >= g_watch_lo && s->icnt < g_watch_hi)
+      fprintf(stderr, "[ldbase] icnt=%lu pc=%08x r15=%016llx va=%016llx\n",
+              (unsigned long)s->icnt, (uint32_t)s->pc,
+              (unsigned long long)s->gpr[15], (unsigned long long)(s->gpr[15] + 60));
     execMips(s);
-    if(valt && valt_pc>=0x120000000ULL && valt_pc<0x120640000ULL) {
+    if(valt && (valt_all || (valt_pc>=0x120000000ULL && valt_pc<0x120640000ULL))) {
       int vd=-1; for(int gi=1; gi<32; gi++) if((uint64_t)s->gpr[gi]!=gprsnap[gi]) { vd=gi; break; }
       fprintf(valt, "%llx %d %llx\n", (unsigned long long)valt_pc, vd,
               (unsigned long long)(vd<0?0:(uint64_t)s->gpr[vd]));
     }
+    uint64_t mh = COSIM_NO_HASH;
+    if(cosim_active() && s->icnt >= cosim_memstart && (s->icnt % cosim_memn) == 0) {
+      const uint64_t *w = reinterpret_cast<const uint64_t*>(s->mem.mem + 0x08000000u);
+      uint64_t h = 1469598103934665603ULL;       /* FNV-1a over low DRAM [0x08000000,0x18000000) (must match DUT) */
+      for(size_t i = 0; i < (0x10000000u/8); i++) h = (h ^ w[i]) * 1099511628211ULL;
+      mh = h;
+    }
+    uint32_t cp0dbg[4] = { s->cpr0[CPR0_CAUSE], s->cpr0[CPR0_SR],
+                           s->cpr0[CPR0_COUNT], s->cpr0[CPR0_EPC] };
+    if(cosim_step(s->icnt, (int64_t)s->pc, (const int64_t*)s->gpr, mh, cp0dbg)) break;   /* lockstep co-sim */
+  }
+  if(cosim_active()) {   /* COSIM_RAMDUMP=<file>: dump low DRAM at the stop point to diff */
+    const char *rd = getenv("COSIM_RAMDUMP");
+    if(rd) { FILE *f = fopen(rd, "wb"); if(f) { fwrite(s->mem.mem + 0x08000000u, 1, 0x10000000u, f); fclose(f);
+      fprintf(stderr, "[cosim] dumped low DRAM to %s at icnt=%lu\n", rd, (unsigned long)s->icnt); } }
   }
   t0 = timestamp() - t0;
 
