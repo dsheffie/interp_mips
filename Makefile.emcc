@@ -1,0 +1,72 @@
+# Makefile.emcc -- build interp_mips as WASM with emscripten, for the lolz.
+#
+# Status: gets you a wasm/js bundle, BUT the codebase links three compiled
+# libraries that have no emscripten port (boost_program_options,
+# boost_serialization, capstone) plus libunwind + BSD sockets. This Makefile
+# assumes the lightweight path: small `#ifdef __EMSCRIPTEN__` guards in the
+# sources that compile out --checkpoint (serialization), --gdb (sockets),
+# dbt_backtrace (libunwind), and the capstone disassembler. emscripten
+# auto-defines __EMSCRIPTEN__, so no -D is needed and the native Makefile is
+# untouched. If those guards are NOT yet in the tree, this build will fail to
+# compile/link -- ask Claude to add them.
+#
+# Prereqs: a sourced emsdk (`emcc` on PATH). boost HEADERS only are needed
+# (functional/hash is header-only); point BOOST_INC at them if not in the
+# default sysroot.
+#
+# Usage:
+#   make -f Makefile.emcc            # build interp_mips.js + .wasm
+#   make -f Makefile.emcc clean
+#   node interp_mips.js -- -f vmlinux.32   # run under node (see PRELOAD below)
+
+CXX = em++
+
+OBJ = main.o pseudo_bios.o loadelf.o disassemble.o helper.o interpret.o \
+      sparse_mem.o sgi_mc.o sgi_hpc.o sgi_scc.o sgi_scsi.o saveState.o \
+      gdbstub.o githash.o
+
+# boost headers only (no compiled boost libs link under emscripten).
+BOOST_INC ?=
+CXXFLAGS = -std=c++17 -O3 -g -fomit-frame-pointer $(BOOST_INC)
+
+# wasm32 caps linear memory at 4 GiB and cannot lazily reserve like a
+# MAP_NORESERVE mmap, so the simulator's 4 GiB sparse_mem cannot be backed
+# 1:1. ALLOW_MEMORY_GROWTH lets the heap grow on demand; bump INITIAL_MEMORY
+# as needed. (For a faithful full 4 GiB model you'd flip on MEMORY64 and build
+# the whole toolchain for wasm64 -- left off here.)
+EMFLAGS = \
+  -s ALLOW_MEMORY_GROWTH=1 \
+  -s INITIAL_MEMORY=512MB \
+  -s MAXIMUM_MEMORY=4GB \
+  -s STACK_SIZE=8MB \
+  -s EXIT_RUNTIME=1 \
+  -s INVOKE_RUN=0 \
+  -s EXPORTED_RUNTIME_METHODS=callMain,FS \
+  -s NODERAWFS=0 \
+  -fexceptions
+
+# To bake guest images into the virtual FS, list them here, e.g.:
+#   PRELOAD = --preload-file vmlinux.32 --preload-file delta.disk
+# Without NODERAWFS the program only sees preloaded files. Under node you can
+# instead set NODERAWFS=1 above to get real host filesystem access.
+PRELOAD ?=
+
+DEP = $(OBJ:.o=.d)
+EXE = interp_mips.js
+
+.PHONY: all clean
+all: $(EXE)
+
+$(EXE): $(OBJ)
+	$(CXX) $(CXXFLAGS) $(EMFLAGS) $(PRELOAD) $(OBJ) -o $(EXE)
+
+githash.cc: .git/HEAD .git/index
+	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
+
+%.o: %.cc
+	$(CXX) -MMD $(CXXFLAGS) -c $<
+
+-include $(DEP)
+
+clean:
+	rm -rf interp_mips.js interp_mips.wasm interp_mips.data $(OBJ) $(DEP)

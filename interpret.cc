@@ -890,9 +890,11 @@ void branch(uint32_t inst, state_t *s) {
 
   s->pc += 4;
   if(isLikely) {
+    /* BLTZALL/BGEZALL: the link (ra <- pc+8) is UNCONDITIONAL -- only the branch
+     * direction depends on the condition.  Must fire even when NOT taken. */
+    if(saveReturn)
+      s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
     if(takeBranch) {
-      if(saveReturn)
-	s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
       if(!run_delay_slot<EL>(s))
 	s->pc = (imm+npc);
     }
@@ -902,10 +904,13 @@ void branch(uint32_t inst, state_t *s) {
   }
   else {
     bool ds_faulted = run_delay_slot<EL>(s);
+    /* BLTZAL/BGEZAL: link UNCONDITIONALLY (not gated on takeBranch).  The PIC
+     * bootstrap idiom `bltzal rX,.+8` with rX>=0 is the not-taken-but-must-link
+     * case -- gating the link on takeBranch left ra=0 -> wrong load bias. */
+    if(saveReturn) {
+      s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
+    }
     if(takeBranch){
-      if(saveReturn) {
-	s->gpr[31] = npc + 4;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
-      }
       if(!ds_faulted)
 	s->pc = (imm+npc);
     }
@@ -2161,6 +2166,25 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
+  { /* PCHASH: rolling FNV-1a over the retired-PC stream, checkpoint every 65536.
+     * Compared against henry_tb's identical hash to find the first RTL/ISS PC
+     * divergence (expected only once interrupts skew the streams). */
+    static const bool g_pchash = getenv("PCHASH") != nullptr;
+    if(g_pchash) {
+      static uint64_t h = 1469598103934665603ULL;
+      h = (h ^ (uint32_t)s->pc) * 1099511628211ULL;
+      if((s->icnt & 0xffff) == 0) {
+        fprintf(stderr, "[pchash] icnt=%llu hash=%016llx pc=%08x\n",
+                (unsigned long long)s->icnt, (unsigned long long)h, (uint32_t)s->pc);
+      }
+    }
+    static const char *pd = getenv("PCDUMP");   /* "lo:hi" -> raw "P <pc>" for structural diff */
+    static uint64_t pd_lo = 0, pd_hi = 0; static bool pd_init = false;
+    if(!pd_init) { pd_init = true; if(pd) sscanf(pd, "%lu:%lu", &pd_lo, &pd_hi); }
+    if(pd && s->icnt >= pd_lo && s->icnt < pd_hi) {
+      fprintf(stderr, "P %08x\n", (uint32_t)s->pc);
+    }
+  }
   if(globals::trace_retirement and globals::retire_log) {
     /* optional TRACEWIN=lo:hi icnt window so a huge boot can emit a small,
      * focused retire_trace (e.g. around a single XTLB refill) for mips-analyzer. */
