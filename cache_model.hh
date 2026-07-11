@@ -27,6 +27,8 @@
 
 class sparse_mem;
 
+extern bool g_stale_detect;   /* STALE_DETECT env: flag stale cached reads (used in cload below) */
+
 class cache_model {
 public:
   /* geometry the OS was built for */
@@ -78,12 +80,23 @@ public:
     return l;
   }
 
+  uint64_t n_stale = 0;
+  void report_stale(uint32_t pa, uint8_t cached, uint8_t dram);   /* .cc: has g_cur_pc */
+
   /* CPU cached byte access (get/set route here through cm_load/cm_store) */
   void cload(uint32_t pa, void *dst, int n) {
     uint8_t *d = static_cast<uint8_t *>(dst);
     for(int i = 0; i < n; i++) {
       cline &l = fill(pa + i);
-      d[i] = l.data[(pa + i) & L1_OFF];
+      uint8_t cv = l.data[(pa + i) & L1_OFF];
+      /* STALE-READ detector: a CLEAN resident line must still match DRAM. If it
+       * doesn't, device DMA wrote DRAM after this line was filled and IRIX's
+       * invalidate missed it -> the CPU is about to read a stale cached byte. */
+      if(g_stale_detect && !l.dirty) {
+        uint8_t dv = dram_rd(pa + i);
+        if(cv != dv) { report_stale(pa + i, cv, dv); }
+      }
+      d[i] = cv;
     }
     n_cload++;
   }

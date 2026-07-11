@@ -3138,9 +3138,11 @@ void execMips(state_t *s) {
 	  int16_t  himm = (int16_t)(inst & 0xffff);
 	  uint64_t va  = s->gpr[rs] + (int32_t)himm;
 	  if(g_cache_dbg) {
-	    fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx\n",
+	    uint32_t dbgpa = 0; bool mapped = tlb_probe_ro(s, va, &dbgpa);
+	    fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx pa=%08x set=%u\n",
 		    (unsigned long long)s->icnt, (uint32_t)s->pc, cop,
-		    (unsigned long long)va);
+		    (unsigned long long)va, mapped ? dbgpa : (uint32_t)(va & 0x1fffffff),
+		    cache_model::set_of(mapped ? dbgpa : (uint32_t)(va & 0x1fffffff)));
 	  }
 	  if(g_cmodel) {
 	    uint32_t which   = cop & 0x3;         /* 0=I 1=D 2=SI 3=SD */

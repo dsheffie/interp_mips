@@ -87,8 +87,9 @@ int main(int argc, char *argv[]) {
    * Off by default -> plain ISS behavior. */
   if(getenv("CACHE_MODEL")) {
     g_cmodel = new cache_model(*sm);
-    fprintf(stderr, "[cache_model] ENABLED: 32B write-back L1 D-cache (%u sets)\n",
-            cache_model::L1_SETS);
+    g_stale_detect = getenv("STALE_DETECT") != nullptr;   /* flag stale cached reads */
+    fprintf(stderr, "[cache_model] ENABLED: 32B write-back L1 D-cache (%u sets)%s\n",
+            cache_model::L1_SETS, g_stale_detect ? " + STALE_DETECT" : "");
   }
   s = new state_t(*sm);
   s->maxicnt = maxinsns;

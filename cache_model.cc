@@ -1,8 +1,19 @@
+#include <cstdio>
 #include "cache_model.hh"
 #include "sparse_mem.hh"
 
 /* non-null once main() sees CACHE_MODEL in the environment */
 cache_model *g_cmodel = nullptr;
+bool g_stale_detect = false;
+
+void cache_model::report_stale(uint32_t pa, uint8_t cached, uint8_t dram) {
+  if(n_stale < 40) {
+    fprintf(stderr, "[STALE-READ] icnt=%llu pc=%08x pa=%08x cached=%02x dram=%02x"
+            " (clean cache line filled before DMA wrote DRAM -> missing invalidate)\n",
+            (unsigned long long)g_cur_icnt, (uint32_t)g_cur_pc, pa, cached, dram);
+  }
+  n_stale++;
+}
 
 cache_model::cache_model(sparse_mem &m) : dram(m), l1(L1_SETS) {}
 
