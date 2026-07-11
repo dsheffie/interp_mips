@@ -540,7 +540,7 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
  * an ASID change needs no flush (stale entries simply miss and re-walk; global
  * pages get cached per-ASID). */
 static const int UTLB_SZ = 64;          /* power of two */
-struct utlb_entry { uint64_t vpn, asid; uint32_t ppn; bool dirty, valid; };
+struct utlb_entry { uint64_t vpn, asid; uint32_t ppn; bool dirty, valid, cached; };
 static utlb_entry g_utlb[UTLB_SZ];
 static inline void utlb_flush() { for(auto &e : g_utlb) e.valid = false; }
 
@@ -548,12 +548,17 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   uint32_t hi32 = (uint32_t)(va >> 32);
   uint32_t lo32 = (uint32_t)va;
 
+  /* cache_model: default this access to uncached; the cached returns below set it.
+   * Never cache an instruction fetch (D-cache-only model for now). */
+  s->mem.cache_active = false;
+
   /* 32-bit compatibility segments (sign-extended VA: hi32 is 0x00000000 for
    * useg or 0xffffffff for kseg0..kseg3). */
   if(hi32 == 0x00000000u || hi32 == 0xffffffffu) {
     uint32_t seg = lo32 >> 29;
     /* kseg0 (0x80000000-0x9fffffff) and kseg1 (0xa0000000-0xbfffffff): unmapped */
     if(seg == 0x4 || seg == 0x5) {
+      if(seg == 0x4 && op != tlb_op::fetch) { s->mem.cache_active = true; } /* kseg0 cached */
       return lo32 & 0x1fffffff;
     }
     /* useg/kuseg (seg 0-3), ksseg/kseg2 (seg 6), kseg3 (seg 7): TLB mapped */
@@ -577,6 +582,7 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   utlb_entry &ce = g_utlb[vpn & (UTLB_SZ - 1)];
   if(ce.valid && ce.vpn == vpn && ce.asid == cur_asid &&
      !(op == tlb_op::store && !ce.dirty)) {
+    if(ce.cached && op != tlb_op::fetch) { s->mem.cache_active = true; }
     return (ce.ppn << 12) | (uint32_t)(va & 0xfffULL);
   }
 
@@ -616,9 +622,11 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
     }
     uint64_t pfn = (e_lo >> 6) & 0xfffffffULL;      /* PFN[33:6] -> 28 bits */
     uint64_t pa  = (pfn << 12) | (va & off_mask);
+    bool cca_cached = (((e_lo >> 3) & 7u) == 3u);    /* C==3: cacheable write-back */
     /* fill the micro-TLB for this 4KB sub-page (only reached for a V=1 hit) */
     ce.vpn = vpn; ce.asid = cur_asid; ce.ppn = (uint32_t)(pa >> 12);
-    ce.dirty = (e_lo & 0x4u) != 0; ce.valid = true;
+    ce.dirty = (e_lo & 0x4u) != 0; ce.valid = true; ce.cached = cca_cached;
+    if(cca_cached && op != tlb_op::fetch) { s->mem.cache_active = true; }
     return (uint32_t)pa;
   }
 
@@ -3123,17 +3131,36 @@ void execMips(state_t *s) {
       case 0x2e:
 	_swr<EL>(inst, s);
 	break;
-      case 0x2f: /* cache -- treated as NOP for now (logged for coherency analysis) */
-	if(g_cache_dbg) {
+      case 0x2f: /* cache */
+	{
 	  uint32_t rs  = (inst >> 21) & 31;
 	  uint32_t cop = (inst >> 16) & 31;       /* [20:18]=op  [17:16]=cache(0=I,1=D,2=SI,3=SD) */
 	  int16_t  himm = (int16_t)(inst & 0xffff);
 	  uint64_t va  = s->gpr[rs] + (int32_t)himm;
-	  fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx pa~=%08x\n",
-		  (unsigned long long)s->icnt, (uint32_t)s->pc, cop,
-		  (unsigned long long)va, (uint32_t)(va & 0x1fffffff));
+	  if(g_cache_dbg) {
+	    fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx\n",
+		    (unsigned long long)s->icnt, (uint32_t)s->pc, cop,
+		    (unsigned long long)va);
+	  }
+	  if(g_cmodel) {
+	    uint32_t which   = cop & 0x3;         /* 0=I 1=D 2=SI 3=SD */
+	    uint32_t cacheop = (cop >> 2) & 0x7;  /* 0=IdxWBInv 4=HitInv 5=HitWBInv 6=HitWB */
+	    uint32_t pa = 0;
+	    if(which == 1) {                      /* primary D-cache */
+	      switch(cacheop) {
+	      case 0: g_cmodel->index_wb_inval((uint32_t)va); break;      /* Index_WB_Invalidate */
+	      case 4: if(tlb_probe_ro(s, va, &pa)) g_cmodel->hit_inval(pa);    break; /* Hit_Invalidate */
+	      case 5: if(tlb_probe_ro(s, va, &pa)) g_cmodel->hit_wb_inval(pa); break; /* Hit_WB_Invalidate */
+	      case 6: if(tlb_probe_ro(s, va, &pa)) g_cmodel->hit_wb(pa);       break; /* Hit_WB */
+	      default: break;                     /* Index_Load/Store_Tag: no-op (model starts clean) */
+	      }
+	    }
+	    /* I-cache (which==0): D-only model + DRAM-direct fetch already captures code
+	     * coherence (a fetch reads DRAM, so the D-cache must be WB'd first).
+	     * SD/SI (which 2,3): no secondary cache -> no-op. */
+	  }
+	  s->pc += 4;
 	}
-	s->pc += 4;
 	break;
       case 0x31:
 	_lwc1<EL>(inst, s);

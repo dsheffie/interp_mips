@@ -11,6 +11,7 @@
 
 #include "sim_bitvec.hh"
 #include "helper.hh"
+#include "cache_model.hh"   /* forward-decl-only wrt sparse_mem; safe to include here */
 
 #ifndef unlikely
 #define unlikely(x)    __builtin_expect(!!(x), 0)
@@ -37,6 +38,10 @@ public:
   uint8_t *mem = nullptr;
   state_t *st = nullptr;
   bool route_devices = false;
+  /* set per-access by va_translate: true only for a CACHED cpu load/store (kseg0
+   * or a mapped C==3 page, and never a fetch).  DMA (get_raw_ptr) and MMIO leave
+   * it as-is/false, so they always hit backing DRAM directly. */
+  bool cache_active = false;
 public:
   sparse_mem();
   ~sparse_mem();
@@ -81,6 +86,9 @@ public:
   }
   template <typename T>
   T get(uint64_t byte_addr) {
+    if(g_cmodel && cache_active) {   /* cached cpu load -> the write-back model */
+      T v; cm_load(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return v;
+    }
     if(unlikely(g_watch_ldpc && (uint32_t)g_cur_pc == g_watch_ldpc &&
                 g_cur_icnt >= g_watch_lo && g_cur_icnt < g_watch_hi)) {
       uint64_t _ea = byte_addr;
@@ -98,6 +106,9 @@ public:
   template<typename T>
   void set(uint64_t byte_addr, T v) {
     //static_assert(sizeof(T) != 8);
+    if(g_cmodel && cache_active) {   /* cached cpu store -> the write-back model */
+      cm_store(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return;
+    }
     if(unlikely(g_watch_pa && (uint32_t)byte_addr == g_watch_pa &&
                 g_cur_icnt >= g_watch_lo && g_cur_icnt < g_watch_hi))
       fprintf(stderr, "[wr] icnt=%lu pc=%08x pa=%08x val=%016llx sz=%zu\n",

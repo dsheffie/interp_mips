@@ -82,6 +82,14 @@ int main(int argc, char *argv[]) {
   //if(filename.empty()) { std::cerr << "need --file <kernel>\n"; return 1; }
 
   sparse_mem *sm = new sparse_mem();
+  /* CACHE_MODEL: model the R4x00/Indy write-back cache (32B lines) IRIX is built
+   * for, so cache-coherence bugs the perfectly-coherent ISS hides become visible.
+   * Off by default -> plain ISS behavior. */
+  if(getenv("CACHE_MODEL")) {
+    g_cmodel = new cache_model(*sm);
+    fprintf(stderr, "[cache_model] ENABLED: 32B write-back L1 D-cache (%u sets)\n",
+            cache_model::L1_SETS);
+  }
   s = new state_t(*sm);
   s->maxicnt = maxinsns;
   s->mc  = new sgi_mc(s);
