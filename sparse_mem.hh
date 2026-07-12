@@ -30,6 +30,7 @@ extern uint32_t g_watch_pa;      /* store-watch PA (0 = off) */
 extern uint32_t g_watch_ldpc;    /* load-PC whose effective address to print (0 = off) */
 extern uint64_t g_watch_lo, g_watch_hi;   /* icnt window [lo,hi) */
 extern uint64_t g_cur_pc, g_cur_icnt;     /* current insn context */
+extern uint64_t g_htrace;                 /* >0: trace next N executed pcs (kernel TLB-Mod handler) */
 
 class sparse_mem {
 public:

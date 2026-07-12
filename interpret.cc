@@ -229,6 +229,16 @@ void maybe_take_interrupt(state_t *s) {
   if(s->cpr0[CPR0_COUNT] == s->cpr0[CPR0_COMPARE])
     s->cpr0[CPR0_CAUSE] |= (1u << 15);                 /* IP[7] = timer */
 
+  /* SH_PROBE=<pc>: golden a3/a4/a0 at a /sbin/sh insn (compare vs the RTL fault:
+   * RTL faulted sw a4,24(a3) @0x0e033b58 with a3=0x0e0a6ee8. a3 same+store OK -> TLB bug;
+   * a3 different -> a3 register corruption in the RTL. */
+  { static const char* shp = getenv("SH_PROBE");
+    static const uint32_t g_shp = shp ? (uint32_t)strtoul(shp,0,0) : 0;
+    if(g_shp && (uint32_t)s->pc == g_shp)
+      fprintf(stderr, "[SHPROBE] pc=%08x a0=%016llx a3=%016llx a4=%016llx sp=%016llx icnt=%llu\n",
+        (uint32_t)s->pc, (unsigned long long)s->gpr[4], (unsigned long long)s->gpr[7],
+        (unsigned long long)s->gpr[8], (unsigned long long)s->gpr[29], (unsigned long long)s->icnt); }
+
   static const bool g_tally = getenv("TLBTALLY") != nullptr;
   if(g_tally) {
     if((uint32_t)s->pc == 0x880196bcu) { g_ty_tlbmiss++;
@@ -611,12 +621,24 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
     bool odd           = (va & sel_bit) != 0;
     uint64_t e_lo      = odd ? s->tlb[i].entry_lo1 : s->tlb[i].entry_lo0;
 
+    /* HEAP_PROBE: page size + even/odd + D-bit for /sbin/sh heap stores.  RTL hardcodes
+     * w_odd=va[12] (4KB); if pm!=0 here the RTL selects the wrong half's D -> spurious cause-1. */
+    { static const bool g_hp = getenv("HEAP_PROBE") != nullptr;
+      if(g_hp && op == tlb_op::store && va >= 0x0e0a0000ULL && va < 0x0e0b0000ULL)
+        fprintf(stderr, "[HEAPPROBE] va=%09llx pm=%llx sel_bit=%llx odd=%d D=%d V=%d e_lo0=%llx e_lo1=%llx icnt=%llu\n",
+          (unsigned long long)va, (unsigned long long)pm, (unsigned long long)sel_bit, (int)odd,
+          (int)((e_lo>>2)&1), (int)((e_lo>>1)&1),
+          (unsigned long long)s->tlb[i].entry_lo0, (unsigned long long)s->tlb[i].entry_lo1,
+          (unsigned long long)s->icnt); }
+
     if(!(e_lo & 0x2u)) {                            /* V == 0 -> TLB Invalid */
       uint32_t code = (op == tlb_op::store) ? 3u : 2u;
       raise_tlb(s, va, code, /*is_refill=*/false, xtlb);
       return 0;
     }
     if(op == tlb_op::store && !(e_lo & 0x4u)) {     /* D == 0 -> TLB Modified */
+      { static const bool g_ht = getenv("HTRACE") != nullptr;   /* trace the kernel TLB-Mod handler for /sbin/sh heap */
+        if(g_ht && va >= 0x0e0a0000ULL && va < 0x0e0b0000ULL) g_htrace = 320; }
       raise_tlb(s, va, 1u, /*is_refill=*/false, xtlb);
       return 0;
     }
@@ -2203,8 +2225,10 @@ void execMips(state_t *s) {
       globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
   if(globals::pctrace) {
+    static const bool useronly = getenv("PCTRACE_USERONLY") != nullptr;  /* only pc<0x80000000 */
     if(!globals::pctrace_on && (uint32_t)s->pc == globals::pctrace_start) globals::pctrace_on = true;
-    if(globals::pctrace_on) fprintf(globals::pctrace, "%08x\n", (uint32_t)s->pc);
+    if(globals::pctrace_on && !(useronly && (uint32_t)s->pc >= 0x80000000u))
+      fprintf(globals::pctrace, "%08x\n", (uint32_t)s->pc);
   }
   /* TEMP: at resumeidle+0x30 (0x88003568, just after `lw sp,-24156(zero)`), dump the
    * idle sp the ISS loads + the source global mem[0xFFFFA164]. FPGA got 0x8834afb8. */
@@ -2921,10 +2945,16 @@ void execMips(state_t *s) {
 	    static const char *ip = getenv("MTC0_IRQ_PC");
 	    if(ip) {
 	      uint32_t pc = (uint32_t)s->pc;
+	      uint32_t nsr = s->cpr0[CPR0_SR];
+	      /* only inject where the mtc0 actually ENABLES delivery (IE=1,!EXL,!ERL) so
+	       * the timer fires in the shadow of an *enable* -- an mtc0 that keeps ints
+	       * masked can't fire a shadow irq (that was the SR=0x80 IE=0 miss). */
+	      bool enables = (nsr & SR_IE) && !(nsr & (SR_EXL | SR_ERL));
 	      bool all  = (ip[0] == 'a');                            /* "all" */
 	      bool excl = (pc >= 0x88002200u && pc < 0x88002a00u);   /* int-handler region: skip (storm) */
 	      static uint64_t last = 0;
-	      bool fire = all ? (!excl && (s->icnt - last > 5000)) : (pc == (uint32_t)strtoul(ip,0,0));
+	      bool fire = enables && (all ? (!excl && (s->icnt - last > 400))
+	                                  : (pc == (uint32_t)strtoul(ip,0,0)));
 	      if(fire) {
 	        s->cpr0[CPR0_CAUSE] |= (1u << 15);   /* IP[7] timer pending -> fires next insn */
 	        last = s->icnt;

@@ -30,6 +30,7 @@ namespace po = boost::program_options;
 uint32_t g_watch_pa = 0, g_watch_ldpc = 0;
 uint64_t g_watch_lo = 0, g_watch_hi = ~0ULL;
 uint64_t g_cur_pc = 0, g_cur_icnt = 0;
+uint64_t g_htrace = 0;
 
 /* Async control via signals (checked once per instruction in the run loop):
  *   SIGUSR1 -> dump the current IRIX process (comm/pid/pc)
@@ -53,7 +54,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out;
+  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out, restore_name;
   std::string cosim;   /* "server"|"client": lockstep co-sim vs the JIT sim */
   uint64_t maxinsns = ~(0UL);
   uint64_t ckpt_icnt = 0;
@@ -72,6 +73,7 @@ int main(int argc, char *argv[]) {
       ("checkpoint-at",  po::value<std::string>(&ckpt_at)->default_value(""),  "dump a full-state checkpoint when this PC (hex) first retires, then exit")
       ("checkpoint-icnt", po::value<uint64_t>(&ckpt_icnt)->default_value(0),    "dump a full-state checkpoint when icnt first reaches this value, then exit")
       ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at")
+      ("restore", po::value<std::string>(&restore_name)->default_value(""), "restore a full-state checkpoint (loadState) and continue from it")
       ("gdb", po::value<int>(&gdb_port)->default_value(0), "listen for gdb on this TCP port (RSP stub); boots full-speed until a client attaches")
       ("cosim", po::value<std::string>(&cosim), "lockstep co-sim: 'server' (golden) or 'client'; run both sims with DETTIME=1");
     po::variables_map vm;
@@ -182,6 +184,12 @@ int main(int argc, char *argv[]) {
     std::cerr << "fake-bios: start pc = " << std::hex << (uint32_t)s->pc << std::dec << "\n";
   }
 
+  if(!restore_name.empty()) {
+    loadState(*s, restore_name);
+    std::cerr << "restored checkpoint " << restore_name << " -> pc=" << std::hex
+              << (uint32_t)s->pc << " icnt=" << std::dec << s->icnt << "\n";
+  }
+
   retire_trace rt;
   if(!retire_name.empty()) {
     globals::retire_log = &rt;
@@ -268,6 +276,15 @@ int main(int argc, char *argv[]) {
               (unsigned long)s->icnt, (uint32_t)s->pc,
               (unsigned long long)s->gpr[15], (unsigned long long)(s->gpr[15] + 60));
     execMips(s);
+    if(g_htrace) {   /* kernel TLB-Mod handler trace: executed pc + kernel scratch + arg regs */
+      fprintf(stderr, "[HTRACE] pc=%08x k0=%016llx k1=%016llx a0=%016llx a1=%016llx a2=%016llx a3=%016llx cause=%02x epc=%08x sr=%08x\n",
+              (uint32_t)valt_pc,
+              (unsigned long long)s->gpr[26], (unsigned long long)s->gpr[27],
+              (unsigned long long)s->gpr[4], (unsigned long long)s->gpr[5],
+              (unsigned long long)s->gpr[6], (unsigned long long)s->gpr[7],
+              (s->cpr0[CPR0_CAUSE]>>2)&0x1f, s->cpr0[CPR0_EPC], s->cpr0[CPR0_SR]);
+      g_htrace--;
+    }
     if(valt && (valt_all || (valt_pc>=0x120000000ULL && valt_pc<0x120640000ULL))) {
       int vd=-1; for(int gi=1; gi<32; gi++) if((uint64_t)s->gpr[gi]!=gprsnap[gi]) { vd=gi; break; }
       fprintf(valt, "%llx %d %llx\n", (unsigned long long)valt_pc, vd,
