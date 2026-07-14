@@ -2218,10 +2218,17 @@ void execMips(state_t *s) {
   if(globals::trace_retirement and globals::retire_log) {
     /* optional TRACEWIN=lo:hi icnt window so a huge boot can emit a small,
      * focused retire_trace (e.g. around a single XTLB refill) for mips-analyzer. */
-    static bool tw_init = false; static uint64_t tw_lo = 0, tw_hi = ~0ULL;
+    static bool tw_init = false; static uint64_t tw_lo = 0, tw_hi = ~0ULL, tw_cap = 0;
+    static bool tw_useronly = false, tw_trig_user = false, tw_armed = false;
     if(!tw_init) { tw_init = true; const char *tw = getenv("TRACEWIN");
-                   if(tw) sscanf(tw, "%lu:%lu", &tw_lo, &tw_hi); }
-    if(s->icnt >= tw_lo && s->icnt < tw_hi)
+                   if(tw) sscanf(tw, "%lu:%lu", &tw_lo, &tw_hi);
+                   tw_useronly = getenv("TRACEWIN_USERONLY") != nullptr;
+                   tw_trig_user = getenv("TRACEWIN_TRIG_USER") != nullptr;      // arm on first o32 entry
+                   if(getenv("TRACEWIN_N")) tw_cap = strtoull(getenv("TRACEWIN_N"),0,0); }  // max records
+    if(tw_trig_user && !tw_armed && (uint32_t)s->pc < 0x80000000u) tw_armed = true;
+    if(s->icnt >= tw_lo && s->icnt < tw_hi && (!tw_trig_user || tw_armed)
+       && (tw_cap == 0 || globals::retire_log->get_records().size() < tw_cap)
+       && !(tw_useronly && (uint32_t)s->pc >= 0x80000000u))
       globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
   }
   if(globals::pctrace) {
