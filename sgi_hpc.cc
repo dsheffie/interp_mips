@@ -2,6 +2,7 @@
 #include "interpret.hh"
 #include "sgi_scsi.hh"
 #include "sgi_scc.hh"
+#include "cache_model.hh"
 #include <cassert>
 #include <cstdlib>
 #include <ctime>
@@ -114,8 +115,41 @@ void sgi_hpc::scsi_run_dma(int ch) {
     case CH_XFER:
       while(d.count != 0 && s->scsi && s->scsi->drq_pending()) {
         uint8_t *p = s->mem.get_raw_ptr(d.cbp);
-        if(d.to_device) s->scsi->dma_w(*p);
-        else            *p = s->scsi->dma_r();
+        if(d.to_device) {
+          s->scsi->dma_w(*p);
+        } else {
+          /* SPEC_DMA: model r9999 OOO speculation -- pull this DMA-target line
+           * into cache (PRE-DMA DRAM contents) before the DMA overwrites DRAM,
+           * so a stale speculative copy exists that IRIX never invalidates. */
+          static const bool g_spec = getenv("SPEC_DMA") != nullptr;
+          if(g_spec && g_cmodel) { g_cmodel->spec_fill((uint32_t)d.cbp); }
+          *p = s->scsi->dma_r();                                   /* DMA -> DRAM (post-DMA) */
+          /* COHERENT_DMA: the fix -- snoop-invalidate the written line so the
+           * stale speculative copy cannot survive to the next CPU read. */
+          static const bool g_coh = getenv("COHERENT_DMA") != nullptr;
+          if(g_coh && g_cmodel) { g_cmodel->snoop_inval((uint32_t)d.cbp); }
+        }
+        // WATCHLINE: at the DMA write of the crash line, is that line currently
+        // RESIDENT in the CPU cache?  resident => the CPU architecturally cached
+        // it before this DMA (page-recycling, reproducible in-order); never
+        // resident => it can only get stale via OOO speculation (unreachable here).
+        { static const bool g_wl = getenv("WATCHLINE") != nullptr;
+          if(g_wl && !d.to_device && g_cmodel &&
+             ((uint32_t)d.cbp & ~(cache_model::L1_LINE - 1)) == cache_model::WATCH_LINE) {
+            cache_model::presence pr = g_cmodel->probe((uint32_t)d.cbp);
+            fprintf(stderr, "[wl-dma] icnt=%llu pa=%08x wrote=%02x resident=%d dirty=%d %s\n",
+                    (unsigned long long)s->icnt, (uint32_t)d.cbp, *p, pr.resident, pr.dirty,
+                    pr.resident ? "(RECYCLING: cached before DMA)" : "(not cached -> needs speculation)"); }
+        }
+        // WATCHDMA: catch the DMA landing the /sbin/sh .data pointer 0x0e07bbc0 (big-endian
+        // 0e 07 bb c0) into DRAM -> pins physical(0x0e0981c4) + confirms it is DMA-paged-in.
+        { static const bool g_wdma = getenv("WATCHDMA") != nullptr;
+          if(g_wdma && !d.to_device && *p == 0xc0u && d.cbp >= 3) {
+            uint8_t *q = s->mem.get_raw_ptr(d.cbp - 3);
+            if(q[0]==0x0eu && q[1]==0x07u && q[2]==0xbbu && q[3]==0xc0u)
+              fprintf(stderr, "[dma-wr-c0] pa=%09llx icnt=%llu\n",
+                      (unsigned long long)(d.cbp - 3), (unsigned long long)s->icnt); }
+        }
         d.cbp++; d.count--;
       }
       if(d.count == 0) { d.state = CH_DESC_DONE; progress = true; }
@@ -248,6 +282,26 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
    * localtime() is read fresh per access; the few reads of a full clock snapshot
    * land within microseconds of each other, so the fields stay coherent. */
   else if(offs >= 0x60000 and offs <= 0x6002f) {
+    /* HENNY-MATCH: under DETTIME, return the henny FPGA RTL's FROZEN ds1386 date
+     * (rtl/hpc3.sv: 2030-01-01 00:00:00, dow=1) bit-exactly, so the golden ISS takes
+     * the SAME date-dependent reconfigure path as silicon. IRIX rtodc() (IP22.c:3617-3644)
+     * decodes the BCD year as year = 1940 + bcd, with a pivot: bcd<45 adds 30 (so bcd
+     * 00-44 -> 1970-2014, bcd 45-99 -> 1985-2039). BCD 0x90 = 90 >= 45 -> 1940+90 = 2030.
+     * 2030 is deliberately AFTER the clean image's ~2026-06 /var/sysgen mtimes, so a
+     * reconfigure writes /unix with mtime > sysgen and IRIX reconfigures ONCE, then skips
+     * it on every later boot -- no disk backdating needed. month/date default 1. */
+    static const bool g_det = getenv("DETTIME") != nullptr;
+    if(g_det) {
+      uint8_t hv;
+      switch(offs) {
+      case 0x60018: hv = 0x01; break;  /* day-of-week = 1 */
+      case 0x60020: hv = 0x01; break;  /* date = 1st */
+      case 0x60024: hv = 0x01; break;  /* month = January */
+      case 0x60028: hv = 0x90; break;  /* year BCD 90 -> IRIX rtodc 1940+90 = 2030 (matches hpc3.sv) */
+      default:      hv = 0x00; break;  /* sec/min/hour/cmd = 0 (BCD 00) */
+      }
+      return (uint32_t)hv << 24;
+    }
     time_t now = rtc_now(s);
     struct tm lt; localtime_r(&now, &lt);
     auto bcd = [](int n) -> uint8_t { return (uint8_t)(((n / 10) << 4) | (n % 10)); };
