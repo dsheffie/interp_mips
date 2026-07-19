@@ -33,7 +33,7 @@ class cache_model {
 public:
   /* geometry the OS was built for */
   static const uint32_t L1_LINE = 32;                 /* primary line */
-  static const uint32_t L1_SIZE = 16u * 1024u;        /* 16 KB primary D$ */
+  static const uint32_t L1_SIZE = 128u * 1024u;       /* EXPERIMENT: L2-size (128KB) -- IRIX still believes 16KB (Config), so its Index sweep under-covers + lines survive far longer than a 16KB L1 */
   static const uint32_t L1_SETS = L1_SIZE / L1_LINE;  /* 512 (direct-mapped) */
   static const uint32_t L1_OFF  = L1_LINE - 1;
 
@@ -83,8 +83,34 @@ public:
   uint64_t n_stale = 0;
   void report_stale(uint32_t pa, uint8_t cached, uint8_t dram);   /* .cc: has g_cur_pc */
 
+  /* --- crash-line timeline probe (WATCHLINE env): is phys 0x0086d81c0 ever
+   * ARCHITECTURALLY cached (fill/load/store) before a stale read?  resident at
+   * DMA time => page-recycling; never resident => speculation (in-order ISS
+   * can't reproduce). --- */
+  static const uint32_t WATCH_LINE = 0x0086d81c0u;   /* 32B line holding /sbin/sh .data ptr @0x0086d81c4 */
+  struct presence { bool resident; bool dirty; uint8_t cached; };
+  presence probe(uint32_t pa) {
+    uint32_t st = set_of(pa), tg = tag_of(pa);
+    cline &l = l1[st];
+    if(l.valid && l.tag == tg) { return {true, l.dirty, l.data[pa & L1_OFF]}; }
+    return {false, false, 0};
+  }
+  void watch(uint32_t pa, const char *ev);   /* .cc: logs crash-line cache events */
+
+  /* --- speculation + coherent-DMA model (SPEC_DMA / COHERENT_DMA env) ---
+   * spec_fill: the OOO core may speculatively pull a DMA-target line into cache
+   * with the PRE-DMA DRAM contents before the DMA lands.  Fill it clean (a
+   * speculative READ) only if not already resident (don't clobber a live line).
+   * snoop_inval: the coherent-DMA fix -- when the DMA writes a line, drop any
+   * cached copy so the stale speculative fill can't survive. */
+  uint64_t n_specfill = 0, n_snoopinv = 0;
+  void spec_fill(uint32_t pa)   { presence pr = probe(pa); if(!pr.resident) { fill(pa); n_specfill++; } }
+  void snoop_inval(uint32_t pa) { uint32_t st = set_of(pa); cline &l = l1[st];
+                                  if(l.valid && l.tag == tag_of(pa)) { l.valid = false; n_snoopinv++; } }
+
   /* CPU cached byte access (get/set route here through cm_load/cm_store) */
   void cload(uint32_t pa, void *dst, int n) {
+    watch(pa, "load");
     uint8_t *d = static_cast<uint8_t *>(dst);
     for(int i = 0; i < n; i++) {
       cline &l = fill(pa + i);
@@ -101,6 +127,7 @@ public:
     n_cload++;
   }
   void cstore(uint32_t pa, const void *src, int n) {
+    watch(pa, "store");
     const uint8_t *s = static_cast<const uint8_t *>(src);
     for(int i = 0; i < n; i++) {
       cline &l = fill(pa + i);

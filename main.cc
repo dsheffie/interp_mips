@@ -275,6 +275,23 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "[ldbase] icnt=%lu pc=%08x r15=%016llx va=%016llx\n",
               (unsigned long)s->icnt, (uint32_t)s->pc,
               (unsigned long long)s->gpr[15], (unsigned long long)(s->gpr[15] + 60));
+    { /* FIRSTUSER: log each time execution enters a NEW user-mode (KSU=2) program
+       * page -- to locate the first o32 user program for a pre-crash checkpoint. */
+      static const bool g_fu = getenv("FIRSTUSER") != nullptr;
+      if(g_fu) {
+        uint32_t sr = s->cpr0[CPR0_SR];
+        bool user = ((sr & 0x18u) == 0x10u) && !(sr & 0x6u);   /* KSU=2, !EXL, !ERL */
+        if(user && (uint32_t)s->pc < 0x80000000u) {
+          static uint32_t last_page = 0xffffffffu;
+          uint32_t page = (uint32_t)s->pc & 0xfff00000u;
+          if(page != last_page) {
+            fprintf(stderr, "[FIRSTUSER] icnt=%lu pc=%08x sr=%08x\n",
+                    (unsigned long)s->icnt, (uint32_t)s->pc, sr);
+            last_page = page;
+          }
+        }
+      }
+    }
     execMips(s);
     if(g_htrace) {   /* kernel TLB-Mod handler trace: executed pc + kernel scratch + arg regs */
       fprintf(stderr, "[HTRACE] pc=%08x k0=%016llx k1=%016llx a0=%016llx a1=%016llx a2=%016llx a3=%016llx cause=%02x epc=%08x sr=%08x\n",
@@ -313,6 +330,7 @@ int main(int argc, char *argv[]) {
   if(globals::pctrace) fclose(globals::pctrace);
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
   std::cout << (static_cast<double>(s->icnt) / t0)*1e-6 << " minsns/sec\n";
+  { extern void l1_alias_report(); l1_alias_report(); }   /* L1_ALIAS VIPT alias-freq sweep */
   if(!retire_name.empty() && !rt.empty()) {
     std::ofstream ofs(retire_name, std::ios::binary);
     boost::archive::binary_oarchive oa(ofs);

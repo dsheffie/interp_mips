@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -221,6 +222,9 @@ static uint64_t g_ty_timer=0, g_ty_tlbmiss=0, g_ty_idle_tlbmiss=0, g_ty_timer_in
 static inline bool ty_in_tlbmiss(uint32_t pc){ return pc>=0x880196bcu && pc<=0x880196e0u; }
 static inline bool ty_idle_sp(uint32_t sp){ return (sp & 0xfffff000u)==0x8834a000u; }
 void maybe_take_interrupt(state_t *s) {
+  { static const unsigned long g_pcs = getenv("PCSAMPLE") ? strtoul(getenv("PCSAMPLE"),0,0) : 0;
+    if(g_pcs && (s->icnt % g_pcs) == 0)
+      fprintf(stderr, "[pcsample] icnt=%llu pc=%08x\n", (unsigned long long)s->icnt, (uint32_t)s->pc); }
   if(s->scc) s->scc->tick(1);                          /* serial TX timing: keep exact */
   /* CP0 Count is architecturally visible and the kernel's delay/clock
    * calibration reads it, so advance it (and latch the timer IP7) every
@@ -232,12 +236,66 @@ void maybe_take_interrupt(state_t *s) {
   /* SH_PROBE=<pc>: golden a3/a4/a0 at a /sbin/sh insn (compare vs the RTL fault:
    * RTL faulted sw a4,24(a3) @0x0e033b58 with a3=0x0e0a6ee8. a3 same+store OK -> TLB bug;
    * a3 different -> a3 register corruption in the RTL. */
+  { static const bool g_cp = getenv("CRASHPROBE") != nullptr;
+    if(g_cp && (uint32_t)s->pc == 0x0e6818b4u)   /* silicon crash store: sw s0,0(t1) */
+      fprintf(stderr,"[crash] pc=0e6818b4 t1(addr)=%08x a0=%08x Status.FR=%u Status=%08x icnt=%llu\n",
+        (uint32_t)s->gpr[9],(uint32_t)s->gpr[4],((s->cpr0[12]>>26)&1u),s->cpr0[12],(unsigned long long)s->icnt);
+    /* golden FP capacity-sizer operands: at add.d f5,f6,f4 (0e636964) */
+    if(g_cp && (uint32_t)s->pc == 0x0e636964u) {
+      double f4=*((double*)(s->cpr1+4)), f6=*((double*)(s->cpr1+6));
+      fprintf(stderr,"[capfp] add.d: f6(const)=%.17g f4=%.17g -> f6+f4=%.17g trunc=%d icnt=%llu\n",
+        f6, f4, f6+f4, (int)(f6+f4), (unsigned long long)s->icnt);
+    }
+    /* golden FP grow intermediates: after mul.d f5,f4,f30 (0e774174) */
+    if(g_cp && (uint32_t)s->pc == 0x0e77417cu) {
+      double f4=*((double*)(s->cpr1+4)), f5=*((double*)(s->cpr1+5));
+      double f30=*((double*)(s->cpr1+30)), f28=*((double*)(s->cpr1+28));
+      fprintf(stderr,"[fp] t1(gpr9)=%d oldcap(t0)=%u f4=%g f30(ratio)=%g f5=t1xf30=%g f28(floor)=%g icnt=%llu\n",
+        (int)(int32_t)s->gpr[9], (uint32_t)s->gpr[8], f4, f30, f5, f28, (unsigned long long)s->icnt);
+    }
+    /* golden reference at the array-insert grow-test (idx=a2, capacity=t0 both live) */
+    if(g_cp && (uint32_t)s->pc == 0x0e774158u) {
+      uint32_t idx=(uint32_t)s->gpr[6], cap=(uint32_t)s->gpr[8], s4=(uint32_t)s->gpr[20];
+      fprintf(stderr,"[ref] s4=%08x idx=%u cap=%u %s tbl=%08x icnt=%llu\n",
+        s4, idx, cap, (idx>cap?"OOB!":"ok"), (uint32_t)s->gpr[2], (unsigned long long)s->icnt);
+    }
+  }
+  { static const bool g_bp = getenv("BASE_PROBE") != nullptr;
+    if(g_bp && (uint32_t)s->pc == 0x0e7742b8u)
+      { fprintf(stderr,"[GROW] base(v0)=%08x cap(t0)=%u cap(s7)=%u s5=%08x s4=%08x icnt=%llu\n",(uint32_t)s->gpr[2],(uint32_t)s->gpr[8],(uint32_t)s->gpr[23],(uint32_t)s->gpr[21],(uint32_t)s->gpr[20],(unsigned long long)s->icnt); }
+    if(g_bp && (uint32_t)s->pc == 0x0e7742e0u)
+      { uint32_t idx=(uint32_t)s->gpr[6], cnt=(uint32_t)s->gpr[23]; fprintf(stderr,"[BASEPROBE] base=%08x idx=%u count(s7)=%u %s icnt=%llu\n",(uint32_t)s->gpr[2],idx,cnt, idx>=cnt?"OOB!":"ok",(unsigned long long)s->icnt); }
+  }
   { static const char* shp = getenv("SH_PROBE");
     static const uint32_t g_shp = shp ? (uint32_t)strtoul(shp,0,0) : 0;
     if(g_shp && (uint32_t)s->pc == g_shp)
       fprintf(stderr, "[SHPROBE] pc=%08x a0=%016llx a3=%016llx a4=%016llx sp=%016llx icnt=%llu\n",
         (uint32_t)s->pc, (unsigned long long)s->gpr[4], (unsigned long long)s->gpr[7],
         (unsigned long long)s->gpr[8], (unsigned long long)s->gpr[29], (unsigned long long)s->icnt); }
+
+  /* SHLOOP: golden trace of the /sbin/sh list-walk (0x0e005974..0x0e005998) that the RTL
+   * SIGSEGVs on -- e00597c `lw v1,0(v1)` faults with v1=0.  Logged BEFORE each loop pc, so
+   * at e00597c v1(gpr[3]) is the pointer about to be deref'd; interp never faults so v1!=0
+   * here.  Compare the a1(gpr[5]) sequence + v1 vs the RTL SHLOOP: same a1 + non-zero v1 =>
+   * RTL load returned 0 (data bug); a1 diverges / extra iteration => a1/a0 corruption. */
+  { static const bool g_shloop = getenv("SHLOOP") != nullptr;
+    uint32_t pc = (uint32_t)s->pc;
+    if(g_shloop && (pc==0x0e005974||pc==0x0e005978||pc==0x0e00597c||pc==0x0e00598c||pc==0x0e005990||pc==0x0e005998))
+      fprintf(stderr, "[shloop] pc=%08x v0=%08x v1=%08x a0=%08x a1=%08x icnt=%llu\n",
+        pc, (uint32_t)s->gpr[2], (uint32_t)s->gpr[3], (uint32_t)s->gpr[4], (uint32_t)s->gpr[5],
+        (unsigned long long)s->icnt);
+    // FIRST control-flow divergence loop @0x0e03ab50 (NULL-term array walk): s0=r16, v0=r2 (*s0), s1=r17.
+    if(g_shloop && (pc==0x0e03ab50||pc==0x0e03ab64||pc==0x0e03ab68))
+      fprintf(stderr, "[shdiv] pc=%08x s0=%08x v0=%08x s1=%08x a1=%08x icnt=%llu\n",
+        pc, (uint32_t)s->gpr[16], (uint32_t)s->gpr[2], (uint32_t)s->gpr[17], (uint32_t)s->gpr[5],
+        (unsigned long long)s->icnt); }
+
+  /* SHTRACE: dump every /sbin/sh (0x0e000000..0x0e100000) userspace PC, to diff the golden
+   * invocation's PC stream vs the RTL crashing invocation and find the FIRST divergence. */
+  { static const bool g_shtrace = getenv("SHTRACE") != nullptr;
+    uint32_t pc2 = (uint32_t)s->pc;
+    if(g_shtrace && pc2>=0x0e000000u && pc2<0x0e100000u)
+      fprintf(stderr, "[sht] %08x\n", pc2); }
 
   static const bool g_tally = getenv("TLBTALLY") != nullptr;
   if(g_tally) {
@@ -280,6 +338,15 @@ void maybe_take_interrupt(state_t *s) {
         if(ty_idle_sp((uint32_t)s->gpr[29])) { g_ty_timer_idle++;
           fprintf(stderr, "[tally] *** TIMER-IN-IDLE-TLBMISS EPC=%08x sp=%08x icnt=%lu ***\n", (uint32_t)s->pc,(uint32_t)s->gpr[29],(unsigned long)s->icnt); } }
     }
+    { static const bool g_ipprobe = getenv("IPPROBE") != nullptr;
+      if(g_ipprobe) {
+        uint32_t pc = (uint32_t)s->pc;
+        if(pc >= 0x880034fcu && pc <= 0x88003600u) {   /* sthread_launch region */
+          unsigned ip = (unsigned)(((cause & sr) >> 8) & 0xff);
+          fprintf(stderr, "[ipprobe] INT @pc=%08x  IP=%02x (b7=timer b2=INT2/SCSI b1=SW1 b0=SW0)  icnt=%lu\n",
+                  pc, ip, (unsigned long)s->icnt);
+        }
+      } }
     set_exc_pc(s);
     raise_common(s, 0u);                               /* ExcCode 0 = Int */
   }
@@ -508,6 +575,10 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
   static const bool tlbdbg = getenv("TLBDBG") != nullptr;
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   tlb_set_fault_state(s, va);
+  { /* FAULTLOG: per-fault (cause,badaddr,pc) so re-fault counts can be compared vs the RTL. */
+    static const bool fl = getenv("FAULTLOG") != nullptr;
+    if(fl) fprintf(stderr, "[fault] cause=%u badaddr=%08x pc=%08x refill=%d icnt=%lu\n",
+                   exccode, (uint32_t)va, (uint32_t)s->pc, is_refill?1:0, (unsigned long)s->icnt); }
   static const bool kptedbg = getenv("KPTEDBG") != nullptr;
   if((uint32_t)va == 0xff800000u && kptedbg) {
     static int once = 0;
@@ -554,9 +625,151 @@ struct utlb_entry { uint64_t vpn, asid; uint32_t ppn; bool dirty, valid, cached;
 static utlb_entry g_utlb[UTLB_SZ];
 static inline void utlb_flush() { for(auto &e : g_utlb) e.valid = false; }
 
-static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
+/* TLBDUP (env-gated): after a TLBWI/TLBWR installs entry `idx`, scan for ANOTHER
+ * slot that ALSO matches on VPN2[39:13]+R[63:62]+(ASID or both-Global), with both
+ * pages considered valid iff V0|V1 -- i.e. the r9999 CAM would light up two match
+ * lines.  IRIX is duplicate-safe by design (immu.h: probe-first tlbdropin + blind
+ * tlbwr only on a genuine refill), so if the golden ISS NEVER fires this while the
+ * RTL does, the duplicate is an r9999 artifact (a spurious refill on a resident
+ * VA), confirming find_lowest_set_bit neutralizes rather than merely papers over.
+ * Mirrors henry_tb.cpp's TLBDUP so the two are apples-to-apples. */
+static void iss_tlbdup_check(state_t *s, uint32_t idx, const char *how) {
+  static const bool en = getenv("TLBDUP") != nullptr;
+  if(!en) return;
+  uint64_t ehi = s->tlb[idx].entry_hi, lo0 = s->tlb[idx].entry_lo0, lo1 = s->tlb[idx].entry_lo1;
+  uint64_t vpn2 = (ehi >> 13) & 0x7ffffffULL, r = (ehi >> 62) & 0x3ULL, asid = ehi & 0xffULL;
+  bool gl = (lo0 & 1u) && (lo1 & 1u);
+  bool vld = ((lo0 >> 1) & 1u) || ((lo1 >> 1) & 1u);
+  if(!vld) return;                                   /* skip invalid placeholder writes */
+  for(int j = 0; j < state_t::NUM_TLB_ENTRIES; j++) {
+    if((uint32_t)j == idx) continue;
+    uint64_t jhi = s->tlb[j].entry_hi, jl0 = s->tlb[j].entry_lo0, jl1 = s->tlb[j].entry_lo1;
+    bool jvld = ((jl0 >> 1) & 1u) || ((jl1 >> 1) & 1u);
+    if(!jvld) continue;
+    bool jgl = (jl0 & 1u) && (jl1 & 1u);
+    bool va_match = (((jhi >> 13) & 0x7ffffffULL) == vpn2) && (((jhi >> 62) & 0x3ULL) == r);
+    bool ai_match = ((jhi & 0xffULL) == asid) || (gl && jgl);
+    if(va_match && ai_match)
+      fprintf(stderr, "[ISS-TLBDUP] %s vpn2=%llx r=%llu asid=%02llx : entry %u (lo0=%llx lo1=%llx) == entry %d (lo0=%llx lo1=%llx) icnt=%llu\n",
+        how, (unsigned long long)vpn2, (unsigned long long)r, (unsigned long long)asid,
+        idx, (unsigned long long)lo0, (unsigned long long)lo1,
+        j, (unsigned long long)jl0, (unsigned long long)jl1, (unsigned long long)s->icnt);
+  }
+}
+
+/* ---- L1 VIPT alias-frequency instrument (env L1_ALIAS) --------------------
+ * Measures how often the SAME physical line is resident under two DIFFERENT VA
+ * alias-indices -- i.e. how often IRIX's page coloring fails to keep a VIPT L1
+ * alias-free.  That count IS the back-invalidate rate an inclusive-L2 alias-
+ * resolution scheme would incur at a given L1 size.  One run sweeps several L1
+ * sizes (16B lines, direct-mapped = r9999 L1D geometry; a 4KB L1's index is a
+ * subset of the 4KB page offset so it can never alias -> sanity 0).  Fed every
+ * cacheable DATA access (va,pa) from va_translate. */
+namespace {
+  struct alias_l1 {
+    static const uint32_t NOVAL = 0xffffffffu;
+    uint32_t kb = 0, lg_sets = 0;
+    std::vector<uint32_t> tag;               /* resident line_pa per set (NOVAL = empty) */
+    uint64_t n_back_inval = 0;
+    void init(uint32_t kb_) {
+      kb = kb_;
+      uint32_t sets = (kb * 1024u) / 16u;    /* 16B lines */
+      lg_sets = 0; while((1u << lg_sets) < sets) { lg_sets++; }
+      tag.assign(1u << lg_sets, NOVAL);
+    }
+    void access(uint32_t va, uint32_t pa) {
+      uint32_t set = (va >> 4) & ((1u << lg_sets) - 1);
+      uint32_t lpa = pa >> 4;
+      if(tag[set] == lpa) { return; }        /* hit at this alias-index */
+      if(lg_sets > 8) {                      /* >4KB: alias index bits (>= bit 8) exist */
+        uint32_t inpage = set & 0xffu;       /* page-offset index bits [11:4] = 256 lines/4KB page */
+        for(uint32_t a = 0; a < (1u << (lg_sets - 8)); a++) {
+          uint32_t aset = inpage | (a << 8);
+          if(aset != set && tag[aset] == lpa) { n_back_inval++; tag[aset] = NOVAL; }
+        }
+      }
+      tag[set] = lpa;                        /* fill (conflict-evict implicit) */
+    }
+  };
+  bool g_alias_init = false, g_alias_on = false;
+  std::vector<alias_l1> g_alias_d, g_alias_i;   /* D-side and I-side sweeps */
+  uint64_t g_alias_d_n = 0, g_alias_i_n = 0;
+  inline void alias_ensure_init() {
+    if(g_alias_init) { return; }
+    g_alias_init = true;
+    if(getenv("L1_ALIAS")) {
+      g_alias_on = true;
+      for(uint32_t kb : {4u, 8u, 16u, 32u, 64u}) {
+        alias_l1 md; md.init(kb); g_alias_d.push_back(md);
+        alias_l1 mi; mi.init(kb); g_alias_i.push_back(mi);
+      }
+    }
+  }
+  inline void alias_access(uint32_t va, uint32_t pa) {         /* D-side (load/store) */
+    alias_ensure_init(); if(!g_alias_on) { return; }
+    g_alias_d_n++; for(auto &m : g_alias_d) { m.access(va, pa); }
+  }
+  inline void alias_fetch_access(uint32_t va, uint32_t pa) {   /* I-side (fetch) */
+    alias_ensure_init(); if(!g_alias_on) { return; }
+    g_alias_i_n++; for(auto &m : g_alias_i) { m.access(va, pa); }
+  }
+}
+void l1_alias_report() {
+  if(!g_alias_on) { return; }
+  auto dump = [](const char *side, std::vector<alias_l1> &v, uint64_t n) {
+    fprintf(stderr, "\n[L1_ALIAS] %s-side cacheable accesses = %llu\n", side, (unsigned long long)n);
+    for(auto &m : v) {
+      fprintf(stderr, "[L1_ALIAS]  %s %2u KB (%u sets, %u alias bits): back-invalidates = %llu  (%.3e/access; 1 per %.0f)\n",
+              side, m.kb, 1u << m.lg_sets, (m.lg_sets > 8 ? m.lg_sets - 8 : 0),
+              (unsigned long long)m.n_back_inval,
+              n ? (double)m.n_back_inval / (double)n : 0.0,
+              m.n_back_inval ? (double)n / (double)m.n_back_inval : 0.0);
+    }
+  };
+  dump("D", g_alias_d, g_alias_d_n);
+  dump("I", g_alias_i, g_alias_i_n);
+}
+
+static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
   uint32_t hi32 = (uint32_t)(va >> 32);
   uint32_t lo32 = (uint32_t)va;
+
+  /* WATCHC4: log every store/load to the /sbin/sh crash slot 0x0e0981c4 (node-1b8 +12 field
+   * that the RTL misreads as 0 vs golden 0x0e07bbc0) with pc+icnt, to find the build store's
+   * PC and the store->crash-load instruction distance. */
+  { static const bool g_watchc4 = getenv("WATCHC4") != nullptr;
+    // STORES to the whole node-1b8 region [0e0981b8,0e0981c8) (catches sd@c0, sw@c4, unaligned,
+    // or a block copy), plus the exact-c4 loads for the store->load distance.
+    if(g_watchc4 && op == tlb_op::store && lo32 >= 0x0e0981b8u && lo32 < 0x0e0981c8u)
+      fprintf(stderr, "[watchc4] STORE pc=%08x va=%08x icnt=%llu\n",
+        (uint32_t)s->pc, lo32, (unsigned long long)s->icnt);
+    if(g_watchc4 && op == tlb_op::load && lo32 == 0x0e0981c4u)
+      fprintf(stderr, "[watchc4] load  pc=%08x va=%08x icnt=%llu\n",
+        (uint32_t)s->pc, lo32, (unsigned long long)s->icnt); }
+
+  /* IDXWR: shadow last-writer-PC per word (keyed on VA), to find what STORES the
+   * array-insert index mem[s4] loaded at 0e774150.  On each store record the storing
+   * PC for the base word (+next word to cover sd); at the idx-load print the writer. */
+  { static const bool g_idxwr = getenv("IDXWR") != nullptr;
+    static std::unordered_map<uint32_t,uint32_t> lastwr;
+    if(g_idxwr) {
+      if(op == tlb_op::store) {
+        lastwr[lo32 & ~3u] = (uint32_t)s->pc;   /* exact word only (no +4 over-record) */
+      }
+      if(op == tlb_op::load && (uint32_t)s->pc == 0x0e774150u) {
+        auto it = lastwr.find(lo32 & ~3u);
+        fprintf(stderr, "[idxwr] idx-load va=%08x last_writer_pc=%08x icnt=%llu\n",
+          lo32, (it==lastwr.end()?0xffffffffu:it->second), (unsigned long long)s->icnt);
+      }
+      /* CAPWR: at the capacity load (lw t0,4(v0) @0e774154) lo32 = table+4 = the
+       * capacity field; report who last WROTE it -> golden's capacity-sizing site. */
+      if(op == tlb_op::load && (uint32_t)s->pc == 0x0e774154u) {
+        auto it = lastwr.find(lo32 & ~3u);
+        fprintf(stderr, "[capwr] cap-load va=%08x last_writer_pc=%08x icnt=%llu\n",
+          lo32, (it==lastwr.end()?0xffffffffu:it->second), (unsigned long long)s->icnt);
+      }
+    }
+  }
 
   /* cache_model: default this access to uncached; the cached returns below set it.
    * Never cache an instruction fetch (D-cache-only model for now). */
@@ -669,6 +882,23 @@ static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   uint32_t code = (op == tlb_op::store) ? 3u : 2u;
   raise_tlb(s, va, code, /*is_refill=*/true, xtlb);
   return 0;
+}
+
+/* wrapper: feed every successful cacheable DATA access (va,pa) to the VIPT
+ * alias-frequency instrument, then return the PA unchanged. */
+static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
+  uint32_t pa = va_translate_inner(s, va, op);
+  if(!s->tlb_fault) {
+    if(op != tlb_op::fetch) {
+      if(s->mem.cache_active) { alias_access((uint32_t)va, pa); }   /* D-side */
+    } else {
+      /* I-side: cacheable fetch = not the kseg1 uncached window (PROM) */
+      uint32_t lo = (uint32_t)va, hi = (uint32_t)(va >> 32);
+      bool kseg1 = (hi == 0 || hi == 0xffffffffu) && ((lo >> 29) == 5u);
+      if(!kseg1) { alias_fetch_access(lo, pa); }
+    }
+  }
+  return pa;
 }
 
 /* Read-only address probe for debug knobs: returns true and sets *pa if va maps
@@ -1133,6 +1363,13 @@ void _sc(uint32_t inst, state_t *s) {
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
+  { static const bool g_t = getenv("LLSC_TRACE")!=nullptr; static uint64_t nk=0,nu=0;
+    bool user = ((uint32_t)s->pc) < 0x80000000u;
+    if(user) nu++; else nk++;
+    if(g_t && (user || ((nk&0xffff)==0)))
+      fprintf(stderr,"[SC] %s pc=%08x ea=%08x val=%08x icnt=%llu (user=%llu kern=%llu)\n",
+        user?"USER":"kern",(uint32_t)s->pc,(uint32_t)(s->gpr[rs]+imm),(uint32_t)s->gpr[rt],
+        (unsigned long long)s->icnt,(unsigned long long)nu,(unsigned long long)nk); }
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
   s->mem.set<int32_t>(ea,  bswap<EL>(static_cast<int32_t>(s->gpr[rt])));
@@ -2170,6 +2407,16 @@ void execMips(state_t *s) {
   uint32_t ipa = va_translate(s, (uint64_t)s->pc, tlb_op::fetch);
   if(s->tlb_fault) return;   /* instruction-fetch TLB miss -> vectored */
   uint32_t inst = bswap<EL>(mem.get<uint32_t>(ipa));
+  { static const bool g_dis = getenv("DISPROBE") != nullptr;
+    static uint32_t seen[128]; static int nseen=0;
+    uint32_t pc32=(uint32_t)s->pc;
+    bool inrange = (pc32>=0x0e636948u && pc32<0x0e6369c0u) || (pc32>=0x0e635d00u && pc32<0x0e635d60u);
+    if(g_dis && inrange) {
+      bool dup=false; for(int k=0;k<nseen;k++) if(seen[k]==pc32){dup=true;break;}
+      if(!dup && nseen<128){ seen[nseen++]=pc32;
+        fprintf(stderr,"[dis] %08x  %08x\n", pc32, inst); }
+    }
+  }
   if(globals::trace_retirement and false) {
     std::cout << std::hex
 	      << "cosim "
@@ -2804,6 +3051,7 @@ void execMips(state_t *s) {
 	    if(idx==0 && getenv("TLBTALLY")) { static uint64_t pv=~0ull; uint64_t c=s->tlb[0].entry_lo1;
 	      if(c!=pv){ fprintf(stderr,"[iss-idx0-wr] hi=%llx lo0=%llx lo1=%llx v1=%d icnt=%lu\n",(unsigned long long)s->tlb[0].entry_hi,(unsigned long long)s->tlb[0].entry_lo0,(unsigned long long)c,(int)((c>>1)&1),(unsigned long)s->icnt); pv=c; } }
 	    assert(s->tlb[idx].page_mask == 0);
+	    iss_tlbdup_check(s, idx, "tlbwi");
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
 	  static const bool tlblog = getenv("TLBLOG") != nullptr;
@@ -2820,7 +3068,8 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo0 = s->cpr0_64[CPR0_ENTRYLO0];
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
-	    assert(s->tlb[idx].page_mask == 0);	    
+	    assert(s->tlb[idx].page_mask == 0);
+	    iss_tlbdup_check(s, idx, "tlbwr");
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
 	  /* Decrement Random, wrap to NUM_TLB_ENTRIES-1 when it reaches Wired */
@@ -2941,8 +3190,27 @@ void execMips(state_t *s) {
 	    }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
-	  if(rd == CPR0_COMPARE)   /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
+	  if(rd == CPR0_COMPARE) { /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
 	    s->cpr0[CPR0_CAUSE] &= ~(1u << 15);
+	    /* EXPERIMENT (env TIMER_SCALE=N): stretch each timer period N-fold by
+	     * scaling the just-written interval (Compare-Count), leaving Count itself
+	     * untouched so clock calibration (get_r4k_counter) still reads sanely.
+	     * Question: how infrequent can timer IRQs get and still boot IRIX? */
+	    static const unsigned long g_timer_scale =
+	      getenv("TIMER_SCALE") ? strtoul(getenv("TIMER_SCALE"), 0, 0) : 1;
+	    if(g_timer_scale > 1) {
+	      uint32_t cnt = s->cpr0[CPR0_COUNT];
+	      uint32_t interval = s->cpr0[CPR0_COMPARE] - cnt;   /* target - count */
+	      /* Only stretch the LARGE periodic scheduler tick (~millions of Count).
+	       * get_r4k_counter's clock calibration arms a SHORT interval (~4096) and
+	       * spins a bounded countdown waiting for it -- scaling that would break
+	       * calibration (the boot cliff at scale>=16).  Leave short intervals alone. */
+	      if(interval > 100000u) {
+	        s->cpr0[CPR0_COMPARE]    = cnt + interval * (uint32_t)g_timer_scale;
+	        s->cpr0_64[CPR0_COMPARE] = s->cpr0[CPR0_COMPARE];
+	      }
+	    }
+	  }
 	  /* EXPERIMENT (env MTC0_IRQ_PC=<hexpc>): replicate the r9999-precise
 	   * MTC0->Status[IE] CP0 hazard *violation* -- inject a timer IP[7] right
 	   * after the mtc0 that writes c0_sr at the given PC, so the timer fires in
@@ -3174,6 +3442,17 @@ void execMips(state_t *s) {
 	  uint32_t cop = (inst >> 16) & 31;       /* [20:18]=op  [17:16]=cache(0=I,1=D,2=SI,3=SD) */
 	  int16_t  himm = (int16_t)(inst & 0xffff);
 	  uint64_t va  = s->gpr[rs] + (int32_t)himm;
+	  { static const bool g_watchinvl = getenv("WATCHINVL") != nullptr;
+	    if(g_watchinvl) {
+	      uint32_t wpa = 0; bool wm = tlb_probe_ro(s, va, &wpa);
+	      if(wm && ((wpa & ~0x1fu) == 0x0086d81c0u)) {
+		fprintf(stderr, "[invl] icnt=%llu pc=%08x cache=%u op=%u va=%016llx pa=%08x\n",
+			(unsigned long long)s->icnt, (uint32_t)s->pc,
+			(unsigned)(cop & 3), (unsigned)((cop >> 2) & 7),
+			(unsigned long long)va, wpa);
+	      }
+	    }
+	  }
 	  if(g_cache_dbg) {
 	    uint32_t dbgpa = 0; bool mapped = tlb_probe_ro(s, va, &dbgpa);
 	    fprintf(stderr, "[cache] icnt=%llu pc=%08x op=0x%02x va=%016llx pa=%08x set=%u\n",

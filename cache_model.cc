@@ -24,3 +24,15 @@ void    cache_model::dram_wr(uint32_t pa, uint8_t v) { *dram.get_raw_ptr(pa) = v
 
 void cm_load (cache_model *cm, uint32_t pa, void *dst, int n)       { cm->cload(pa, dst, n); }
 void cm_store(cache_model *cm, uint32_t pa, const void *src, int n) { cm->cstore(pa, src, n); }
+
+void cache_model::watch(uint32_t pa, const char *ev) {
+  static const bool en = getenv("WATCHLINE") != nullptr;
+  if(!en) { return; }
+  if((pa & ~L1_OFF) != WATCH_LINE) { return; }
+  presence p = probe(pa);
+  uint8_t dv = dram_rd(pa);
+  fprintf(stderr, "[wl] icnt=%llu pc=%08x %-5s pa=%08x resident=%d dirty=%d cached=%02x dram=%02x %s\n",
+          (unsigned long long)g_cur_icnt, (uint32_t)g_cur_pc, ev, pa,
+          p.resident, p.dirty, p.cached, dv,
+          (p.resident && p.cached != dv) ? "<<STALE-READ" : "");
+}
