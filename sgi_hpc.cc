@@ -234,6 +234,7 @@ void sgi_hpc::enet_run_dma(int ch) {
       uint32_t desc    = d.nbdp;
       uint32_t cntinfo = rd_be32(s, desc + 4);
       if(!(cntinfo & HPCDMA_OWN)) { break; }            /* CPU still owns it: stall (retry next poll) */
+      enet_crbdp = desc;                                /* HPC now filling this descriptor (reg 0x18000) */
       uint32_t pbuf    = rd_be32(s, desc);
       uint32_t pnext   = rd_be32(s, desc + 8);
       uint32_t bufsz   = cntinfo & HPCDMA_BCNT;         /* PKT_BUF_SZ */
@@ -250,8 +251,12 @@ void sgi_hpc::enet_run_dma(int ch) {
       if(cntinfo & HPCDMA_XIE) { intstat |= 0x400u; }   /* XIE -> RX chan irq (istat bit 10) */
       {
         static const bool g_ed = getenv("ENET_DBG") != nullptr;
-        if(g_ed) fprintf(stderr, "ENET RX-DMA: wrote %u B to pbuf=%08x desc=%08x XIE=%d intstat=%08x mask0=%02x local0=%02x\n",
-                         written, pbuf, desc, (cntinfo & HPCDMA_XIE) != 0, intstat, ioc2_local_mask[0], ioc2_local0_live());
+        if(g_ed) {
+          uint8_t *fr = s->mem.get_raw_ptr(pbuf + 2);    /* frame starts after the 2-byte pad */
+          fprintf(stderr, "ENET RX-DMA: wrote %u B pbuf=%08x desc=%08x cntinfo=%08x bufsz=%u resid=%u irixlen=%d dst=%02x:%02x:%02x:%02x:%02x:%02x XIE=%d\n",
+                  written, pbuf, desc, cntinfo, bufsz, residual, 1583 - (int)residual,
+                  fr[0], fr[1], fr[2], fr[3], fr[4], fr[5], (cntinfo & HPCDMA_XIE) != 0);
+        }
       }
       d.cbp  = pbuf;
       d.nbdp = pnext;                                   /* advance around the ring */
@@ -358,6 +363,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
       r = (intstat & 0x00000c00u) ? 0x2u : 0x0u;
       break;
     case 0x15018: r = d.dmacfg; break;
+    case 0x18000: r = enet_crbdp; break;                /* CRBDP: current RX buffer descriptor ptr */
     default:      r = 0; break;
     }
     return __builtin_bswap32(r);
@@ -550,6 +556,7 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     case 0x14004: d.nbdp   = x; break;
     case 0x15000: d.bc     = x; break;
     case 0x15018: d.dmacfg = x; break;
+    case 0x18000: enet_crbdp = x; break;              /* CRBDP init (HPC updates it on RX fill) */
     case 0x15004: {                                   /* rx_ctrl(ch0)/tx_ctrl(ch1): ACTIVE = 0x200 */
       bool was_active = d.active;
       d.ctrl   = x;

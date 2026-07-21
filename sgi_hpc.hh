@@ -53,6 +53,10 @@ class sgi_hpc {
    * Same {BP,BC,DP} scatter-gather as SCSI, driving the Seeq 8003 (s->seeq)
    * instead of the WD33C93. */
   scsi_dma_t enet_dma[2];
+  /* HPC3-maintained "current RX buffer descriptor pointer" (reg 0x18000). IRIX's
+   * if_ec reads it to find which descriptor the HPC just filled; without it the
+   * driver looks in the wrong place and drops every received frame. */
+  uint32_t enet_crbdp = 0;
   uint32_t enet_poll_ctr = 0;      /* throttle the per-instruction tap read (a syscall) */
   void enet_run_dma(int ch);       /* pump the ENET descriptor walk vs the Seeq */
   /* i8254 PIT counter 2 (IP22 timer calibration; tcnt2=offs 0x598bb,
