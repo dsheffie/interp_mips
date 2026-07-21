@@ -471,6 +471,30 @@ bool gdb_mem_write(state_t *s, uint64_t va, const uint8_t *buf, uint32_t len) {
  * it is executing. Wired to SIGUSR1 in main() so the live emulator can be asked
  * "what is IRIX running right now?" from another shell (kill -USR1 <pid>). */
 void dump_current_process(state_t *s) {
+#ifdef ENABLE_O32_TRACE
+  /* interrupted PC (EPC) + RA + a scan of the kernel stack for return addresses.
+   * When SIGUSR1 lands inside an interrupt handler, EPC is the PC that was
+   * preempted (the wait loop); the stack scan gives a rough backtrace. Works even
+   * in early init where there is no current uthread. */
+  {
+    uint32_t epc = (uint32_t)s->cpr0[CPR0_EPC];
+    uint32_t ra  = (uint32_t)s->gpr[31];
+    uint32_t sp  = (uint32_t)s->gpr[29];
+    uint32_t s0 = (uint32_t)s->gpr[16];    /* lcl_intrd's interrupt descriptor ptr */
+    uint32_t hdlr = 0, lvl = 0, mbit = 0;
+    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 +  0), &hdlr);  /* handler fn */
+    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 +  8), &mbit);  /* mask bit */
+    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 + 12), &lvl);   /* local level 0/1/2 */
+    fprintf(stderr, "[spin] icnt=%lu pc=%08x epc=%08x ra=%08x s0=%08x hdlr=%08x lvl=%u mbit=%08x sp=%08x stack:",
+            (unsigned long)s->icnt, (uint32_t)s->pc, epc, ra, s0, hdlr, lvl, mbit, sp);
+    for(int i = 0; i < 96; i++) {
+      uint32_t w;
+      if(!guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(sp + i * 4), &w)) break;
+      if(w >= 0x88002180u && w < 0x882aa180u) fprintf(stderr, " %08x", w);
+    }
+    fprintf(stderr, "\n");
+  }
+#endif
   uint32_t ut, proc;
   if(!guest_rd32_be(s, 0xFFFFFFFFFFFFA014ULL, &ut) || ut == 0) {
     fprintf(stderr, "[curproc] icnt=%lu pc=%08x: no current uthread\n",
@@ -570,15 +594,117 @@ static void tlb_set_fault_state(state_t *s, uint64_t va) {
 
 /* Raise a TLB exception: Refill (no match), Invalid (V=0), or Modified.
  * is_refill picks the dedicated refill/XTLB vector when EXL==0. */
+/* TRACEWIN_SEGV: freeze the retire-trace ring the instant an o32 (user) process
+ * faults to a wild address (near-null or a kernel address = the classic bad-pointer
+ * SEGV), so the ring holds the o32 run-up and not the post-crash delayloop. */
+static bool g_ring_frozen = false;
+
 static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
                       bool is_refill, bool is_xtlb) {
   static const bool tlbdbg = getenv("TLBDBG") != nullptr;
+#ifdef ENABLE_O32_TRACE
+  { static const bool seg_trig = getenv("TRACEWIN_SEGV") != nullptr;
+    static uint64_t seg_floor = getenv("TRACEWIN_SEGV_FLOOR") ? strtoull(getenv("TRACEWIN_SEGV_FLOOR"),0,0) : 0;
+    /* A user process faulting to a KERNEL address (>=0x80000000, always an AdE bug)
+     * or the null page (<0x1000) = the classic bad-pointer SEGV. Floor skips early boot.
+     * Gate on USER mode (KSU==2 & !EXL & !ERL) -- raise_tlb runs before EXL is set, so
+     * Status still reflects the faulting context. This catches the o32 process's OWN
+     * fault (pmie) and excludes the downstream kernel derail (pc=0/ra=0, kernel mode). */
+    uint32_t seg_sr = s->cpr0[CPR0_SR];
+    bool seg_umode = (((seg_sr >> 3) & 3u) == 2u) && !(seg_sr & SR_EXL) && !(seg_sr & SR_ERL);
+    if(seg_trig && !g_ring_frozen && seg_umode && (uint32_t)s->pc < 0x80000000u
+       && s->icnt >= seg_floor && ((uint32_t)va < 0x00001000u || (uint32_t)va >= 0x80000000u)) {
+      g_ring_frozen = true;
+      uint32_t inst = 0; guest_rd32_be(s, s->pc, &inst);
+      uint32_t base = (inst >> 21) & 0x1f, rt = (inst >> 16) & 0x1f;
+      fprintf(stderr, "[segv-trig] FROZE ring: user pc=%08x badaddr=%08x code=%u icnt=%lu inst=%08x op=%u base=r%u(=%08x) rt=r%u\n",
+              (uint32_t)s->pc, (uint32_t)va, exccode, (unsigned long)s->icnt, inst,
+              inst >> 26, base, (uint32_t)s->gpr[base], rt);
+      fprintf(stderr, "[segv-trig] gpr:");
+      for(int i = 0; i < 32; i++) fprintf(stderr, " r%d=%08x", i, (uint32_t)s->gpr[i]);
+      fprintf(stderr, "\n");
+      /* t9-null-call case (pc==0 = jalr t9 with t9==0): dump the caller's code around
+       * ra, and find the `lw t9, off(gp)` (PIC GOT load) -> read the GOT word it loaded.
+       * GOTWORD==0 => rld didn't relocate (dynamic-linking bug); GOTWORD!=0 but t9==0
+       * => interp mis-loaded the GOT word (32b load bug). */
+      if((uint32_t)s->pc == 0) {
+        uint32_t ra = (uint32_t)s->gpr[31], gp = (uint32_t)s->gpr[28];
+        fprintf(stderr, "[segv-trig] caller code (ra-64..ra):\n");
+        for(int k = 16; k >= 0; k--) {
+          uint32_t ci = 0; guest_rd32_be(s, ra - k*4, &ci);
+          fprintf(stderr, "   %08x: %08x%s\n", ra - k*4, ci,
+                  ((ci >> 26) == 0x23 && ((ci >> 16) & 0x1f) == 25) ? "   <- lw t9" :
+                  ((ci & 0xfc1fffff) == 0x0320f809) ? "   <- jalr t9" : "");
+        }
+        for(int k = 2; k <= 64; k++) {   /* search back for lw t9, off(gp) */
+          uint32_t ci = 0; guest_rd32_be(s, ra - k*4, &ci);
+          if((ci >> 26) == 0x23 && ((ci >> 16) & 0x1f) == 25 && ((ci >> 21) & 0x1f) == 28) {
+            int32_t off = (int16_t)(ci & 0xffff);
+            uint32_t gotaddr = gp + off, gotword = 0; guest_rd32_be(s, gotaddr, &gotword);
+            fprintf(stderr, "[GOT] lw t9 @%08x off=%d gp=%08x -> gotaddr=%08x GOTWORD=%08x\n",
+                    ra - k*4, off, gp, gotaddr, gotword);
+            break;
+          }
+        }
+      }
+      else {
+        /* data-null-deref case: dump code around the faulting pc so the sequence
+         * that computed the null base register (r%base) is visible. */
+        fprintf(stderr, "[segv-trig] faulting code (pc-32..pc+4), null base=r%u:\n", base);
+        for(int k = 8; k >= -1; k--) {
+          uint32_t ci = 0; guest_rd32_be(s, (uint32_t)s->pc - k*4, &ci);
+          fprintf(stderr, "   %08x: %08x%s\n", (uint32_t)s->pc - k*4, ci,
+                  (k == 0) ? "   <- FAULT" : "");
+        }
+      }
+      /* WRTRACK unified: follow the nullptr backwards regardless of manifestation.
+       * Identify the null pointer register -- data-deref: the faulting load's base;
+       * pc==0: `jr ra` (r31==0) or `jalr t9` (r25==0) -- then use per-GPR load
+       * provenance to find the memory word it was loaded from, and the LAST STORE
+       * to that word. NEVER WRITTEN (pc/icnt 0) => the null is the zero-fill: a
+       * MISSING init/relocation. A surprising writer PC => that store is the
+       * corruptor. */
+      if(g_wrtrack) {
+        int nr = -1;
+        if((uint32_t)s->pc == 0) {
+          nr = (s->gpr[31] == 0) ? 31 : (s->gpr[25] == 0 ? 25 : -1);
+        }
+        else {
+          nr = (int)base;
+        }
+        if(nr >= 0 && g_gpr_ld_pc[nr] != 0) {
+          uint32_t pa = g_gpr_ld_pa[nr]; uint64_t w = (uint64_t)pa >> 2;
+          fprintf(stderr, "[WRTRACK] null r%d last LOADED from VA %08x (PA %08x) by pc %08x\n",
+                  nr, g_gpr_ld_va[nr], pa, g_gpr_ld_pc[nr]);
+          fprintf(stderr, "[WRTRACK]   last STORE to that word: pc=%08x icnt=%lu%s\n",
+                  g_wr_pc[w], (unsigned long)g_wr_icnt[w],
+                  (g_wr_pc[w] == 0 && g_wr_icnt[w] == 0) ? "  (NEVER WRITTEN -> zero-fill; missing init/reloc)" : "");
+        }
+        else if(nr >= 0) {
+          fprintf(stderr, "[WRTRACK] null r%d has no load-provenance (set by ALU/jal, not a load)\n", nr);
+        }
+      }
+    } }
+#endif
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   tlb_set_fault_state(s, va);
   { /* FAULTLOG: per-fault (cause,badaddr,pc) so re-fault counts can be compared vs the RTL. */
     static const bool fl = getenv("FAULTLOG") != nullptr;
     if(fl) fprintf(stderr, "[fault] cause=%u badaddr=%08x pc=%08x refill=%d icnt=%lu\n",
-                   exccode, (uint32_t)va, (uint32_t)s->pc, is_refill?1:0, (unsigned long)s->icnt); }
+                   exccode, (uint32_t)va, (uint32_t)s->pc, is_refill?1:0, (unsigned long)s->icnt);
+#ifdef ENABLE_O32_TRACE
+    /* FAULTLOG_USER: user-mode faults only (find the o32 SIGSEGV without the kernel refill flood).
+     * FAULTLOG_FLOOR skips early boot; true user-mode gate (KSU==2 & !EXL & !ERL) drops the
+     * kernel-refill / kernel-derail noise so only the o32 process's own faults show. */
+    static const bool flu = getenv("FAULTLOG_USER") != nullptr;
+    static const uint64_t flu_floor = getenv("FAULTLOG_FLOOR") ? strtoull(getenv("FAULTLOG_FLOOR"),0,0) : 0;
+    uint32_t flu_sr = s->cpr0[CPR0_SR];
+    bool flu_umode = (((flu_sr >> 3) & 3u) == 2u) && !(flu_sr & SR_EXL) && !(flu_sr & SR_ERL);
+    if(flu && flu_umode && s->icnt >= flu_floor)
+      fprintf(stderr, "[ufault] pc=%08x badaddr=%08x code=%u refill=%d EPC=%08x icnt=%lu\n",
+              (uint32_t)s->pc, (uint32_t)va, exccode, is_refill?1:0, s->cpr0[CPR0_EPC], (unsigned long)s->icnt);
+#endif
+    }
   static const bool kptedbg = getenv("KPTEDBG") != nullptr;
   if((uint32_t)va == 0xff800000u && kptedbg) {
     static int once = 0;
@@ -852,11 +978,45 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
     if(op == tlb_op::store && !(e_lo & 0x4u)) {     /* D == 0 -> TLB Modified */
       { static const bool g_ht = getenv("HTRACE") != nullptr;   /* trace the kernel TLB-Mod handler for /sbin/sh heap */
         if(g_ht && va >= 0x0e0a0000ULL && va < 0x0e0b0000ULL) g_htrace = 320; }
+#ifdef ENABLE_O32_TRACE
+      uint32_t modpc = (uint32_t)s->pc;             /* faulting pc, before raise_tlb rewrites s->pc */
+      uint64_t modva = va;
+#endif
       raise_tlb(s, va, 1u, /*is_refill=*/false, xtlb);
+#ifdef ENABLE_O32_TRACE
+      /* MODLOG: dump user (o32) TLB-Modified exceptions -- the full 64b store VA and
+       * the BadVAddr/Context/EntryHi the kernel tlbmod handler walks. A 32-bit
+       * sign-extend/truncate bug shows up as a bad VA or a bad Context here. */
+      { static const bool g_ml = getenv("MODLOG") != nullptr;
+        static uint64_t g_mlf = getenv("MODLOG_FLOOR") ? strtoull(getenv("MODLOG_FLOOR"),0,0) : 0;
+        static int g_nml = 0;
+        if(g_ml && modpc < 0x80000000u && s->icnt >= g_mlf && g_nml++ < 80)
+          fprintf(stderr, "[MOD] pc=%08x va=%016llx e_lo=%016llx badv=%016llx ctx=%016llx ehi=%016llx icnt=%lu\n",
+                  modpc, (unsigned long long)modva, (unsigned long long)e_lo,
+                  (unsigned long long)s->cpr0_64[CPR0_BADVADDR], (unsigned long long)s->cpr0_64[CPR0_CONTEXT],
+                  (unsigned long long)s->cpr0_64[CPR0_ENTRYHI], (unsigned long)s->icnt); }
+#endif
       return 0;
     }
     uint64_t pfn = (e_lo >> 6) & 0xfffffffULL;      /* PFN[33:6] -> 28 bits */
     uint64_t pa  = (pfn << 12) | (va & off_mask);
+#ifdef ENABLE_O32_TRACE
+    /* DEVMAP: a MAPPED user access must NOT translate into the device-MMIO window
+     * 0x1f000000-0x1fffffff (that's where the o32 pointers vanish). Dump the matched
+     * TLB entry so we can tell a corrupt-PFN entry (bug at TLB-write time) from a
+     * mis-selected/mis-extracted PA (bug here). */
+    { static const bool g_dm = getenv("DEVMAP") != nullptr;
+      if(g_dm && (uint32_t)pa >= 0x1f000000u && (uint32_t)pa <= 0x1fffffffu && (uint32_t)s->pc < 0x80000000u) {
+        static int g_ndm = 0;
+        if(g_ndm++ < 40)
+          fprintf(stderr, "[DEVMAP] pc=%08x va=%016llx -> PA %08x  tlb[%d] e_hi=%016llx e_lo0=%016llx e_lo1=%016llx pm=%08x odd=%d pfn=%llx icnt=%lu\n",
+                  (uint32_t)s->pc, (unsigned long long)va, (uint32_t)pa, i,
+                  (unsigned long long)s->tlb[i].entry_hi,
+                  (unsigned long long)s->tlb[i].entry_lo0, (unsigned long long)s->tlb[i].entry_lo1,
+                  s->tlb[i].page_mask, (int)odd, (unsigned long long)pfn, (unsigned long)s->icnt);
+      }
+    }
+#endif
     bool cca_cached = (((e_lo >> 3) & 7u) == 3u);    /* C==3: cacheable write-back */
     /* fill the micro-TLB for this 4KB sub-page (only reached for a V=1 hit) */
     ce.vpn = vpn; ce.asid = cur_asid; ce.ppn = (uint32_t)(pa >> 12);
@@ -883,6 +1043,40 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
   raise_tlb(s, va, code, /*is_refill=*/true, xtlb);
   return 0;
 }
+
+/* PTETRACK (WRTRACK): a MTC0/DMTC0 that writes EntryLo0/1 with a device-space PFN
+ * (value bit 22 = PFN bit 16 = PA bit 28, V=1) is installing a user page into the
+ * 0x1f000000 MMIO window. Follow it back: the source GPR's load provenance gives the
+ * PTE address; read the PTE still in memory and compare. MEM already has bit 28 =>
+ * the kernel BUILT the PTE wrong (chase the writer pc). MEM clean => interp corrupted
+ * it on the refill LOAD (bug at g_gpr_ld_pc). */
+#ifdef ENABLE_O32_TRACE
+static void ptetrack_probe(state_t *s, uint32_t rd, uint32_t rt) {
+  if(!g_wrtrack) { return; }
+  if(!(rd == CPR0_ENTRYLO0 || rd == CPR0_ENTRYLO1)) { return; }
+  uint32_t v = (uint32_t)s->gpr[rt];
+  uint32_t vpfn = (v >> 6) & 0xfffffffu;
+  if(!(vpfn >= 0x1f000u && vpfn <= 0x1ffffu && ((v >> 1) & 1u))) { return; }  /* PA in device window 0x1f000000-0x1fffffff, V=1 */
+  static int n = 0;
+  if(n++ >= 40) { return; }
+  uint32_t ldva = g_gpr_ld_va[rt], ldpa = g_gpr_ld_pa[rt], ldpc = g_gpr_ld_pc[rt];
+  uint32_t ptemem = 0;
+  if(ldva) { guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)ldva, &ptemem); }
+  uint64_t w = (uint64_t)ldpa >> 2;
+  fprintf(stderr, "[PTETRACK] EntryLo%d=%08x (dev PFN) via r%u pc=%08x icnt=%lu\n",
+          (rd == CPR0_ENTRYLO0) ? 0 : 1, v, rt, (uint32_t)s->pc, (unsigned long)s->icnt);
+  fprintf(stderr, "[PTETRACK]   r%u last LOADED from VA %08x (PA %08x) by pc %08x; PTE-in-mem=%08x  %s\n",
+          rt, ldva, ldpa, ldpc, ptemem,
+          !ldpc ? "(no load provenance -- value came via ALU, not a PTE load)" :
+          (((ptemem >> 22) & 1u) ? "(MEM HAS bit28 -> kernel built PTE wrong)"
+                                 : "(MEM CLEAN -> interp corrupted it on the load)"));
+  fprintf(stderr, "[PTETRACK]   last STORE to that PTE word: pc=%08x icnt=%lu%s\n",
+          g_wr_pc[w], (unsigned long)g_wr_icnt[w],
+          (g_wr_pc[w] == 0 && g_wr_icnt[w] == 0) ? "  (never written -> zero-fill)" : "");
+}
+#else
+static inline void ptetrack_probe(state_t *, uint32_t, uint32_t) {}
+#endif
 
 /* wrapper: feed every successful cacheable DATA access (va,pa) to the VIPT
  * alias-frequency instrument, then return the PA unchanged. */
@@ -1239,6 +1433,9 @@ void _lw(uint32_t inst, state_t *s) {
   if(s->tlb_fault) return;
   if(ea & 3) { raise_adel(s); return; }
   s->gpr[rt] = bswap<EL>(s->mem.get<int32_t>(ea));
+#ifdef ENABLE_O32_TRACE
+  if(unlikely(g_wrtrack)) { g_gpr_ld_va[rt] = (uint32_t)(s->gpr[rs] + imm); g_gpr_ld_pa[rt] = ea; g_gpr_ld_pc[rt] = (uint32_t)s->pc; }
+#endif
   //#define TRACE_MEM
   //printf("_lw pc %x from ea %x = %x\n", s->pc, (uint32_t)s->gpr[rs] + imm,
   //s->gpr[rt]);
@@ -1353,6 +1550,9 @@ void _ld(uint32_t inst, state_t *s) {
   if(s->tlb_fault) return;
   if(ea & 7) { raise_adel(s); return; }
   s->gpr[rt] = bswap<EL>(s->mem.get<int64_t>(ea));
+#ifdef ENABLE_O32_TRACE
+  if(unlikely(g_wrtrack)) { g_gpr_ld_va[rt] = (uint32_t)(s->gpr[rs] + imm); g_gpr_ld_pa[rt] = ea; g_gpr_ld_pc[rt] = (uint32_t)s->pc; }
+#endif
   s->pc += 4;
   HISTO(s, mipsInsn::LD);
 }
@@ -2465,18 +2665,27 @@ void execMips(state_t *s) {
   if(globals::trace_retirement and globals::retire_log) {
     /* optional TRACEWIN=lo:hi icnt window so a huge boot can emit a small,
      * focused retire_trace (e.g. around a single XTLB refill) for mips-analyzer. */
-    static bool tw_init = false; static uint64_t tw_lo = 0, tw_hi = ~0ULL, tw_cap = 0;
+    static bool tw_init = false; static uint64_t tw_lo = 0, tw_hi = ~0ULL, tw_cap = 0, tw_ring = 0;
     static bool tw_useronly = false, tw_trig_user = false, tw_armed = false;
     if(!tw_init) { tw_init = true; const char *tw = getenv("TRACEWIN");
                    if(tw) sscanf(tw, "%lu:%lu", &tw_lo, &tw_hi);
                    tw_useronly = getenv("TRACEWIN_USERONLY") != nullptr;
                    tw_trig_user = getenv("TRACEWIN_TRIG_USER") != nullptr;      // arm on first o32 entry
-                   if(getenv("TRACEWIN_N")) tw_cap = strtoull(getenv("TRACEWIN_N"),0,0); }  // max records
+                   if(getenv("TRACEWIN_N")) tw_cap = strtoull(getenv("TRACEWIN_N"),0,0);
+                   if(getenv("TRACEWIN_RING")) tw_ring = strtoull(getenv("TRACEWIN_RING"),0,0);  // keep LAST N
+                   if(tw || tw_ring) fprintf(stderr, "[tracewin] lo=%llu hi=%llu useronly=%d cap=%llu ring=%llu\n",
+                                  (unsigned long long)tw_lo, (unsigned long long)tw_hi, tw_useronly,
+                                  (unsigned long long)tw_cap, (unsigned long long)tw_ring); }
     if(tw_trig_user && !tw_armed && (uint32_t)s->pc < 0x80000000u) tw_armed = true;
-    if(s->icnt >= tw_lo && s->icnt < tw_hi && (!tw_trig_user || tw_armed)
-       && (tw_cap == 0 || globals::retire_log->get_records().size() < tw_cap)
-       && !(tw_useronly && (uint32_t)s->pc >= 0x80000000u))
-      globals::retire_log->get_records().emplace_back(ipa, (uint64_t)s->pc, inst);
+    if(!g_ring_frozen && s->icnt >= tw_lo && s->icnt < tw_hi && (!tw_trig_user || tw_armed)
+       && (tw_ring != 0 || tw_cap == 0 || globals::retire_log->get_records().size() < tw_cap)
+       && !(tw_useronly && (uint32_t)s->pc >= 0x80000000u)) {
+      auto &recs = globals::retire_log->get_records();
+      recs.emplace_back(ipa, (uint64_t)s->pc, inst);
+      /* TRACEWIN_RING=N: keep only the last N records (trace the run-up to a crash,
+       * regardless of exact icnt). std::list pop_front is O(1). */
+      if(tw_ring != 0 && recs.size() > tw_ring) recs.pop_front();
+    }
   }
   if(globals::pctrace) {
     static const bool useronly = getenv("PCTRACE_USERONLY") != nullptr;  /* only pc<0x80000000 */
@@ -3190,6 +3399,7 @@ void execMips(state_t *s) {
 	    }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
+	  ptetrack_probe(s, rd, rt);
 	  if(rd == CPR0_COMPARE) { /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
 	    s->cpr0[CPR0_CAUSE] &= ~(1u << 15);
 	    /* EXPERIMENT (env TIMER_SCALE=N): stretch each timer period N-fold by
@@ -3251,6 +3461,7 @@ void execMips(state_t *s) {
 	    s->cpr0_64[rd] = s->gpr[rt];
 	    s->cpr0[rd] = (uint32_t)s->gpr[rt];
 	  }
+	  ptetrack_probe(s, rd, rt);
 	  if(rd == 7 && !s->silent) {
 	    fputc((int)(s->gpr[rt] & 0xff), stdout);
 	    fflush(stdout);

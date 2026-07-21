@@ -23,12 +23,44 @@ static const uint64_t SCC_END  = 0x1fbd983fULL;
 #define PROT (PROT_READ | PROT_WRITE)
 #define MAP (MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE)
 
+#ifdef ENABLE_O32_TRACE
+/* WRTRACK: last-writer provenance, one entry per guest word (indexed by PA>>2).
+ * mmap'd NORESERVE so only touched guest memory costs RAM (a std::map over an
+ * 8.7B-insn boot would OOM). Follows a nullptr backwards. */
+uint32_t *g_wr_pc   = nullptr;
+uint64_t *g_wr_icnt = nullptr;
+bool      g_wrtrack = false;
+/* register-load provenance: for each GPR, the VA/PA/pc of the load that last wrote
+ * it (WRTRACK). Lets a null pointer (base/ra/t9) be traced to its source word. */
+uint32_t g_gpr_ld_va[32] = {0};
+uint32_t g_gpr_ld_pa[32] = {0};
+uint32_t g_gpr_ld_pc[32] = {0};
+bool g_ramcap = false;
+void ramcap_log(char rw, uint32_t addr) {
+  static int n = 0;
+  if(n++ < 60)
+    fprintf(stderr, "[RAMCAP] %c PA=%08x pc=%08x icnt=%lu\n", rw, addr,
+            (uint32_t)g_cur_pc, (unsigned long)g_cur_icnt);
+}
+#endif
+
 sparse_mem::sparse_mem() {
   void* mempt = mmap(nullptr, sparse_mem::sz, PROT, MAP, -1, 0);
   mem = reinterpret_cast<uint8_t*>(mempt);
   assert(mem != reinterpret_cast<uint8_t*>(~0UL));
   assert(madvise(mem, 1UL<<32, MADV_DONTNEED)==0);
   //memset(mem, 0, sparse_mem::sz);
+#ifdef ENABLE_O32_TRACE
+  g_ramcap = getenv("RAMCAP") != nullptr;
+  g_wrtrack = getenv("WRTRACK") != nullptr;
+  if(g_wrtrack) {
+    /* sz>>2 words; NORESERVE => backing follows the touched working set only. */
+    g_wr_pc   = reinterpret_cast<uint32_t*>(mmap(nullptr, (sz>>2)*sizeof(uint32_t), PROT, MAP, -1, 0));
+    g_wr_icnt = reinterpret_cast<uint64_t*>(mmap(nullptr, (sz>>2)*sizeof(uint64_t), PROT, MAP, -1, 0));
+    assert(g_wr_pc   != reinterpret_cast<uint32_t*>(~0UL));
+    assert(g_wr_icnt != reinterpret_cast<uint64_t*>(~0UL));
+  }
+#endif
 }
 
 sparse_mem::~sparse_mem() {

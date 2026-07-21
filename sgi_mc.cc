@@ -4,6 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 
+/* Define ENABLE_O32_TRACE to compile in the IRIX-memory debug tracing (MCFGLOG here,
+ * plus WRTRACK/DEVMAP/PTETRACK/RAMCAP in interpret.cc/sparse_mem.*). Off by default. */
+#ifdef ENABLE_O32_TRACE
+static const bool g_mcfglog = getenv("MCFGLOG") != nullptr;   /* read-once debug knob */
+#endif
+
 /* device-trace spew off by default; set DEVTRACE=1 to re-enable. */
 static const bool dev_verbose = getenv("DEVTRACE") != nullptr;
 #define DPRINTF(...) do { if(dev_verbose) fprintf(stderr, __VA_ARGS__); } while(0)
@@ -72,14 +78,20 @@ uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
     case 0x4:    /* cpuctrl0 CPU control word 0 */
     case 0x8:    /* cpuctrl1 (even alias) */
     case 0xc: {  /* cpuctrl1 CPU control word 1 */
-      const uint32_t index = (offs >> 1) & 1;
+      const uint32_t index = (offs >> 3) & 1;   /* cpuctrl0(0x0/0x4) vs cpuctrl1(0x8/0xc): bit 3, not bit 1 */
       x = cpu_control[index];
       break;
     }
     case 0xc4:   /* mconfig0 memory config banks 0/1 */
     case 0xcc: { /* mconfig1 memory config banks 2/3 */
-      const uint32_t index = (offs >> 1) & 1;
+      /* mconfig0=0xc4, mconfig1=0xcc differ in bit 3, NOT bit 1 -- (offs>>1)&1 gave
+       * 0 for BOTH, so mconfig1 aliased mconfig0 and IRIX saw banks 2/3 == banks 0/1
+       * => 512 MB instead of 256 MB, allocating frames into the 0x1f device window. */
+      const uint32_t index = (offs >> 3) & 1;
       x = memcfg[index];
+#ifdef ENABLE_O32_TRACE
+      if(g_mcfglog) fprintf(stderr, "[MCFG] READ  mconfig%u offs=%02x sz=%zu -> %08x\n", index, offs, sz, x);
+#endif
       break;
     }
     case 0x84:   /* giopar GIO64 arbitration / bus parameter word */
@@ -125,7 +137,7 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
     case 0x0:    /* cpuctrl0 (even alias) */
     case 0x4:    /* cpuctrl0 CPU control word 0 */
     case 0xc: {  /* cpuctrl1 CPU control word 1 */
-      const uint32_t index = (offs >> 1) & 1;
+      const uint32_t index = (offs >> 3) & 1;   /* cpuctrl0(0x0/0x4) vs cpuctrl1(0x8/0xc): bit 3, not bit 1 */
       cpu_control[index] = x;
       break;
     }
@@ -137,8 +149,11 @@ void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
       break;
     case 0xc4:   /* mconfig0 memory config banks 0/1 */
     case 0xcc: { /* mconfig1 memory config banks 2/3 */
-      const uint32_t index = (offs >> 1) & 1;
+      const uint32_t index = (offs >> 3) & 1;   /* bit 3 selects mconfig0 vs mconfig1 (see read) */
       memcfg[index] = x;
+#ifdef ENABLE_O32_TRACE
+      if(g_mcfglog) fprintf(stderr, "[MCFG] WRITE mconfig%u offs=%02x sz=%zu <- %08x\n", index, offs, sz, x);
+#endif
       break;
     }
     case 0xd4:   /* cmacc CPU memory access config */

@@ -32,6 +32,22 @@ extern uint64_t g_watch_lo, g_watch_hi;   /* icnt window [lo,hi) */
 extern uint64_t g_cur_pc, g_cur_icnt;     /* current insn context */
 extern uint64_t g_htrace;                 /* >0: trace next N executed pcs (kernel TLB-Mod handler) */
 
+/* Define ENABLE_O32_TRACE to compile in the IRIX-memory debug instrumentation
+ * (WRTRACK last-writer + register-load provenance, RAMCAP). Off by default. */
+#ifdef ENABLE_O32_TRACE
+/* WRTRACK: last-writer provenance -- per guest word (indexed by PA>>2), the pc+icnt
+ * of the last store. mmap'd NORESERVE (see sparse_mem.cc). Follows a nullptr back to
+ * whoever last wrote the source global. */
+extern uint32_t *g_wr_pc;
+extern uint64_t *g_wr_icnt;
+extern bool      g_wrtrack;
+extern uint32_t g_gpr_ld_va[32];   /* per-GPR: VA of the load that last wrote it */
+extern uint32_t g_gpr_ld_pa[32];   /* per-GPR: PA of that load */
+extern uint32_t g_gpr_ld_pc[32];   /* per-GPR: pc of that load (0 = none) */
+extern bool g_ramcap;              /* RAMCAP: cap RAM at real 256MB (0x18000000-0x1effffff = not RAM) */
+void ramcap_log(char rw, uint32_t addr);
+#endif
+
 class sparse_mem {
 public:
   static const uint64_t pgsize = 4096;
@@ -87,6 +103,14 @@ public:
   }
   template <typename T>
   T get(uint64_t byte_addr) {
+#ifdef ENABLE_O32_TRACE
+    if(unlikely(g_ramcap) && (uint32_t)byte_addr >= 0x18000000u && (uint32_t)byte_addr < 0x1f000000u) {
+      /* real DRAM is 256 MB (ends at 0x18000000); this gap (below the 0x1f device
+       * window) is NOT RAM on henny. Return non-echoing so a sizing PROBE fails. */
+      ramcap_log('r', (uint32_t)byte_addr);
+      return (T)(~0ULL);
+    }
+#endif
     if(g_cmodel && cache_active) {   /* cached cpu load -> the write-back model */
       T v; cm_load(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return v;
     }
@@ -107,6 +131,19 @@ public:
   template<typename T>
   void set(uint64_t byte_addr, T v) {
     //static_assert(sizeof(T) != 8);
+#ifdef ENABLE_O32_TRACE
+    if(unlikely(g_ramcap) && (uint32_t)byte_addr >= 0x18000000u && (uint32_t)byte_addr < 0x1f000000u) {
+      ramcap_log('w', (uint32_t)byte_addr);   /* not RAM on henny -> drop the write */
+      return;
+    }
+    if(unlikely(g_wrtrack)) {        /* record last-writer BEFORE the cache/route split */
+      for(uint32_t i = 0; i < sizeof(T); i += 4) {
+        uint64_t w = (byte_addr + i) >> 2;
+        g_wr_pc[w]   = (uint32_t)g_cur_pc;
+        g_wr_icnt[w] = g_cur_icnt;
+      }
+    }
+#endif
     if(g_cmodel && cache_active) {   /* cached cpu store -> the write-back model */
       cm_store(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return;
     }
