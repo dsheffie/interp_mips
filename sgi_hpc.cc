@@ -210,12 +210,19 @@ void sgi_hpc::enet_run_dma(int ch) {
         uint8_t *p = s->mem.get_raw_ptr(pbuf + i);
         s->seeq->tx_dma_w(*p);
       }
-      s->seeq->tx_flush();                              /* push the frame out the tap */
       wr_be32(s, desc + 4, cntinfo | HPCDMA_ETXD);      /* HPC transmitted this buffer */
       if(cntinfo & HPCDMA_XIE) { intstat |= 0x800u; }   /* XIE -> TX chan irq (istat bit 11) */
       d.cbp  = pbuf;
       d.nbdp = pnext;
-      if(cntinfo & HPCDMA_EOX) { d.active = false; }     /* end of chain */
+      /* Flush ONLY at end-of-chain: IRIX's if_ec scatter-gathers a frame across
+       * several descriptors (e.g. ethernet header in one buffer, payload in the
+       * next), so accumulate the whole chain into one frame and transmit it once.
+       * (Flushing per-buffer split each descriptor into its own bogus frame -- worked
+       * for Linux sgiseeq only because it puts the whole frame in one buffer.) */
+      if(cntinfo & HPCDMA_EOX) {
+        s->seeq->tx_flush();                            /* whole frame assembled -> out the tap */
+        d.active = false;                               /* end of chain */
+      }
     }
     d.ctrl &= ~0x200u;                                  /* ETXCTRL_ACTIVE clears when idle */
   }
