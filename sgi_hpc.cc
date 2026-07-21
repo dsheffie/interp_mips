@@ -1,6 +1,7 @@
 #include "sgi_hpc.hh"
 #include "interpret.hh"
 #include "sgi_scsi.hh"
+#include "sgi_seeq.hh"
 #include "sgi_scc.hh"
 #include "cache_model.hh"
 #include <cassert>
@@ -80,6 +81,11 @@ uint16_t sgi_hpc::t2_value() {
 static inline uint32_t rd_be32(state_t *s, uint32_t pa) {
   uint8_t *p = s->mem.get_raw_ptr(pa);
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static inline void wr_be32(state_t *s, uint32_t pa, uint32_t v) {
+  uint8_t *p = s->mem.get_raw_ptr(pa);
+  p[0] = (v >> 24) & 0xff; p[1] = (v >> 16) & 0xff; p[2] = (v >> 8) & 0xff; p[3] = v & 0xff;
 }
 
 void sgi_hpc::scsi_fetch_chain(int ch) {
@@ -173,6 +179,93 @@ void sgi_hpc::scsi_run_dma(int ch) {
   }
 }
 
+/* HPC3 ENET descriptor-walk against the Seeq 8003 (ch0 = RX device->mem,
+ * ch1 = TX mem->device).  Mirrors scsi_run_dma; the Seeq replaces the WD33C93.
+ * TX drains the whole chain into a frame then transmits at EOX; RX writes a
+ * staged [pad][frame][status] byte stream into the buffer until it's consumed. */
+/* HPCDMA descriptor cntinfo bits (asm/sgi/hpc3.h) */
+static const uint32_t HPCDMA_EOX  = 0x80000000u;  /* tx: end of chain */
+static const uint32_t HPCDMA_EOR  = 0x80000000u;  /* rx: end of ring */
+static const uint32_t HPCDMA_XIE  = 0x20000000u;  /* irq at end of this desc */
+static const uint32_t HPCDMA_ETXD = 0x00008000u;  /* set by HPC when packet tx'd */
+static const uint32_t HPCDMA_OWN  = 0x00004000u;  /* rx: HPC owns the buffer */
+static const uint32_t HPCDMA_BCNT = 0x00003fffu;  /* buffer byte count */
+
+/* Drive one ENET DMA channel against the sgiseeq descriptor rings. Channel 1 is
+ * TX (mem->Seeq->tap); channel 0 is RX (tap->Seeq->mem). Each descriptor is
+ * {pbuf, cntinfo, pnext} in guest DRAM (big-endian, read via rd_be32). */
+void sgi_hpc::enet_run_dma(int ch) {
+  scsi_dma_t &d = enet_dma[ch];
+  if(!s->seeq) { return; }
+  if(ch == 1) {
+    /* TX: walk the chain from tx_ndptr, transmit each buffer, mark ETXD so the
+     * driver's sgiseeq_tx acks it; XIE raises the TX-channel irq. */
+    while(d.active) {
+      uint32_t desc    = d.nbdp;
+      uint32_t pbuf    = rd_be32(s, desc);
+      uint32_t cntinfo = rd_be32(s, desc + 4);
+      uint32_t pnext   = rd_be32(s, desc + 8);
+      uint32_t cnt     = cntinfo & HPCDMA_BCNT;
+      for(uint32_t i = 0; i < cnt; i++) {
+        uint8_t *p = s->mem.get_raw_ptr(pbuf + i);
+        s->seeq->tx_dma_w(*p);
+      }
+      s->seeq->tx_flush();                              /* push the frame out the tap */
+      wr_be32(s, desc + 4, cntinfo | HPCDMA_ETXD);      /* HPC transmitted this buffer */
+      if(cntinfo & HPCDMA_XIE) { intstat |= 0x800u; }   /* XIE -> TX chan irq (istat bit 11) */
+      d.cbp  = pbuf;
+      d.nbdp = pnext;
+      if(cntinfo & HPCDMA_EOX) { d.active = false; }     /* end of chain */
+    }
+    d.ctrl &= ~0x200u;                                  /* ETXCTRL_ACTIVE clears when idle */
+  }
+  else {
+    /* RX: ring of HPC-owned descriptors. For each staged frame, fill the current
+     * descriptor's buffer with [pad][pad][frame][status], write back cntinfo with
+     * OWN cleared and BCNT=residual (driver: len = PKT_BUF_SZ - residual - 3). */
+    while(d.active and s->seeq->rx_avail()) {
+      uint32_t desc    = d.nbdp;
+      uint32_t cntinfo = rd_be32(s, desc + 4);
+      if(!(cntinfo & HPCDMA_OWN)) { break; }            /* CPU still owns it: stall (retry next poll) */
+      uint32_t pbuf    = rd_be32(s, desc);
+      uint32_t pnext   = rd_be32(s, desc + 8);
+      uint32_t bufsz   = cntinfo & HPCDMA_BCNT;         /* PKT_BUF_SZ */
+      uint32_t written = 0;
+      bool last = false;
+      while(written < bufsz and s->seeq->rx_avail()) {
+        uint8_t *p = s->mem.get_raw_ptr(pbuf + written);
+        *p = s->seeq->rx_dma_r(last);
+        written++;
+        if(last) { break; }                             /* [pad][pad][frame][status] complete */
+      }
+      uint32_t residual = bufsz - written;
+      wr_be32(s, desc + 4, (cntinfo & ~HPCDMA_OWN & ~HPCDMA_BCNT) | (residual & HPCDMA_BCNT));
+      if(cntinfo & HPCDMA_XIE) { intstat |= 0x400u; }   /* XIE -> RX chan irq (istat bit 10) */
+      {
+        static const bool g_ed = getenv("ENET_DBG") != nullptr;
+        if(g_ed) fprintf(stderr, "ENET RX-DMA: wrote %u B to pbuf=%08x desc=%08x XIE=%d intstat=%08x mask0=%02x local0=%02x\n",
+                         written, pbuf, desc, (cntinfo & HPCDMA_XIE) != 0, intstat, ioc2_local_mask[0], ioc2_local0_live());
+      }
+      d.cbp  = pbuf;
+      d.nbdp = pnext;                                   /* advance around the ring */
+      if(cntinfo & HPCDMA_EOR) { break; }               /* end of ring: HPC pauses, driver re-arms */
+    }
+  }
+}
+
+/* Per-tick hook (called from maybe_take_interrupt): pull inbound frames off the
+ * tap into the Seeq, then run the RX DMA if the RX channel is armed. */
+void sgi_hpc::enet_poll() {
+  if(!s->seeq) { return; }
+  /* poll() reads the tap fd -- a syscall. Called per-instruction it dominates the
+   * profile (libc read + tun_chr_read_iter), so throttle to 1-in-1024. RX latency
+   * of ~1024 insns is negligible vs. the ms-scale network; the tap's own kernel
+   * buffer holds frames between polls. */
+  if((++enet_poll_ctr & 0x3ffu) != 0) { return; }
+  s->seeq->poll();
+  if(enet_dma[0].active) { enet_run_dma(0); }
+}
+
 /* Live mappable interrupt status (kernel's vmeistat).  bit5 = SCC serial INT
  * (the Z8530 INT line: Tx-buffer-empty, and Rx when modeled). */
 uint8_t sgi_hpc::ioc2_vmeistat_live() {
@@ -189,6 +282,13 @@ uint8_t sgi_hpc::ioc2_local0_live() {
   uint8_t st = ioc2_local_status[0];
   if(s->scsi && s->scsi->intrq_pending()) st |= 0x02u;
   else                                    st &= ~0x02u;
+  /* ENET (bit3): the CPU interrupt is the HPC3 DMA-channel XIE latch (intstat bits
+   * 10/11), cleared by the ENET reset reg CLRIRQ. The Seeq's own INTRQ is consumed
+   * by the HPC internally (per-frame DMA'd status), NOT routed to IP2 -- folding it
+   * here caused an interrupt storm since the driver never reads the Seeq rstat reg
+   * to clear it. */
+  if(intstat & 0x00000c00u) st |= 0x08u;
+  else                      st &= ~0x08u;
   if((ioc2_vmeistat_live() & ioc2_cmeimask[0]) != 0) st |= 0x80u;   /* LIO2 */
   else                                               st &= ~0x80u;
   return st;
@@ -196,6 +296,12 @@ uint8_t sgi_hpc::ioc2_local0_live() {
 
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
+  static const bool g_enet_dbg = getenv("ENET_DBG") != nullptr;
+  if(g_enet_dbg and ((offs >= 0x14000 and offs <= 0x17fff) or
+                     (offs >= 0x54000 and offs <= 0x5401f) or
+                     (offs >= 0x60000 and offs <= 0x67fff))) {
+    fprintf(stderr, "ENET-R pc=%08x offs=%05x sz=%zu\n", s->pc, offs, sz);
+  }
   if(offs == 0x598bb) {           /* i8254 counter 2: return latched low then high byte */
     uint8_t b = (t2_rd_phase == 0) ? (uint8_t)(t2_latch & 0xff)
                                    : (uint8_t)((t2_latch >> 8) & 0xff);
@@ -225,8 +331,29 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
     }
     return __builtin_bswap32(r);
   }
-  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
-    DPRINTF("enet read\n");
+  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET RX(0x14000)/TX(0x16000) DMA regs */
+    int ch = (offs & 0x2000) ? 1 : 0;
+    uint32_t n = offs & ~0x2000u;
+    scsi_dma_t &d = enet_dma[ch];
+    uint32_t r = 0;
+    switch(n) {
+    case 0x14000: r = d.cbp; break;
+    case 0x14004: r = d.nbdp; break;
+    case 0x15000: r = (d.count & 0x3fff) | (d.bc & ~0x3fffu); break;
+    case 0x15004:                                       /* rx_ctrl/tx_ctrl: ACTIVE + seeq status */
+      r = (d.ctrl & 0x200u);                            /* HPC3_E*XCTRL_ACTIVE reflects channel state */
+      if(s->seeq) { r |= (ch == 0) ? s->seeq->rstat_peek() : s->seeq->tstat_peek(); }
+      break;
+    case 0x15014:                                       /* reset reg read: CLRIRQ(0x2) reflects a
+                                                         * pending ENET DMA-channel irq. IRIX's ec ISR
+                                                         * reads this, and only writes CLRIRQ if bit 0x2
+                                                         * is set -- without it the irq never clears -> storm. */
+      r = (intstat & 0x00000c00u) ? 0x2u : 0x0u;
+      break;
+    case 0x15018: r = d.dmacfg; break;
+    default:      r = 0; break;
+    }
+    return __builtin_bswap32(r);
   }
   else if(offs >= 0x00054000 and offs <= 0x0005401f) {
     /* Seeq 8003/80C03 ENET device regs: 8 byte-registers, word-spaced (reg N at
@@ -237,13 +364,7 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
      * ever delivered, so a process polling the interface stops blocking once it
      * sees "no carrier" instead of waiting forever on a controller-less ISS. */
     uint32_t idx = ((offs - 0x54000) >> 2) & 7;
-    uint8_t v;
-    switch(idx) {
-    case 5:  v = 0x02; break;        /* flags: SEQ_XS_NO_CARRIER */
-    case 6:  v = 0x80; break;        /* RX status: OLD (already read / stale) */
-    case 7:  v = 0x80; break;        /* TX status: OLD (already read / stale) */
-    default: v = 0x00; break;        /* station addr / collision counters */
-    }
+    uint8_t v = s->seeq ? s->seeq->pio_r(idx) : 0;
     return (sz == 1) ? v : ((uint32_t)v << 24);
   }
   else if(offs >= 0x00040000 and offs <= 0x00047fff) { /* WD33C93 HD0 (SASR=+3/SCMD=+7) */
@@ -318,6 +439,17 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
     }
     return (uint32_t)v << 24;
   }
+  else if(offs >= 0x000604e8 and offs <= 0x000604fc and (offs & 3) == 0) {
+    /* IP22 station ethernet address in the ds1386 bbRAM at word 250..255
+     * (ip22-nvram.c: ip22_nvram_read, EADDR_NVOFS=250, Indy/Guiness path reads
+     * hpc3c0->bbram[reg*2 + {0,1}]; bbram base is 0x60100, so reg 250 -> 0x604e8).
+     * Real SGI OUI 08:00:69 so the sgiseeq driver gets a valid MAC instead of the
+     * all-zero address (which fails is_valid_ether_addr).  Byte in [31:24]; the BE
+     * load path bswaps device reads to the kernel's low byte (like SYSID/RTC). */
+    static const uint8_t mac[6] = {0x08, 0x00, 0x69, 0x12, 0x34, 0x56};
+    uint32_t i = (offs - 0x000604e8) >> 2;   /* 0..5 */
+    return (uint32_t)mac[i] << 24;
+  }
   else if(offs >= 0x00058000 and offs <= 0x0005bfff) { /* PBUS PIO data ports */
     int id = ((offs>>8) & 0x7f)>>2;
     DPRINTF("pio data on channel %u\n", id);
@@ -333,6 +465,12 @@ uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
 
 void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
   //assert(sz == 4);
+  static const bool g_enet_dbg = getenv("ENET_DBG") != nullptr;
+  if(g_enet_dbg and ((offs >= 0x14000 and offs <= 0x17fff) or
+                     (offs >= 0x54000 and offs <= 0x5401f) or
+                     (offs >= 0x60000 and offs <= 0x67fff))) {
+    fprintf(stderr, "ENET-W pc=%08x offs=%05x val=%08x sz=%zu\n", s->pc, offs, x, sz);
+  }
   if(offs == 0x598bf) {           /* i8254 control word (tcword) */
     if(((x >> 4) & 0x3) == 0) {   /* RW=00: counter-latch command -> snapshot live value */
       t2_latch = t2_value();
@@ -395,11 +533,43 @@ void sgi_hpc::write(uint32_t offs, uint32_t x, size_t sz) {
     }
     return;
   }
-  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET DMA regs */
-    DPRINTF("enet write\n");
+  else if(offs >= 0x00014000 and offs <= 0x0001ffff) { /* ENET RX(0x14000)/TX(0x16000) DMA regs */
+    int ch = (offs & 0x2000) ? 1 : 0;
+    uint32_t n = offs & ~0x2000u;
+    scsi_dma_t &d = enet_dma[ch];
+    x = __builtin_bswap32(x);
+    switch(n) {
+    case 0x14000: d.cbp    = x; break;
+    case 0x14004: d.nbdp   = x; break;
+    case 0x15000: d.bc     = x; break;
+    case 0x15018: d.dmacfg = x; break;
+    case 0x15004: {                                   /* rx_ctrl(ch0)/tx_ctrl(ch1): ACTIVE = 0x200 */
+      bool was_active = d.active;
+      d.ctrl   = x;
+      d.active = (x & 0x200u) != 0;                    /* HPC3_ERXCTRL/ETXCTRL_ACTIVE */
+      if(d.active and not was_active) { enet_run_dma(ch); }  /* newly armed: TX runs now, RX waits on frames */
+      break;
+    }
+    case 0x15014:                                     /* ENET reset (RX region): CRESET|CLRIRQ */
+      if(x & 0x2u) { intstat &= ~0x00000c00u; }        /* CLRIRQ: clear RX(0x400)+TX(0x800) chan irq */
+      if(x & 0x1u) {                                   /* CRESET: reset both ENET DMA channels */
+        enet_dma[0].active = false; enet_dma[0].ctrl = 0;
+        enet_dma[1].active = false; enet_dma[1].ctrl = 0;
+        intstat &= ~0x00000c00u;
+        if(s->seeq) { s->seeq->reset(); }
+      }
+      break;
+    default: break;
+    }
     return;
   }
-  else if(offs >= 0x00054000 and offs <= 0x0005401f) { /* Seeq ENET device regs: accept + ignore (no-carrier stub) */
+  else if(offs >= 0x00054000 and offs <= 0x0005401f) { /* Seeq 8003 ENET device regs */
+    /* Byte registers, word-spaced. On a word store (sz==4) the BE MMIO path puts
+     * the byte in bits [31:24] (symmetric with the read handler's v<<24); a byte
+     * store carries it in [7:0]. Extracting (uint8_t)x unconditionally zeroed
+     * rx_cmd + the station MAC -> receiver disabled. */
+    uint8_t b = (sz == 1) ? (uint8_t)x : (uint8_t)(x >> 24);
+    if(s->seeq) { s->seeq->pio_w(((offs - 0x54000) >> 2) & 7, b); }
     return;
   }
   else if(offs == 0x30004) {      /* gio_misc */

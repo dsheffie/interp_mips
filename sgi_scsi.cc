@@ -26,11 +26,20 @@ enum { ST_RESET=0x00, ST_SELECT_TRANSFER_SUCCESS=0x16, ST_SELECTION_TIMEOUT=0x42
  * times out so the bus scan reports one drive, not one per target. */
 static const uint8_t DISK_TARGET = 1;
 
-sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path)
-  : s(s), delta_path(delta_path) {
-  fd = open(disk_path.c_str(), O_RDONLY);
+sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path,
+                   bool direct_write)
+  : s(s), direct_write(direct_write), delta_path(delta_path) {
+  /* --disk-write: open O_RDWR and let block_write() land straight in the image
+   * (like the FPGA's real disk) so IRIX reconfigure/state persists. Mutually
+   * exclusive with the COW delta -- ignore delta_path in this mode. */
+  if(direct_write and !delta_path.empty()) {
+    fprintf(stderr, "sgi_scsi: --disk-write overrides --disk-delta (direct writes, no COW)\n");
+    this->delta_path.clear();
+  }
+  fd = open(disk_path.c_str(), direct_write ? O_RDWR : O_RDONLY);
   if(fd < 0) {
-    fprintf(stderr, "sgi_scsi: cannot open disk image '%s'\n", disk_path.c_str());
+    fprintf(stderr, "sgi_scsi: cannot open disk image '%s'%s\n", disk_path.c_str(),
+            direct_write ? " for read/write (--disk-write)" : "");
     return;
   }
   struct stat st;
@@ -38,8 +47,13 @@ sgi_scsi::sgi_scsi(state_t *s, const std::string &disk_path, const std::string &
     nblocks = (uint64_t)st.st_size / 512;
   sense[0] = 0x70; sense[7] = 0x0a;   /* fixed-format REQUEST SENSE: NO SENSE */
   reset();
-  SPRINTF("sgi_scsi: '%s' = %llu blocks (%llu MB)\n", disk_path.c_str(),
-          (unsigned long long)nblocks, (unsigned long long)(nblocks/2048));
+  SPRINTF("sgi_scsi: '%s' = %llu blocks (%llu MB)%s\n", disk_path.c_str(),
+          (unsigned long long)nblocks, (unsigned long long)(nblocks/2048),
+          direct_write ? " [DIRECT WRITE]" : "");
+  if(direct_write) {
+    fprintf(stderr, "sgi_scsi: DIRECT WRITE to '%s' -- the image WILL be modified in place\n",
+            disk_path.c_str());
+  }
   if(!this->delta_path.empty()) load_delta();
 }
 
@@ -96,7 +110,14 @@ void sgi_scsi::block_read(uint64_t lba, uint8_t *dst) {
 }
 
 void sgi_scsi::block_write(uint64_t lba, const uint8_t *src) {
-  auto &v = overlay[lba];                 /* never touch the backing image */
+  if(direct_write) {                      /* --disk-write: straight to the image, no COW */
+    if(lba < nblocks) {
+      ssize_t n = pwrite(fd, src, 512, (off_t)(lba * 512));
+      (void)n;
+    }
+    return;
+  }
+  auto &v = overlay[lba];                 /* COW: never touch the backing image */
   v.assign(src, src + 512);
 }
 
@@ -311,13 +332,19 @@ void sgi_scsi::select_and_transfer() {
 
 void sgi_scsi::exec_command(uint8_t cc) {
   switch(cc) {
-  case CMD_RESET:
+  case CMD_RESET: {
     reset();
-    regs[WD_SCSI_STATUS] = ST_RESET;
+    /* WD33C93 reset status: 0x01 = "reset, advanced features enabled" (OWN_ID
+     * EAF bit 0x08 set), else 0x00. wd93resetdone reads Status to confirm the
+     * post-reset mode; returning 0x00 when the driver enabled EAF wedges it. */
+    bool eaf = (regs[WD_OWN_ID] & 0x08) != 0;
+    regs[WD_SCSI_STATUS] = eaf ? 0x01 : ST_RESET;
     regs[WD_AUX_STATUS] |= AUX_INT;
     intrq = true; s->irq_poke = true;
-    SPRINTF("sgi_scsi: exec CMD_RESET @icnt=%llu -> intrq=true\n", (unsigned long long)s->icnt);
+    SPRINTF("sgi_scsi: CMD_RESET own_id=%02x eaf=%d -> status=%02x @icnt=%llu\n",
+            regs[WD_OWN_ID], (int)eaf, regs[WD_SCSI_STATUS], (unsigned long long)s->icnt);
     break;
+  }
   case CMD_SEL_ATN_XFER:
   case CMD_SEL_XFER:
     select_and_transfer();

@@ -18,6 +18,7 @@
 #include "sgi_hpc.hh"
 #include "sgi_scc.hh"
 #include "sgi_scsi.hh"
+#include "sgi_seeq.hh"
 #include "gdbstub.hh"
 #include "globals.hh"
 #include "inst_record.hh"
@@ -56,6 +57,7 @@ static state_t *s = nullptr;
 int main(int argc, char *argv[]) {
   std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out, restore_name;
   std::string cosim;   /* "server"|"client": lockstep co-sim vs the JIT sim */
+  bool disk_write = false;   /* --disk-write: write straight through to --disk (no COW) */
   uint64_t maxinsns = ~(0UL);
   uint64_t ckpt_icnt = 0;
   int gdb_port = 0;
@@ -69,6 +71,7 @@ int main(int argc, char *argv[]) {
       ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
       ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)")
       ("disk-delta", po::value<std::string>(&disk_delta), "persistent COW sidecar for --disk: writes survive across runs (image stays read-only); flushed on exit + SIGUSR2")
+      ("disk-write", po::bool_switch(&disk_write), "write straight through to --disk (O_RDWR, no COW) -- the image IS modified in place, like the FPGA; lets IRIX reconfigure persist. Overrides --disk-delta")
       ("prom",     po::value<std::string>(&prom),     "flat PROM firmware blob loaded at phys 0x1fc00000 (e.g. henry_arcs.bin); use with --start-pc 0xbfc00000")
       ("checkpoint-at",  po::value<std::string>(&ckpt_at)->default_value(""),  "dump a full-state checkpoint when this PC (hex) first retires, then exit")
       ("checkpoint-icnt", po::value<uint64_t>(&ckpt_icnt)->default_value(0),    "dump a full-state checkpoint when icnt first reaches this value, then exit")
@@ -98,7 +101,8 @@ int main(int argc, char *argv[]) {
   s->mc  = new sgi_mc(s);
   s->hpc = new sgi_hpc(s);
   s->scc = new sgi_scc(s);
-  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk, disk_delta);
+  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk, disk_delta, disk_write);
+  s->seeq = new sgi_seeq(s);   /* Seeq 8003 ethernet; tap via env SEEQ_TAP=<ifname> */
   sm->st = s;
   sm->route_devices = true;
 
@@ -339,6 +343,6 @@ int main(int argc, char *argv[]) {
               << " retire_trace records to " << retire_name << "\n";
   }
 
-  delete s->mc; delete s->hpc; delete s->scc; delete s->scsi; delete s; delete sm;
+  delete s->mc; delete s->hpc; delete s->scc; delete s->scsi; delete s->seeq; delete s; delete sm;
   return 0;
 }

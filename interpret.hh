@@ -106,6 +106,7 @@ class sgi_mc;
 class sgi_hpc;
 class sgi_scc;
 class sgi_scsi;
+class sgi_seeq;
 class gdb_stub;
 
 class state_t{
@@ -152,6 +153,7 @@ public:
   sgi_hpc *hpc = nullptr;
   sgi_scc *scc = nullptr;
   sgi_scsi *scsi = nullptr;
+  sgi_seeq *seeq = nullptr;
   gdb_stub *gdb = nullptr;
 
   /* True while executing a branch/jump delay-slot instruction.  An exception in

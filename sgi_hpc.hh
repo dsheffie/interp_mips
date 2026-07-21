@@ -48,6 +48,13 @@ class sgi_hpc {
   scsi_dma_t scsi_dma[2];
   void scsi_fetch_chain(int ch);   /* load {cbp,bc,nbdp,count} from nbdp */
   void scsi_run_dma(int ch);       /* pump the descriptor-walk FSM */
+
+  /* HPC3 ENET DMA channels: ch0 = RX (regs @ 0x14000), ch1 = TX (@ 0x16000).
+   * Same {BP,BC,DP} scatter-gather as SCSI, driving the Seeq 8003 (s->seeq)
+   * instead of the WD33C93. */
+  scsi_dma_t enet_dma[2];
+  uint32_t enet_poll_ctr = 0;      /* throttle the per-instruction tap read (a syscall) */
+  void enet_run_dma(int ch);       /* pump the ENET descriptor walk vs the Seeq */
   /* i8254 PIT counter 2 (IP22 timer calibration; tcnt2=offs 0x598bb,
    * tcword=offs 0x598bf).  ip22-time.c:dosample() programs cnt2, then polls the
    * latched value until its high byte reads 0, measuring CP0 Count across that
@@ -64,6 +71,7 @@ class sgi_hpc {
 public:
   /* true when an unmasked local0 interrupt is pending -> drive CP0 Cause IP2 */
   bool ioc2_ip2_pending() { return (ioc2_local0_live() & ioc2_local_mask[0]) != 0; }
+  void enet_poll();   /* drain the tap into the Seeq + deliver pending RX via DMA */
   sgi_hpc(state_t *s) : s(s), intstat(0), misc(0) {}
   uint32_t read(uint32_t offs, size_t sz);
   void write(uint32_t offs, uint32_t x, size_t sz);

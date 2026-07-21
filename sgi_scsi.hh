@@ -32,7 +32,8 @@ public:
   enum phase_t { PH_IDLE, PH_DATA_IN, PH_DATA_OUT };
 private:
   state_t *s;
-  int      fd = -1;                 /* raw disk image (read-only) */
+  int      fd = -1;                 /* raw disk image (read-only, or O_RDWR if direct_write) */
+  bool     direct_write = false;    /* --disk-write: writes go straight to the image, no COW */
   uint64_t nblocks = 0;             /* 512-byte block count */
   uint8_t  regs[0x20] = {0};        /* WD33C93 register file 0x00..0x1f */
   uint8_t  sasr = 0;                /* indirect register pointer */
@@ -57,7 +58,8 @@ private:
   void finish();                    /* data phase drained -> status + INTRQ */
   void complete(uint8_t scsi_status);
 public:
-  sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path = "");
+  sgi_scsi(state_t *s, const std::string &disk_path, const std::string &delta_path = "",
+           bool direct_write = false);
   ~sgi_scsi();
   bool ok() const { return fd >= 0; }
 

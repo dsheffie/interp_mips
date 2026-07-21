@@ -328,6 +328,7 @@ void maybe_take_interrupt(state_t *s) {
 
   /* IOC2/INT2 local0 (WD33C93 SCSI etc.) -> CP0 Cause IP[2] (bit 10). Level-
    * sensitive: set while an unmasked local0 source is asserted, else clear. */
+  if(s->hpc) s->hpc->enet_poll();   /* drain the tap into the Seeq + deliver RX via DMA */
   if(s->hpc && s->hpc->ioc2_ip2_pending()) s->cpr0[CPR0_CAUSE] |=  (1u << 10);
   else                                     s->cpr0[CPR0_CAUSE] &= ~(1u << 10);
   uint32_t sr = s->cpr0[CPR0_SR], cause = s->cpr0[CPR0_CAUSE];
