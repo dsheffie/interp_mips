@@ -161,6 +161,12 @@ public:
    * core.sv: n_epc = in_delay_slot ? pc-4 : pc; n_exc_in_delay = in_delay_slot). */
   bool in_delay_slot = false;
 
+  /* True between a load-linked and its matching store-conditional (set by LL/LLD,
+   * cleared by SC/SCD and by any exception).  The functional SC always succeeds,
+   * so this is not needed for execution -- it exists so a checkpoint is never
+   * taken with a link armed (the RTL's llbit is not part of the saved state). */
+  bool ll_armed = false;
+
   /* Set by va_translate() when an address translation raised a TLB exception
    * (Refill/Invalid/Modified).  The faulting instruction must abort immediately
    * (do not commit its result or advance pc) -- the exception has already

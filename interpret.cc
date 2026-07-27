@@ -195,6 +195,7 @@ static inline void raise_common(state_t *s, uint32_t exccode) {
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2)) | (exccode << 2);
   s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
+  s->ll_armed = false;   /* any exception breaks the load-linked reservation */
   s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
 }
 
@@ -3485,14 +3486,22 @@ void execMips(state_t *s) {
   else if(isCoproc2) {
     printf("coproc2 unimplemented\n");  exit(-1);
   }
-  else if(isLoadLinked)
+  else if(isLoadLinked) {
     _lw<EL>(inst, s);
-  else if(isStoreCond)
+    if(!s->tlb_fault) s->ll_armed = true;
+  }
+  else if(isStoreCond) {
     _sc<EL>(inst, s);
-  else if(isLoadLinkedD)
+    s->ll_armed = false;
+  }
+  else if(isLoadLinkedD) {
     _ld<EL>(inst, s);
-  else if(isStoreCondD)
+    if(!s->tlb_fault) s->ll_armed = true;
+  }
+  else if(isStoreCondD) {
     _scd<EL>(inst, s);
+    s->ll_armed = false;
+  }
   else { /* itype */
     uint32_t uimm32 = inst & ((1<<16) - 1);
     int16_t simm16 = (int16_t)uimm32;

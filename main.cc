@@ -257,13 +257,20 @@ int main(int argc, char *argv[]) {
               (long)s->gpr[7], (long)s->gpr[8], (long)s->gpr[9]);
       if(++probe_hits >= 64) break;
     }
-    if(ckpt_pc && (uint32_t)s->pc == ckpt_pc) {
+    /* A checkpoint must land on a clean architectural boundary: NOT in a
+     * branch delay slot (the pending branch target is not part of the saved
+     * state -- resuming would fall through and derail, agreeing between interp
+     * and RTL but diverging from the original run), and NOT with a load-linked
+     * armed (the RTL's llbit is not seeded, so a resumed SC would fail where
+     * the interp expects success).  Defer to the next safe retire. */
+    bool ckpt_safe = !s->in_delay_slot && !s->ll_armed;
+    if(ckpt_pc && (uint32_t)s->pc == ckpt_pc && ckpt_safe) {
       fprintf(stderr, "[ckpt] reached pc=%08x at icnt=%lu -> dumping %s\n",
               ckpt_pc, (unsigned long)s->icnt, ckpt_out.c_str());
       dumpState(*s, ckpt_out);
       break;
     }
-    if(ckpt_icnt && s->icnt >= ckpt_icnt) {
+    if(ckpt_icnt && s->icnt >= ckpt_icnt && ckpt_safe) {
       fprintf(stderr, "[ckpt] reached icnt=%lu (pc=%08x) -> dumping %s\n",
               (unsigned long)s->icnt, (uint32_t)s->pc, ckpt_out.c_str());
       dumpState(*s, ckpt_out);
