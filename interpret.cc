@@ -117,8 +117,9 @@ static void _movzd(uint32_t inst, state_t *s);
 static void _movzs(uint32_t inst, state_t *s);
 
 void initState(state_t *s) {
-  /* Matches the RTL's cpr0_status_reg reset in exec.sv. */
-  s->cpr0[CPR0_SR] |= SR_ERL | SR_BEV | SR_CU0 | SR_CU1 | SR_CU2;
+  /* Matches the RTL's cpr0_status_reg reset in exec.sv: CU1 resets 0 (R/W,
+   * lazy-FPU) -- FP is enabled by the OS on the first-use CpU trap, NOT at reset. */
+  s->cpr0[CPR0_SR] |= SR_ERL | SR_BEV | SR_CU0 | SR_CU2;
   /* Random starts at max TLB index; it cycles downward to Wired */
   s->cpr0[CPR0_RANDOM] = state_t::NUM_TLB_ENTRIES - 1;
   /* PRId: read-only processor id (R4000 family for now) */
@@ -368,6 +369,21 @@ static void raise_ades(state_t *s) {
 static void take_exception_ri(state_t *s) {
   set_exc_pc(s);
   raise_common(s, 10u);
+}
+
+/* Coprocessor Unusable (ExcCode 11, Cause.CE[29:28] = coprocessor number).  Raised
+ * when a CP1/FP op executes with Status.CU1==0 -- IRIX lazy-FPU: o32 processes run
+ * with CU1=0 and enable FP on the first-use trap.  Mirrors the RTL decode_mips.sv
+ * gate and the henny cosim ISS.  (raise_common does not set CE, so this is a
+ * dedicated helper.) */
+static void take_exception_cpu(state_t *s, uint32_t ce) {
+  set_exc_pc(s);
+  bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
+  s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2) & ~(0x3u << 28))
+                        | (11u << 2) | ((ce & 0x3u) << 28);
+  s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
+  s->ll_armed = false;
+  s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
 }
 
 static void raise_ri(state_t *s, uint32_t inst) {
@@ -2831,6 +2847,20 @@ void execMips(state_t *s) {
   if(is_64b_gated(inst) && !in_64b_mode(s)) {
     take_exception_ri(s);
     return;
+  }
+
+  /* CP1 Coprocessor-Unusable: a CP1/FP op with Status.CU1==0 raises CpU (CE=1),
+   * mirroring the RTL decode_mips.sv gate and the henny cosim ISS.  Gated opcodes:
+   * COP1 (0x11, incl mfc1/mtc1/cfc1/ctc1), LWC1 (0x31), LDC1 (0x35), SWC1 (0x39),
+   * SDC1 (0x3d).  IRIX lazy-FPU: o32 processes run CU1=0 and take this trap on first
+   * FP use.  Previously interp_mips ignored CU1, building FP bookkeeping inconsistent
+   * with CU1-enforcing HW -- which derailed checkpoint resume onto the RTL. */
+  { uint32_t op = inst >> 26;
+    if((op == 0x11 || op == 0x31 || op == 0x35 || op == 0x39 || op == 0x3d)
+       && !(s->cpr0[CPR0_SR] & SR_CU1)) {
+      take_exception_cpu(s, 1);
+      return;
+    }
   }
     
   if(isRType) {
