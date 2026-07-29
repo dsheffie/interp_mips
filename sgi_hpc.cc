@@ -308,6 +308,11 @@ uint8_t sgi_hpc::ioc2_local0_live() {
 
 uint32_t sgi_hpc::read(uint32_t offs, size_t sz) {
   DPRINTF("%s at pc %x : %x unimplemented\n", __PRETTY_FUNCTION__, s->pc, offs);
+  static const bool g_maclog = getenv("MACLOG") != nullptr;
+  if(g_maclog and (uint32_t)s->pc >= 0x8800ab20u and (uint32_t)s->pc <= 0x8800b0b8u) {
+    fprintf(stderr, "[maclog] pc=%08x get_nvreg reads offs=%05x sz=%zu\n",
+            (uint32_t)s->pc, offs, sz);
+  }
   static const bool g_enet_dbg = getenv("ENET_DBG") != nullptr;
   if(g_enet_dbg and ((offs >= 0x14000 and offs <= 0x17fff) or
                      (offs >= 0x54000 and offs <= 0x5401f) or

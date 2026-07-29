@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cmath>
+#include <cfenv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +24,40 @@
 #include "helper.hh"
 #include "globals.hh"
 #include "inst_record.hh"
+
+/* Berkeley SoftFloat-3 (vendored in ./softfloat) -- bit-exact IEEE-754 that
+ * honors the FCSR rounding mode explicitly.  The host FPU can't be trusted for
+ * this: GCC ignores runtime fesetround for the raw +,-,* operators even with
+ * -frounding-math, so add/sub/mul silently rounded to nearest regardless of RM,
+ * corrupting anything that sets a non-default mode (e.g. libc's %f dtoa). */
+extern "C" {
+#include "softfloat/source/include/softfloat.h"
+}
+
+/* host double/float <-> softfloat bit-container (pure reinterpret, no rounding) */
+static inline float64_t d2sf(double d)  { float64_t f; std::memcpy(&f.v, &d, 8); return f; }
+static inline double    sf2d(float64_t f){ double d;    std::memcpy(&d, &f.v, 8); return d; }
+static inline float32_t s2sf(float s)   { float32_t f; std::memcpy(&f.v, &s, 4); return f; }
+static inline float     sf2s(float32_t f){ float s;     std::memcpy(&s, &f.v, 4); return s; }
+
+/* MIPS FCSR.RM (0=RN,1=RZ,2=RP/+inf,3=RM/-inf) -> SoftFloat rounding mode
+ * (0=near_even,1=minMag,2=min/-inf,3=max/+inf).  Note RP/RM swap. */
+static inline void sf_set_rm(state_t *s) {
+  static const uint_fast8_t m[4] = { softfloat_round_near_even, softfloat_round_minMag,
+                                     softfloat_round_max, softfloat_round_min };
+  softfloat_roundingMode = m[ s->fcr1[CP1_CR31] & 3u ];
+}
+/* overloaded so execFP<T,op> resolves f32/f64 by the operand type; caller sets RM. */
+static inline double sf_add(double a,double b){ return sf2d(f64_add(d2sf(a),d2sf(b))); }
+static inline float  sf_add(float  a,float  b){ return sf2s(f32_add(s2sf(a),s2sf(b))); }
+static inline double sf_sub(double a,double b){ return sf2d(f64_sub(d2sf(a),d2sf(b))); }
+static inline float  sf_sub(float  a,float  b){ return sf2s(f32_sub(s2sf(a),s2sf(b))); }
+static inline double sf_mul(double a,double b){ return sf2d(f64_mul(d2sf(a),d2sf(b))); }
+static inline float  sf_mul(float  a,float  b){ return sf2s(f32_mul(s2sf(a),s2sf(b))); }
+static inline double sf_div(double a,double b){ return sf2d(f64_div(d2sf(a),d2sf(b))); }
+static inline float  sf_div(float  a,float  b){ return sf2s(f32_div(s2sf(a),s2sf(b))); }
+static inline double sf_sqrtf(double a){ return sf2d(f64_sqrt(d2sf(a))); }
+static inline float  sf_sqrtf(float  a){ return sf2s(f32_sqrt(s2sf(a))); }
 
 static fpMode currFpMode = fpMode::mips3;  /* IRIX N32 = MIPS-III, FR=1 flat 64-bit FP regs (odd regs legal, no fd+1 pairing) */
 
@@ -275,6 +310,14 @@ void maybe_take_interrupt(state_t *s) {
         (uint32_t)s->pc, (unsigned long long)s->gpr[4], (unsigned long long)s->gpr[7],
         (unsigned long long)s->gpr[8], (unsigned long long)s->gpr[29], (unsigned long long)s->icnt); }
 
+  /* F1C_PROBE: the silicon crash instruction 0c007f1c = `lw r16,0xedc(r16)` (loads a global
+   * pointer from r16+0xedc). Print r16 + the load addr each time interp reaches it, to confirm
+   * interp sees the same r16=0x200000 and same 0x200edc load (paired with the fault-side probe). */
+  { static const bool g_f1c = getenv("F1C_PROBE") != nullptr;
+    if(g_f1c && (uint32_t)s->pc == 0x0c007f1cu)
+      fprintf(stderr, "[F1C] pc=0c007f1c r16=%08x loadaddr=%08x icnt=%llu\n",
+        (uint32_t)s->gpr[16], (uint32_t)((uint32_t)s->gpr[16]+0xedc), (unsigned long long)s->icnt); }
+
   /* SHLOOP: golden trace of the /sbin/sh list-walk (0x0e005974..0x0e005998) that the RTL
    * SIGSEGVs on -- e00597c `lw v1,0(v1)` faults with v1=0.  Logged BEFORE each loop pc, so
    * at e00597c v1(gpr[3]) is the pointer about to be deref'd; interp never faults so v1!=0
@@ -386,6 +429,20 @@ static void take_exception_cpu(state_t *s, uint32_t ce) {
   s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
 }
 
+/* FP exception (ExcCode 15) with the Unimplemented-Op (E) bit set in FCSR.Cause
+ * (bit 17) -- the catch-all for COP1 ops not done in HW: div/sqrt (always) and
+ * add/sub/mul on a denormal operand/underflow, matching the RTL fpu.sv.  The OS
+ * soft-float emulator decodes insn@EPC and emulates it. */
+static void take_exception_fpe(state_t *s) {
+  set_exc_pc(s);
+  bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
+  s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2)) | (15u << 2);
+  s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
+  s->fcr1[CP1_CR31]  |= (1u << 17);
+  s->ll_armed = false;
+  s->pc = sext32(exc_vector(s, /*is_refill=*/false, exl_was_set, /*xtlb=*/false));
+}
+
 static void raise_ri(state_t *s, uint32_t inst) {
   fprintf(stderr, "unimplemented: opcode=0x%02x funct=0x%02x @ pc=0x%08x\n",
           inst >> 26, inst & 0x3fu, (uint32_t)s->pc);
@@ -460,7 +517,7 @@ static void raise_trap(state_t *s) {
 static bool tlb_probe_ro(state_t *s, uint64_t va, uint32_t *pa);
 /* read a 32-bit big-endian word from a guest VA, non-faulting (returns false if
  * the VA is unmapped). Used to walk IRIX's curproc pointer chain. */
-static bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out) {
+bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out) {
   uint32_t pa;
   if(!tlb_probe_ro(s, va, &pa)) return false;
   *out = __builtin_bswap32(s->mem.get<uint32_t>(pa));   /* guest is big-endian */
@@ -738,6 +795,10 @@ static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
                   (unsigned long long)s->tlb[i].entry_lo1, s->tlb[i].page_mask);
     }
   }
+  { static const bool g_f1cf = getenv("F1C_PROBE") != nullptr;
+    if(g_f1cf && ((uint32_t)va >> 12) == 0x200u)
+      fprintf(stderr, "[F1C-FAULT] va=%08x pc=%08x code=%u refill=%d icnt=%lu\n",
+              (uint32_t)va, (uint32_t)s->pc, exccode, is_refill, (unsigned long)s->icnt); }
   if(tlbdbg)
     fprintf(stderr, "[raise_tlb] va=%016llx code=%u refill=%d xtlb=%d pc=%08x exl=%d ctx=%08x ctx64=%016llx\n",
             (unsigned long long)va, exccode, is_refill, is_xtlb, (uint32_t)s->pc,
@@ -890,6 +951,22 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
     if(g_watchc4 && op == tlb_op::load && lo32 == 0x0e0981c4u)
       fprintf(stderr, "[watchc4] load  pc=%08x va=%08x icnt=%llu\n",
         (uint32_t)s->pc, lo32, (unsigned long long)s->icnt); }
+
+  /* WATCHVA: env-configurable watch of a single VA (WATCHVA_ADDR).  On every store into the
+   * word [addr,addr+8) record (pc,icnt); on every load of addr print the store->load distance.
+   * Used to answer "which store wrote the value the crash-load reads, and how far back". */
+  { static const uint32_t g_wva = getenv("WATCHVA_ADDR") ? (uint32_t)strtoul(getenv("WATCHVA_ADDR"),0,0) : 0;
+    static uint32_t wva_spc = 0; static uint64_t wva_sicnt = 0;
+    if(g_wva) {
+      if(op == tlb_op::store && lo32 >= g_wva && lo32 < g_wva+8u) {
+        wva_spc = (uint32_t)s->pc; wva_sicnt = s->icnt;
+        fprintf(stderr, "[watchva] STORE pc=%08x va=%08x icnt=%llu\n",(uint32_t)s->pc, lo32, (unsigned long long)s->icnt);
+      }
+      if(op == tlb_op::load && lo32 >= g_wva && lo32 < g_wva+8u)
+        fprintf(stderr, "[watchva] LOAD  pc=%08x va=%08x icnt=%llu  <- last store pc=%08x icnt=%llu (dist=%llu insns)\n",
+          (uint32_t)s->pc, lo32, (unsigned long long)s->icnt, wva_spc, (unsigned long long)wva_sicnt,
+          (unsigned long long)(s->icnt - wva_sicnt));
+    } }
 
   /* IDXWR: shadow last-writer-PC per word (keyed on VA), to find what STORES the
    * array-insert index mem[s4] loaded at 0e774150.  On each store record the storing
@@ -1100,6 +1177,21 @@ static inline void ptetrack_probe(state_t *, uint32_t, uint32_t) {}
  * alias-frequency instrument, then return the PA unchanged. */
 static uint32_t va_translate(state_t *s, uint64_t va, tlb_op op) {
   uint32_t pa = va_translate_inner(s, va, op);
+  static const bool g_nvlog = getenv("NVLOG") != nullptr;
+  if(g_nvlog and op == tlb_op::load
+     and (((uint32_t)s->pc >= 0x8800ab20u and (uint32_t)s->pc <= 0x8800b0b8u)
+       or ((uint32_t)s->pc >= 0x88059c2cu and (uint32_t)s->pc <= 0x8805a1a0u))) {
+    uint32_t mv = __builtin_bswap32(s->mem.get<uint32_t>(pa & ~3u));
+    fprintf(stderr, "[nv] pc=%08x va=%08x pa=%08x memval=%08x\n",
+            (uint32_t)s->pc, (uint32_t)va, pa, mv);
+  }
+  // watch writes to the ec unit-config flags (0x08308ec0 + n*824 + 0x284) to see
+  // how autoconfig assigns the onboard ethernet its unit number.
+  static const bool g_eccfg = getenv("ECCFG") != nullptr;
+  if(g_eccfg and op == tlb_op::store and (pa & ~0x3u) >= 0x08308ec0u and (pa & ~0x3u) <= 0x08309500u) {
+    fprintf(stderr, "[eccfg] pc=%08x va=%08x pa=%08x (ec-config write)\n",
+            (uint32_t)s->pc, (uint32_t)va, pa);
+  }
   if(!s->tlb_fault) {
     if(op != tlb_op::fetch) {
       if(s->mem.cache_active) { alias_access((uint32_t)va, pa); }   /* D-side */
@@ -1152,7 +1244,8 @@ static bool tlb_probe_ro(state_t *s, uint64_t va, uint32_t *pa) {
 
 template <typename T>
 struct c1xExec {
-  void operator()(const coproc1x_t& insn, state_t *s) {
+  void operator()(const mips_t& mi, state_t *s) {
+    const coproc1x_t& insn = mi.c1x;
     T _fr = *reinterpret_cast<T*>(s->cpr1+insn.fr);
     T _fs = *reinterpret_cast<T*>(s->cpr1+insn.fs);
     T _ft = *reinterpret_cast<T*>(s->cpr1+insn.ft);
@@ -1169,6 +1262,8 @@ struct c1xExec {
 	std::cerr << "unhandled coproc1x insn @ 0x"
 		  << std::hex << s->pc << std::dec
 		  << ", id = " << insn.id
+		  << " "
+		  << getAsmString(mi.raw, s->pc)
 		  <<"\n";
 	exit(-1);
       }
@@ -1208,12 +1303,12 @@ static void execCoproc1x(uint32_t inst, state_t *s) {
    {
    case 0: {
      c1xExec<float> e;
-     e(mi.c1x, s);
+     e(mi, s);
      return;
    }
    case 1: {
      c1xExec<double> e;
-     e(mi.c1x, s);
+     e(mi, s);
      return;
    }
    default:
@@ -1642,11 +1737,27 @@ static void _sb(uint32_t inst, state_t *s) {
   HISTO(s, mipsInsn::SB);
 }
 
+/* r9999 FR=0 FP register model (mirror decode_mips.sv).  FR=1: 32 flat 64-bit
+ * regs, single = low 32.  FR=0: 16 even regs -- a single-precision reg r lives in
+ * the (r&1 ? high : low) 32-bit half of cpr1[r & ~1] (even=low, odd=high), and a
+ * 64-bit (ldc1/sdc1) access forces the reg even (r & ~1). */
+static inline bool fpr_fr1(const state_t *s) { return (s->cpr0[CPR0_SR] >> 26) & 1u; }
+static inline uint32_t *fpr_hw(state_t *s, uint32_t r) {
+  uint32_t reg = fpr_fr1(s) ? r : (r & ~1u);
+  uint32_t hi  = fpr_fr1(s) ? 0u : (r & 1u);
+  return reinterpret_cast<uint32_t*>(&s->cpr1[reg]) + hi;
+}
+static inline uint32_t fpr_dreg(const state_t *s, uint32_t r) {
+  return fpr_fr1(s) ? r : (r & ~1u);
+}
+
 static void _mtc1(uint32_t inst, state_t *s) {
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
-  /* mips3/4 FR=1: FPR[fs] = sign_extend32(GPR[rt][31:0]) */
-  s->cpr1[fs] = (uint64_t)(int64_t)(int32_t)(uint32_t)s->gpr[rt];
+  /* FR=1: FPR[fs]=sign_extend32(GPR[rt][31:0]).  FR=0: write the fs[0]-selected
+   * 32b half of the even reg, preserving the other half (r9999 mtc1 merge). */
+  if(fpr_fr1(s)) { s->cpr1[fs] = (uint64_t)(int64_t)(int32_t)(uint32_t)s->gpr[rt]; }
+  else           { *fpr_hw(s, fs) = (uint32_t)s->gpr[rt]; }
   s->pc += 4;
   HISTO(s, mipsInsn::MTC1);
 }
@@ -1654,8 +1765,8 @@ static void _mtc1(uint32_t inst, state_t *s) {
 static void _mfc1(uint32_t inst, state_t *s) {
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
-  /* mips3/4 FR=1: GPR[rt] = sign_extend32(FPR[fs][31:0]) */
-  s->gpr[rt] = (int64_t)(int32_t)(uint32_t)s->cpr1[fs];
+  /* FR=1: GPR[rt]=sign_extend32(FPR[fs][31:0]).  FR=0: extract the fs[0] half. */
+  s->gpr[rt] = (int64_t)(int32_t)(*fpr_hw(s, fs));
   s->pc +=4;
   HISTO(s, mipsInsn::MFC1);
 }
@@ -1981,7 +2092,7 @@ void _ldc1(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::load);
   if(s->tlb_fault) return;
-  *reinterpret_cast<int64_t*>(s->cpr1 + ft) = bswap<EL>(s->mem.get<int64_t>(ea));
+  *reinterpret_cast<int64_t*>(s->cpr1 + fpr_dreg(s, ft)) = bswap<EL>(s->mem.get<int64_t>(ea));
   s->pc += 4;
   HISTO(s, mipsInsn::LDC1);
 }
@@ -1994,7 +2105,7 @@ void _sdc1(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
-  s->mem.set<int64_t>(ea,  bswap<EL>((*(int64_t*)(s->cpr1 + ft))));
+  s->mem.set<int64_t>(ea,  bswap<EL>((*(int64_t*)(s->cpr1 + fpr_dreg(s, ft)))));
   s->pc += 4;
   HISTO(s, mipsInsn::SDC1);  
 }
@@ -2008,7 +2119,7 @@ void _lwc1(uint32_t inst, state_t *s) {
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::load);
   if(s->tlb_fault) return;
   uint32_t v = bswap<EL>(s->mem.get<uint32_t>(ea)); 
-  *((float*)(s->cpr1 + ft)) = *((float*)&v);
+  *reinterpret_cast<float*>(fpr_hw(s, ft)) = *((float*)&v);
   s->pc += 4;
   HISTO(s, mipsInsn::LWC1);
 }
@@ -2021,10 +2132,56 @@ void _swc1(uint32_t inst, state_t *s) {
   int32_t imm = (int32_t)himm;
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
-  uint32_t v = *((uint32_t*)(s->cpr1+ft));
+  uint32_t v = *fpr_hw(s, ft);
   s->mem.set<uint32_t>(ea, bswap<EL>(v));
   s->pc += 4;
   HISTO(s, mipsInsn::SWC1);
+}
+
+/* FCSR.RM (bits[1:0]) -> C fenv rounding mode (for cvt.w / cvt.l). */
+static inline int fcsr_fe_round(state_t *s) {
+  switch(s->fcr1[CP1_CR31] & 3u) {
+  case 0:  return FE_TONEAREST;   /* RN */
+  case 1:  return FE_TOWARDZERO;  /* RZ */
+  case 2:  return FE_UPWARD;      /* RP */
+  default: return FE_DOWNWARD;    /* RM */
+  }
+}
+
+/* FP -> integer convert with an explicit rounding mode.  Covers round.*(RN),
+ * ceil.*(+inf), floor.*(-inf) and cvt.*(FCSR.RM); trunc.* keeps its own path.
+ * is_long => 64-bit fixed result (.l), else 32-bit (.w).  Mirrors r9999 fpu_f2i. */
+static void _fp2int(uint32_t inst, state_t *s, bool is_long, int fe_round) {
+  uint32_t fmt = (inst >> 21) & 31;
+  uint32_t fd  = (inst >> 6)  & 31;
+  uint32_t fs  = (inst >> 11) & 31;
+  double v;
+  switch(fmt) {
+  case FMT_S: v = (double)(*((float*)(s->cpr1 + fs)));  break;
+  case FMT_D: v =         (*((double*)(s->cpr1 + fs))); break;
+  default:
+    printf("%s: unhandled fmt=%u inst=%08x pc=%08x\n", __func__, fmt, inst, (uint32_t)s->pc);
+    exit(-1);
+  }
+  int save = std::fegetround();
+  std::fesetround(fe_round);
+  double r = std::nearbyint(v);
+  std::fesetround(save);
+  if(is_long) {
+    *((int64_t*)(s->cpr1 + fd)) = (int64_t)r;
+    s->cpr1_state[fd] = fp_reg_state::dp;
+  }
+  else {
+    *((int32_t*)(s->cpr1 + fd)) = (int32_t)r;
+    if(currFpMode != fpMode::mips3) { s->cpr1[fd + 1] = 0; }
+  }
+  {
+    static const bool g_fpall = getenv("FPALLLOG") != nullptr;
+    if(g_fpall && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u)
+      fprintf(stderr, "[fp] f2int long=%d v=%.17g r=%.17g -> 0x%016llx pc=%08x\n", (int)is_long, v, r,
+              (unsigned long long)*((uint64_t*)(s->cpr1+fd)), (uint32_t)s->pc);
+  }
+  s->pc += 4;
 }
 
 static void _truncl(uint32_t inst, state_t *s) {
@@ -2046,6 +2203,12 @@ static void _truncl(uint32_t inst, state_t *s) {
       break;
     }
   s->cpr1_state[fd] = fp_reg_state::dp;
+  {
+    static const bool g_fpall = getenv("FPALLLOG") != nullptr;
+    if(g_fpall && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u)
+      fprintf(stderr, "[fp] trunc.l fmt=%u -> 0x%016llx (%lld) pc=%08x\n", fmt,
+              (unsigned long long)*ptr, (long long)*ptr, (uint32_t)s->pc);
+  }
   s->pc += 4;
 }
 
@@ -2242,6 +2405,12 @@ static void _cvtd(uint32_t inst, state_t *s) {
       exit(-1);
       break;
     }
+  {
+    static const bool g_fpall = getenv("FPALLLOG") != nullptr;
+    if(g_fpall && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u)
+      fprintf(stderr, "[fp] cvt.d fmt=%u fs=0x%016llx -> %.17g pc=%08x\n", fmt,
+              (unsigned long long)*((uint64_t*)(s->cpr1+fs)), *((double*)(s->cpr1+fd)), (uint32_t)s->pc);
+  }
   s->pc += 4;
 }
 
@@ -2349,7 +2518,12 @@ static void fpCmp(uint32_t inst, state_t *s) {
 	      << v
 	      << "\n";
   }
-  
+  {
+    static const bool g_fpall = getenv("FPALLLOG") != nullptr;
+    if(g_fpall && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u)
+      fprintf(stderr, "[fp] cmp cond=%u fs=%.17g ft=%.17g -> %u cc=%u pc=%08x\n",
+              cond, (double)Tfs, (double)Tft, v, cc, (uint32_t)s->pc);
+  }
   s->pc += 4;
 }
 
@@ -2370,6 +2544,27 @@ static void _c(uint32_t inst, state_t *s) {
     }
 }
 
+/* R4000 FP exceptions, matching the RTL fpu.sv: div/sqrt (+rsqrt/recip) are NOT
+ * implemented in HW and ALWAYS raise Unimplemented-Op (E) -> OS soft-float; add/
+ * sub/mul raise E on a denormal operand or a denormal (underflow) result.  The
+ * interp must trap the SAME ops so the checkpoints/traces it produces (and the
+ * cosim) stay consistent with the CU1/FPE-enforcing RTL. */
+template<typename T>
+static inline bool fp_is_denorm(T x) { return std::fpclassify(x) == FP_SUBNORMAL; }
+
+template<typename T, fpOperation op>
+static inline bool fp_e_trap(T fs, T ft) {
+  switch(op) {
+  case fpOperation::div: case fpOperation::sqrt:
+  case fpOperation::rsqrt: case fpOperation::recip:
+    return true;                                  /* fpu.sv: always E */
+  case fpOperation::add: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs+ft));
+  case fpOperation::sub: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs-ft));
+  case fpOperation::mul: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs*ft));
+  default: return false;                          /* abs/neg/mov: no E */
+  }
+}
+
 template< typename T, fpOperation op>
 static void execFP(uint32_t inst, state_t *s) {
   uint32_t ft = (inst>>16)&31, fs=(inst>>11)&31, fd=(inst>>6)&31;
@@ -2377,11 +2572,39 @@ static void execFP(uint32_t inst, state_t *s) {
   T _ft = *reinterpret_cast<T*>(s->cpr1+ft);
   T &_fd = *reinterpret_cast<T*>(s->cpr1+fd);
 
+  /* Fault BEFORE committing fd (op faults at retirement, EPC = this op; the OS
+   * emulator re-executes it), matching the RTL. */
+  {
+    bool want_trap = fp_e_trap<T,op>(_fs, _ft);
+    /* DIAGNOSTIC: FP_NODIVTRAP executes div/sqrt in host FP instead of trapping to
+     * the OS soft-float emulator -- isolates emulator bugs from the interp's own FP. */
+    static const bool g_nodivtrap = getenv("FP_NODIVTRAP") != nullptr;
+    if(want_trap && g_nodivtrap &&
+       (op == fpOperation::div || op == fpOperation::sqrt ||
+        op == fpOperation::rsqrt || op == fpOperation::recip)) {
+      want_trap = false;
+    }
+    if(want_trap) {
+      static const bool g_fpelog = getenv("FPELOG") != nullptr;
+      if(g_fpelog) {
+        fprintf(stderr, "[fpe] op=%d sz=%zu fs=%.17g ft=%.17g epc=%08x icnt=%llu\n",
+                (int)op, sizeof(T), (double)_fs, (double)_ft,
+                (uint32_t)s->pc, (unsigned long long)s->icnt);
+      }
+      take_exception_fpe(s); return;
+    }
+  }
+
+  /* Arithmetic goes through SoftFloat with the FCSR rounding mode applied, so
+   * add/sub/mul/div/sqrt round exactly like a real R4000 FPU (and the RTL).
+   * abs/neg/mov are exact bit ops -- host is fine. */
+  sf_set_rm(s);
+
   switch(op)
     {
     case fpOperation::abs:
       _fd = std::abs(_fs);
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ABS, mipsInsn::SP_ABS));      
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ABS, mipsInsn::SP_ABS));
       break;
     case fpOperation::neg:
       _fd = -_fs;
@@ -2392,41 +2615,48 @@ static void execFP(uint32_t inst, state_t *s) {
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_MOV, mipsInsn::SP_MOV));            
       break;
     case fpOperation::add:
-      _fd = _fs + _ft;
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ADD, mipsInsn::SP_ADD));            
+      _fd = sf_add(_fs, _ft);
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_ADD, mipsInsn::SP_ADD));
       break;
     case fpOperation::sub:
-      _fd = _fs - _ft;
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SUB, mipsInsn::SP_SUB));                  
+      _fd = sf_sub(_fs, _ft);
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SUB, mipsInsn::SP_SUB));
       break;
     case fpOperation::mul:
-      _fd = _fs * _ft;
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_MUL, mipsInsn::SP_MUL));      
+      _fd = sf_mul(_fs, _ft);
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_MUL, mipsInsn::SP_MUL));
       break;
     case fpOperation::div:
       if(_ft==0.0) {
 	_fd = std::numeric_limits<T>::max();
       }
       else {
-	_fd = _fs / _ft;
+	_fd = sf_div(_fs, _ft);
       }
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_DIV, mipsInsn::SP_DIV));       
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_DIV, mipsInsn::SP_DIV));
       break;
     case fpOperation::sqrt:
-      _fd = std::sqrt(_fs);
-      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SQRT, mipsInsn::SP_SQRT));      
+      _fd = sf_sqrtf(_fs);
+      HISTO(s, select_fp_insn<T>(mipsInsn::DP_SQRT, mipsInsn::SP_SQRT));
       break;
     case fpOperation::rsqrt:
-      _fd = static_cast<T>(1.0) / std::sqrt(_fs);
+      _fd = sf_div(static_cast<T>(1.0), sf_sqrtf(_fs));
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_RSQRT, mipsInsn::SP_RSQRT));
       break;
     case fpOperation::recip:
-      _fd = static_cast<T>(1.0) / _fs;
+      _fd = sf_div(static_cast<T>(1.0), _fs);
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_RECIP, mipsInsn::SP_RECIP));
       break;
     default:
       UNREACHABLE();
     }
+  {
+    static const bool g_fpall = getenv("FPALLLOG") != nullptr;
+    if(g_fpall && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u)
+      fprintf(stderr, "[fp] arith op=%d sz=%zu fs=%.17g ft=%.17g -> %.17g RM=%u pc=%08x\n",
+              (int)op, sizeof(T), (double)_fs, (double)_ft, (double)_fd,
+              (unsigned)(s->fcr1[CP1_CR31] & 3u), (uint32_t)s->pc);
+  }
   s->pc+=4;
 }
 
@@ -2551,11 +2781,29 @@ static void execCoproc1(uint32_t inst, state_t *s) {
 	  case 0x7:
 	    do_fp_op<fpOperation::neg>(inst, s);
 	    break;
+	  case 0x8:   /* round.l -> RN */
+	    _fp2int(inst, s, true,  FE_TONEAREST);
+	    break;
 	  case 0x9:
 	    _truncl(inst, s);
 	    break;
+	  case 0xa:   /* ceil.l  -> +inf */
+	    _fp2int(inst, s, true,  FE_UPWARD);
+	    break;
+	  case 0xb:   /* floor.l -> -inf */
+	    _fp2int(inst, s, true,  FE_DOWNWARD);
+	    break;
+	  case 0xc:   /* round.w -> RN */
+	    _fp2int(inst, s, false, FE_TONEAREST);
+	    break;
 	  case 0xd:
 	    _truncw(inst, s);
+	    break;
+	  case 0xe:   /* ceil.w  -> +inf */
+	    _fp2int(inst, s, false, FE_UPWARD);
+	    break;
+	  case 0xf:   /* floor.w -> -inf */
+	    _fp2int(inst, s, false, FE_DOWNWARD);
 	    break;
 	  case 0x11:
 	    _fmovc(inst, s);
@@ -2579,10 +2827,16 @@ static void execCoproc1(uint32_t inst, state_t *s) {
 	  case 0x21:
 	    _cvtd(inst, s);
 	    break;
+	  case 0x24:  /* cvt.w -> FCSR.RM */
+	    _fp2int(inst, s, false, fcsr_fe_round(s));
+	    break;
+	  case 0x25:  /* cvt.l -> FCSR.RM */
+	    _fp2int(inst, s, true,  fcsr_fe_round(s));
+	    break;
 	  default:
-	    printf("unhandled coproc1 instruction (%x) @ %08x\n",
-		   inst, s->pc);
-	    exit(-1);
+	    printf("unhandled coproc1 instruction (%x) @ %08x : %s\n",
+		   inst, s->pc, getAsmString(inst, s->pc).c_str());
+	    take_exception_ri(s);	    
 	    break;
 	  }
       }
@@ -2661,6 +2915,22 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
+  /* RETLOG: scoped (icnt in [RETLO,RETHI]) retire log mirroring the silicon flight recorder
+   * (pc + first-changed-GPR + value), emitted for the PREVIOUS instruction (its result is now
+   * visible in s->gpr).  Used to align golden vs the silicon window and find the first divergence. */
+  { static const uint64_t rlo = getenv("RETLO") ? strtoull(getenv("RETLO"),0,0) : 0;
+    static const uint64_t rhi = getenv("RETHI") ? strtoull(getenv("RETHI"),0,0) : 0;
+    static int64_t pg[32]; static uint32_t ppc=0; static uint64_t picnt=0; static bool ph=false;
+    if(rlo && s->icnt>=rlo && s->icnt<=rhi) {
+      if(ph) {
+        int wr=-1; for(int k=1;k<32;k++) if(s->gpr[k]!=pg[k]) { wr=k; break; }
+        if(wr>=0) fprintf(stderr,"[ret] icnt=%llu pc=%08x r%d=%016llx\n",
+                          (unsigned long long)picnt, ppc, wr, (unsigned long long)s->gpr[wr]);
+        else      fprintf(stderr,"[ret] icnt=%llu pc=%08x (nowr)\n",(unsigned long long)picnt, ppc);
+      }
+      memcpy(pg, s->gpr, sizeof(pg)); ppc=(uint32_t)s->pc; picnt=s->icnt; ph=true;
+    } else ph=false;
+  }
   { /* PCHASH: rolling FNV-1a over the retired-PC stream, checkpoint every 65536.
      * Compared against henry_tb's identical hash to find the first RTL/ISS PC
      * divergence (expected only once interrupts skew the streams). */
@@ -2705,6 +2975,14 @@ void execMips(state_t *s) {
       if(tw_ring != 0 && recs.size() > tw_ring) recs.pop_front();
     }
   }
+  /* ASIDPC=<file>: per USERSPACE retire, dump (asid<<32 | vpc) as an 8-byte LE record.
+   * Offline: find be's ASID (the asid seen at vpc==0e788bc0), filter to it -> a be-only
+   * PC golden that aligns to the ASID-filtered silicon deep trace to locate the fork. */
+  { static FILE* g_asidpc = [](){ const char* p = getenv("ASIDPC"); return p ? fopen(p, "wb") : (FILE*)nullptr; }();
+    if(g_asidpc && globals::asidpc_armed && (uint32_t)s->pc < 0x80000000u) {
+      uint64_t rec = ((uint64_t)(s->cpr0_64[CPR0_ENTRYHI] & 0xffULL) << 32) | (uint32_t)s->pc;
+      fwrite(&rec, 8, 1, g_asidpc);
+    } }
   if(globals::pctrace) {
     static const bool useronly = getenv("PCTRACE_USERONLY") != nullptr;  /* only pc<0x80000000 */
     if(!globals::pctrace_on && (uint32_t)s->pc == globals::pctrace_start) globals::pctrace_on = true;

@@ -350,6 +350,7 @@ void dumpState(const state_t &s, const std::string &filename);
 void loadState(state_t &s, const std::string &filename);
 void maybe_take_interrupt(state_t *s);  /* CP0 Count/Compare timer tick + Int delivery; call once per step */
 void dump_current_process(state_t *s);  /* print IRIX curproc comm/pid/pc (SIGUSR1 handler) */
+bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out);  /* non-faulting BE word read at a guest VA */
 /* non-faulting guest-VA memory access for the gdb stub (translate via the TLB,
  * read/write raw guest bytes); returns false if a VA is unmapped. */
 bool gdb_mem_read(state_t *s, uint64_t va, uint8_t *buf, uint32_t len);

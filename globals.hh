@@ -19,6 +19,7 @@ namespace globals {
   extern FILE *pctrace;
   extern uint32_t pctrace_start;
   extern bool pctrace_on;
+  extern bool asidpc_armed;
   /* When non-null and trace_retirement is set, each retired instruction is
    * appended as an inst_record{pc=physical, vpc=virtual, inst} for the
    * rv64analyzer trace consumer. */

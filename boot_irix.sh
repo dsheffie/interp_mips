@@ -26,8 +26,9 @@ cd "$(dirname "$0")"
 # Matching kernel + reconfigured disk + Henry ARCS firmware (boots /unix at 0xbfc00000).
 KERNEL=${KERNEL:-/home/dsheffie/code/chd-dumper/extracted/unix.clean}
 PROM=${PROM:-/home/dsheffie/code/r9999/arcs/henry_arcs.bin}
-DISK=${DISK:-/home/dsheffie/code/iris/irix65-reconfigured.img}
-
+#DISK=${DISK:-/home/dsheffie/code/iris/irix65-reconfigured.img}
+DISK=irix65-working.img
+# /home/dsheffie/code/iris/irix65-dev.img
 # RTC frozen at 2030 so the reconfigured /unix reads as current (else IRIX
 # re-runs the reconfigure every boot). Attach the onboard ethernet to a host
 # TAP; empty SEEQ_TAP = no tap (register model only).
@@ -42,5 +43,5 @@ exec ./interp_mips \
     --file "$KERNEL" \
     --prom "$PROM" \
     --start-pc 0xbfc00000 \
-    --disk "$DISK" \
+    --disk "$DISK"
     "$@"

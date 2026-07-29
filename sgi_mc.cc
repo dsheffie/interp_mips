@@ -71,6 +71,9 @@ When the processor is running in little endian mode the even word addresses,
 
 uint32_t sgi_mc::read(uint32_t offs, size_t sz) {
   DPRINTF("read access to MC, reg %x pc %lx\n", offs, (unsigned long)s->pc);
+  static const bool g_mclog = getenv("MCLOG") != nullptr;
+  if(g_mclog and (uint32_t)s->pc >= 0x8800ab20u and (uint32_t)s->pc <= 0x8800b0b8u)
+    fprintf(stderr, "[mc-r] pc=%08x reg=%03x\n", (uint32_t)s->pc, offs);
   uint32_t x = 0;
   switch(offs)
     {
@@ -131,6 +134,9 @@ static uint32_t cbyte = 0;
 
 void sgi_mc::write(uint32_t offs, uint32_t x, size_t sz) {
   DPRINTF("write access to MC, reg %x, value %x, size %lu pc %lx\n", offs, x, sz, (unsigned long)s->pc);
+  static const bool g_mclogw = getenv("MCLOG") != nullptr;
+  if(g_mclogw and (uint32_t)s->pc >= 0x8800ab20u and (uint32_t)s->pc <= 0x8800b0b8u)
+    fprintf(stderr, "[mc-w] pc=%08x reg=%03x val=%02x\n", (uint32_t)s->pc, offs, x & 0xff);
   
   switch(offs)
     {

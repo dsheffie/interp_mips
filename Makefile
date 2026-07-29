@@ -24,12 +24,22 @@ DEP = $(OBJ:.o=.d)
 OPT = -O3 -g -fomit-frame-pointer -std=c++17
 EXE = interp_mips
 
+# Berkeley SoftFloat-3 (git submodule ./softfloat) -- bit-exact IEEE-754 with an
+# explicit rounding mode.  The interp calls it via extern "C".  Built by the
+# submodule's own Makefile (8086-SSE build: FAST_INT64 object set); its NaN
+# payloads differ from MIPS but that doesn't affect finite-value rounding.
+SF_BUILD = softfloat/build/Linux-x86_64-GCC
+SF_LIB   = $(SF_BUILD)/softfloat.a
+
 .PHONY : all clean
 
 all: $(EXE)
 
-$(EXE) : $(OBJ)
-	$(CXX) $(CXXFLAGS) $(OBJ) $(LIBS) -o $(EXE)
+$(EXE) : $(OBJ) $(SF_LIB)
+	$(CXX) $(CXXFLAGS) $(OBJ) $(SF_LIB) $(LIBS) -o $(EXE)
+
+$(SF_LIB):
+	$(MAKE) -C $(SF_BUILD)
 
 githash.cc : .git/HEAD .git/index
 	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
@@ -42,3 +52,4 @@ githash.cc : .git/HEAD .git/index
 
 clean:
 	rm -rf $(EXE) $(OBJ) $(DEP)
+	-$(MAKE) -C $(SF_BUILD) clean

@@ -44,14 +44,19 @@ public:
      *
      * Default = 16 MiB @ PA 0x08000000 (cfg 0x2320, size field [12:8]=0x03) --
      * this is the real SGI Indy / MAME config (confirmed via MAME hinv; see
-     * MAME_QUESTIONS.md Q4). NB: 128 MiB (cfg 0x3f20, field 0x1f) makes IRIX's
-     * VM init skip init_pmap and panic with no banner; 16 MiB lets init_pmap run
-     * and IRIX print its release banner.
+     * MAME_QUESTIONS.md Q4). 128 MiB (cfg 0x3f20) and 256 MiB (two banks, below)
+     * now boot to the IRIX banner + login and hinv reports the size -- the old
+     * init_pmap panic was cured by the mconfig0/1 decode fix (22958a2).
      * MEMCFG=<hex cfg> overrides at runtime. */
-    const char *e = getenv("MEMCFG");
-    uint32_t cfg = e ? (uint32_t)strtoul(e, nullptr, 16) : 0x2320u;
-    memcfg[0] = __builtin_bswap32(cfg << 16);
-    memcfg[1] = 0;
+    /* MEMCFG = bank0 cfg (default 16 MiB), MEMCFG1 = bank1 cfg (default none).
+     * 256 MiB (matches henny 0x3f203f40): MEMCFG=3f20 MEMCFG1=3f40 -> two 128 MiB
+     * banks contiguous at PA 0x08000000 (base 0x20) and 0x10000000 (base 0x40). */
+    const char *e  = getenv("MEMCFG");
+    const char *e1 = getenv("MEMCFG1");
+    uint32_t cfg0 = e  ? (uint32_t)strtoul(e,  nullptr, 16) : 0x2320u;
+    uint32_t cfg1 = e1 ? (uint32_t)strtoul(e1, nullptr, 16) : 0u;
+    memcfg[0] = __builtin_bswap32(cfg0 << 16);
+    memcfg[1] = __builtin_bswap32(cfg1 << 16);
   };
   uint32_t read(uint32_t offs, size_t sz);
   void write(uint32_t offs, uint32_t x, size_t sz);  

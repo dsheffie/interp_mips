@@ -51,6 +51,7 @@ namespace globals {
   FILE *pctrace = nullptr;
   uint32_t pctrace_start = 0x88005960u;
   bool pctrace_on = false;
+  bool asidpc_armed = false;   /* SIGUSR1 toggles; gates the ASIDPC userspace dump */
 };
 static state_t *s = nullptr;
 
@@ -123,8 +124,13 @@ int main(int argc, char *argv[]) {
     if(fd < 0) { std::cerr << "cannot open arcs " << arcs << "\n"; return 1; }
     struct stat st; fstat(fd, &st);
     void *buf = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    memcpy(sm->mem + 0x1000, buf, st.st_size);
-    std::cerr << "loaded ARCS firmware (" << st.st_size << " bytes) at PA 0x1000\n";
+    /* Route through the MC System Memory Alias (get_raw_ptr applies mc_alias):
+     * the kernel reads the SPB/romvec via kseg1 0xa000xxxx -> PA 0x1xxx, which
+     * the alias remaps to DRAM 0x0800_1xxx.  A raw memcpy to PA 0x1000 would land
+     * where nothing reads it (the FSBL path stages the SPB via alias-routed
+     * stores, so it stayed consistent; this C++ loader must match). */
+    memcpy(sm->get_raw_ptr(0x1000), buf, st.st_size);
+    std::cerr << "loaded ARCS firmware (" << st.st_size << " bytes) at PA 0x1000 (alias-routed)\n";
     munmap(buf, st.st_size); close(fd);
 
     /* Patch the ARCS GetEnvironmentVariable stub to return a real "eaddr" string.
@@ -139,7 +145,7 @@ int main(int argc, char *argv[]) {
      * blob (stub_getenv @ 0xe68; blob is 0xf00 bytes); the Linux arcs_fw blob is
      * far smaller (752 bytes), so guard on size to avoid clobbering a small blob. */
     if(start_pc.empty() && st.st_size >= 0xe78) {
-      uint8_t *base = (uint8_t*)sm->mem + 0x1000;
+      uint8_t *base = sm->get_raw_ptr(0x1000);
       const char *eaddr = "08:00:69:12:34:56";
       memcpy(base + 0xf00, eaddr, strlen(eaddr) + 1);
       /* MIPS BE instruction words, written byte-wise as big-endian */
@@ -223,6 +229,12 @@ int main(int argc, char *argv[]) {
   const char *vto = getenv("VALTRACE");
   FILE *valt = vto ? fopen(vto, "w") : nullptr;
   const bool valt_all = getenv("VALTRACE_ALL") != nullptr;  /* trace all insns (kernel co-sim) */
+  /* DFTRACE=<file>: per be-region (0x0c-0x10M) user instruction, emit build_dataflow.py's
+   * 22-byte record <Q pc><I inst><B valid><B dst><Q val> for the reg+mem def-use slice. */
+  const char *dfto = getenv("DFTRACE");
+  FILE *dft = dfto ? fopen(dfto, "wb") : nullptr;
+  uint64_t dflo = 0, dfhi = ~0ULL;   /* DFLO/DFHI: emit only for icnt in [dflo,dfhi) */
+  { const char *e; if((e=getenv("DFLO"))) dflo=strtoull(e,0,0); if((e=getenv("DFHI"))) dfhi=strtoull(e,0,0); }
   uint64_t gprsnap[32];
   
   signal(SIGUSR1, on_sigusr1);   /* kill -USR1 <pid> -> dump current IRIX process */
@@ -243,7 +255,19 @@ int main(int argc, char *argv[]) {
 
   double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
-    if(g_sig_dumpproc)   { g_sig_dumpproc = 0;   dump_current_process(s); }
+    /* BECOUNT: tally userspace + be-region (0x0c-0x10M text/libc) dynamic instrs; print at the crash pc. */
+    { static const bool g_bec = getenv("BECOUNT") != nullptr;
+      static uint64_t g_us=0, g_be=0; static uint64_t g_be_first_icnt=0;
+      if(g_bec) { uint32_t p=(uint32_t)s->pc;
+        if(p < 0x80000000u) g_us++;
+        if(p >= 0x0c000000u && p < 0x10000000u) { if(!g_be) g_be_first_icnt=s->icnt; g_be++; }
+        if(ckpt_pc && p==ckpt_pc)
+          fprintf(stderr,"[becount] crash pc=%08x sys_icnt=%lu | userspace=%lu | be_region(0c-10M)=%lu (first be icnt=%lu -> span=%lu)\n",
+                  p,(unsigned long)s->icnt,(unsigned long)g_us,(unsigned long)g_be,
+                  (unsigned long)g_be_first_icnt,(unsigned long)(s->icnt-g_be_first_icnt)); } }
+    if(g_sig_dumpproc)   { g_sig_dumpproc = 0;   dump_current_process(s);
+      globals::asidpc_armed = !globals::asidpc_armed;
+      fprintf(stderr, "[asidpc] armed=%d icnt=%lu\n", globals::asidpc_armed, (unsigned long)s->icnt); }
     if(g_sig_flushdelta) { g_sig_flushdelta = 0; if(s->scsi) s->scsi->flush_delta(); }
     if(pcsample && (s->icnt % pcsample) == 0)
       fprintf(stderr, "[pc] icnt=%lu pc=%08x ra=%08x sp=%08x\n",
@@ -276,11 +300,15 @@ int main(int argc, char *argv[]) {
       dumpState(*s, ckpt_out);
       break;
     }
-    if(valt) { for(int gi=0; gi<32; gi++) gprsnap[gi]=(uint64_t)s->gpr[gi]; }
+    if(valt || dft) { for(int gi=0; gi<32; gi++) gprsnap[gi]=(uint64_t)s->gpr[gi]; }
     maybe_take_interrupt(s);   /* CP0 Count/Compare timer + Int delivery (per step) */
     if(s->gdb) s->gdb->step_hook(s);   /* gdb RSP: breakpoints / attach / step */
     uint64_t valt_pc = (uint64_t)s->pc;
     g_cur_pc = (uint64_t)s->pc; g_cur_icnt = s->icnt;   /* context for memory watchpoints */
+    uint32_t df_inst = 0;
+    const bool df_be = dft && (s->icnt >= dflo) && (s->icnt < dfhi) &&
+                       (valt_pc >= 0x0c000000ULL) && (valt_pc < 0x10000000ULL);
+    if(df_be) { guest_rd32_be(s, valt_pc, &df_inst); }   /* fetch inst before it executes */
     if(g_watch_ldpc && (uint32_t)s->pc == g_watch_ldpc &&
        s->icnt >= g_watch_lo && s->icnt < g_watch_hi)
       fprintf(stderr, "[ldbase] icnt=%lu pc=%08x r15=%016llx va=%016llx\n",
@@ -317,6 +345,13 @@ int main(int argc, char *argv[]) {
       int vd=-1; for(int gi=1; gi<32; gi++) if((uint64_t)s->gpr[gi]!=gprsnap[gi]) { vd=gi; break; }
       fprintf(valt, "%llx %d %llx\n", (unsigned long long)valt_pc, vd,
               (unsigned long long)(vd<0?0:(uint64_t)s->gpr[vd]));
+    }
+    if(df_be) {   /* build_dataflow.py 22-byte record: <Q pc><I inst><B valid><B dst><Q val> */
+      int dd=-1; for(int gi=1; gi<32; gi++) if((uint64_t)s->gpr[gi]!=gprsnap[gi]) { dd=gi; break; }
+      uint8_t dvalid = (dd>=0)?1:0, ddst = (dd>=0)?(uint8_t)dd:0;
+      uint64_t dval = (dd>=0)?(uint64_t)s->gpr[dd]:0;
+      fwrite(&valt_pc,8,1,dft); fwrite(&df_inst,4,1,dft);
+      fwrite(&dvalid,1,1,dft);  fwrite(&ddst,1,1,dft); fwrite(&dval,8,1,dft);
     }
     uint64_t mh = COSIM_NO_HASH;
     if(cosim_active() && s->icnt >= cosim_memstart && (s->icnt % cosim_memn) == 0) {
