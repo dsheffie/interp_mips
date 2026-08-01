@@ -7,7 +7,10 @@
 
 /* systemid value (MC reg 0x1c): [3:0]=revision, [4]=EISA present. Indy has no
  * EISA so bit4 stays clear; MAME reports revision 3 ("rev c"). */
-static const uint32_t sys_id = 0x3; /* mame says rev c */
+/* Stored pre-swapped so the guest's BE lw yields 0x00000013 -- EXACTLY the RTL's
+ * MC_SYSID (henry rtl/mc.sv: 32'h13000000).  The bare 0x3 reached the kernel as
+ * 0x03000000 (low nibble 0) and Linux printed "MC revision 0" while the FPGA said 3. */
+static const uint32_t sys_id = 0x13000000; /* mame says rev c (3) */
 
 struct state_t;
 

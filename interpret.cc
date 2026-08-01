@@ -164,8 +164,15 @@ void initState(state_t *s) {
    * matching the real SGI Indy / MAME. mlreset derives cachecolormask from this;
    * the r9999 RTL's 0x00088200 gives the wrong mask and pagecoloralign loops
    * forever (MAME co-sim, MAME_QUESTIONS.md Q5 round-2). */
-  s->cpr0[CPR0_CONFIG] = 0x0002e4b3;
-  s->cpr0_64[CPR0_CONFIG] = 0x0002e4b3;
+  /* CP0CONFIG=<hex> overrides this.  Needed for the FPGA-vs-interp boot-trace diff:
+   * the RTL reports a 16-byte D-cache line (Config DB=0) while the default above says
+   * 32 (DB=1), so cpu_probe's software CLZ over Config takes a different branch and the
+   * streams diverge ~149k insns in.  Use CP0CONFIG=0x0002e4a3 to match the RTL.
+   * Do NOT change the default -- IRIX needs the Indy/MAME geometry (see above). */
+  { const char *ce = getenv("CP0CONFIG");
+    uint32_t cv = ce ? (uint32_t)strtoull(ce, 0, 0) : 0x0002e4b3u;
+    s->cpr0[CPR0_CONFIG] = cv;
+    s->cpr0_64[CPR0_CONFIG] = cv; }
 }
 
 /* Raise MIPS Reserved Instruction exception (ExcCode=10).
@@ -641,6 +648,34 @@ enum class tlb_op { fetch, load, store };
 /* Fold the faulting VA into Context (VA[31:13]<<4) and XContext (R, VA[39:13]<<4),
  * preserving the software-written PTEBase fields. Also set BadVAddr and
  * EntryHi.VPN2 (ASID preserved) so the refill handler can build the new entry. */
+/* R4400 CP0 write masks -- "Reserved. Must be written as zeroes, and returns zeroes
+ * when read" (R4400 User's Manual Ed2, Fig 4-9/4-10/4-11 field tables):
+ *   EntryHi    R[63:62] | VPN2[39:13] | ASID[7:0].  Fill[61:40] is "0 on read;
+ *              ignored on write"; [12:8] reserved-zero.  27-bit VPN2 => 40-bit VA.
+ *   PageMask   MASK[24:13] only; [31:25] and [12:0] reserved-zero.
+ *   EntryLo0/1 PFN[29:6] | C[5:3] | D[2] | V[1] | G[0]; [63:30] reserved-zero.
+ *              24-bit PFN => 36-bit PA (matches r9999 PA_WIDTH=36/PFN_WIDTH=24).
+ * Without these a spec-probing guest measures the wrong implemented widths: Linux
+ * cpu_probe_vmbits writes all-ones to EntryHi and takes fls64 of the readback, which
+ * reported 62 VA bits instead of 40 until the EntryHi mask was added.  Found by the
+ * FPGA-vs-interp boot-trace diff. */
+static inline uint64_t cp0_write_mask(uint32_t rd, uint64_t v) {
+  switch(rd)
+    {
+    case CPR0_ENTRYHI:
+      return (v & 0xc000000000000000ULL)    /* R    */
+           | (v & 0x000000ffffffe000ULL)    /* VPN2 */
+           | (v & 0x00000000000000ffULL);   /* ASID */
+    case CPR0_PAGEMASK:
+      return v & 0x0000000001ffe000ULL;     /* MASK[24:13] */
+    case CPR0_ENTRYLO0:
+    case CPR0_ENTRYLO1:
+      return v & 0x000000003fffffffULL;     /* PFN|C|D|V|G = [29:0] */
+    default:
+      return v;
+    }
+}
+
 static void tlb_set_fault_state(state_t *s, uint64_t va) {
   s->cpr0[CPR0_BADVADDR]     = (uint32_t)va;
   s->cpr0_64[CPR0_BADVADDR]  = va;
@@ -3697,16 +3732,13 @@ void execMips(state_t *s) {
 	  break;
 	case 0x4: /*mtc0*/
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
-	    if(rd == CPR0_ENTRYHI) {
-	      /* Sail mips_insts.sail execute(MTC0 ...EntryHi): take R[63:62],
-	       * VPN2[39:13], ASID[7:0] from the FULL 64-bit GPR (no zero-extend;
-	       * MTC0 behaves like DMTC0 for this register's fields). */
-	      s->cpr0_64[rd] = (s->gpr[rt] & 0xc000000000000000ULL)   /* R    */
-	                     | (s->gpr[rt] & 0x000000ffffffe000ULL)   /* VPN2 */
-	                     | (s->gpr[rt] & 0xffULL);                /* ASID */
-	    } else {
-	      s->cpr0_64[rd] = (uint64_t)(uint32_t)s->gpr[rt];
-	    }
+	    /* Sail mips_insts.sail execute(MTC0 ...EntryHi): EntryHi takes its fields
+	     * from the FULL 64-bit GPR (no zero-extend); every other register is the
+	     * usual 32-bit zero-extended write.  Reserved fields are then dropped per
+	     * the R4400 spec (cp0_write_mask). */
+	    { uint64_t v = (rd == CPR0_ENTRYHI) ? s->gpr[rt]
+	                                        : (uint64_t)(uint32_t)s->gpr[rt];
+	      s->cpr0_64[rd] = cp0_write_mask(rd, v); }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
 	  ptetrack_probe(s, rd, rt);
@@ -3768,8 +3800,8 @@ void execMips(state_t *s) {
 	  break;
 	case 0x5: /*dmtc0 -- write full 64-bit CP0 register */
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
-	    s->cpr0_64[rd] = s->gpr[rt];
-	    s->cpr0[rd] = (uint32_t)s->gpr[rt];
+	    s->cpr0_64[rd] = cp0_write_mask(rd, s->gpr[rt]);
+	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
 	  ptetrack_probe(s, rd, rt);
 	  if(rd == 7 && !s->silent) {
