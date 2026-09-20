@@ -2589,10 +2589,19 @@ static inline bool fp_is_denorm(T x) { return std::fpclassify(x) == FP_SUBNORMAL
 
 template<typename T, fpOperation op>
 static inline bool fp_e_trap(T fs, T ft) {
+  /* FP_DIVTRAP models the PRE-uni_divider machine (fpu.sv raised E for every
+   * div/sqrt -> OS soft-float).  The current RTL does div/sqrt in HW and traps
+   * only on a denormal operand or an underflowing result, matching
+   * uni_divider.sv's w_in_denorm / w_denorm.  rsqrt/recip are MIPS IV and are
+   * still not implemented in HW (fpu.sv FP_UNIMPL -> always E). */
+  static const bool g_divtrap = getenv("FP_DIVTRAP") != nullptr;
   switch(op) {
-  case fpOperation::div: case fpOperation::sqrt:
   case fpOperation::rsqrt: case fpOperation::recip:
-    return true;                                  /* fpu.sv: always E */
+    return true;                                  /* fpu.sv FP_UNIMPL: always E */
+  case fpOperation::div:
+    return g_divtrap || fp_is_denorm(fs) || fp_is_denorm(ft) || fp_is_denorm((T)(fs/ft));
+  case fpOperation::sqrt:
+    return g_divtrap || fp_is_denorm(fs) || fp_is_denorm((T)std::sqrt((double)fs));
   case fpOperation::add: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs+ft));
   case fpOperation::sub: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs-ft));
   case fpOperation::mul: return fp_is_denorm(fs)||fp_is_denorm(ft)||fp_is_denorm((T)(fs*ft));
@@ -2662,12 +2671,11 @@ static void execFP(uint32_t inst, state_t *s) {
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_MUL, mipsInsn::SP_MUL));
       break;
     case fpOperation::div:
-      if(_ft==0.0) {
-	_fd = std::numeric_limits<T>::max();
-      }
-      else {
-	_fd = sf_div(_fs, _ft);
-      }
+      /* SoftFloat already gives IEEE semantics for a zero divisor: x/0 -> +-Inf
+       * with DivideByZero, 0/0 -> NaN with Invalid.  (This used to return
+       * DBL_MAX, which was wrong; it was unreachable while div ALWAYS trapped,
+       * but uni_divider does div in HW so this path is now live.) */
+      _fd = sf_div(_fs, _ft);
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_DIV, mipsInsn::SP_DIV));
       break;
     case fpOperation::sqrt:
