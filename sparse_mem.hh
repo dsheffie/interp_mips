@@ -12,6 +12,7 @@
 #include "sim_bitvec.hh"
 #include "helper.hh"
 #include "cache_model.hh"   /* forward-decl-only wrt sparse_mem; safe to include here */
+#include "ws_profile.hh"    /* data working-set profiler (g_wsprof) */
 
 #ifndef unlikely
 #define unlikely(x)    __builtin_expect(!!(x), 0)
@@ -51,7 +52,9 @@ void ramcap_log(char rw, uint32_t addr);
 class sparse_mem {
 public:
   static const uint64_t pgsize = 4096;
-  static const uint64_t sz = 1UL<<32;  
+  /* 1ULL, not 1UL: unsigned long is 32 bits on 32-bit targets (wasm32, i386),
+   * where 1UL<<32 is undefined and rejects as a non-constant initializer. */
+  static const uint64_t sz = 1ULL<<32;  
   uint8_t *mem = nullptr;
   state_t *st = nullptr;
   bool route_devices = false;
@@ -97,7 +100,7 @@ public:
     return (pa < 0x00080000UL) ? (pa + 0x08000000UL) : pa;
   }
   uint8_t *get_raw_ptr(uint64_t byte_addr) {
-    byte_addr &= ((1UL<<32) - 1);
+    byte_addr &= ((1ULL<<32) - 1);   /* 1ULL: 1UL<<32 is undefined on 32-bit targets */
     if(route_devices) byte_addr = mc_alias(byte_addr);
     return mem+byte_addr;
   }
@@ -111,6 +114,7 @@ public:
       return (T)(~0ULL);
     }
 #endif
+    if(g_wsprof && cache_active) { g_wsprof->access((uint32_t)byte_addr); }
     if(g_cmodel && cache_active) {   /* cached cpu load -> the write-back model */
       T v; cm_load(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return v;
     }
@@ -144,6 +148,7 @@ public:
       }
     }
 #endif
+    if(g_wsprof && cache_active) { g_wsprof->access((uint32_t)byte_addr); }
     if(g_cmodel && cache_active) {   /* cached cpu store -> the write-back model */
       cm_store(g_cmodel, (uint32_t)byte_addr, &v, sizeof(T)); return;
     }
