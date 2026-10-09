@@ -1,9 +1,11 @@
 #include <cstdio>
 #include "cache_model.hh"
+#include "ws_profile.hh"
 #include "sparse_mem.hh"
 
 /* non-null once main() sees CACHE_MODEL in the environment */
 cache_model *g_cmodel = nullptr;
+ws_profile  *g_wsprof = nullptr;   /* non-null once main() sees WSPROFILE */
 bool g_stale_detect = false;
 
 void cache_model::report_stale(uint32_t pa, uint8_t cached, uint8_t dram) {

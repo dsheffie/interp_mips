@@ -11,6 +11,9 @@
 #include <boost/program_options.hpp>
 
 #include "interpret.hh"
+#include "cache_model.hh"
+#include "jazz.hh"
+#include "jazz_sdl.hh"
 #include "loadelf.hh"
 #include "sparse_mem.hh"
 #include "pseudo_bios.hh"
@@ -62,6 +65,10 @@ int main(int argc, char *argv[]) {
   uint64_t maxinsns = ~(0UL);
   uint64_t ckpt_icnt = 0;
   int gdb_port = 0;
+  bool jazz_mode = false;       /* --jazz: Microsoft Jazz / MIPS Magnum, little-endian */
+  std::string nvram, screen, keys, net_tap;
+  bool sdl_out = false;
+  uint64_t jazz_ms_insns = 50000;
   try {
     po::options_description desc("options");
     desc.add_options()
@@ -79,7 +86,14 @@ int main(int argc, char *argv[]) {
       ("checkpoint-out", po::value<std::string>(&ckpt_out)->default_value("checkpoint.bin"), "checkpoint output file for --checkpoint-at")
       ("restore", po::value<std::string>(&restore_name)->default_value(""), "restore a full-state checkpoint (loadState) and continue from it")
       ("gdb", po::value<int>(&gdb_port)->default_value(0), "listen for gdb on this TCP port (RSP stub); boots full-speed until a client attaches")
-      ("cosim", po::value<std::string>(&cosim), "lockstep co-sim: 'server' (golden) or 'client'; run both sims with DETTIME=1");
+      ("cosim", po::value<std::string>(&cosim), "lockstep co-sim: 'server' (golden) or 'client'; run both sims with DETTIME=1")
+      ("jazz", po::bool_switch(&jazz_mode), "Microsoft Jazz / MIPS Magnum platform (build with EL=1); boots --prom at 0xbfc00000")
+      ("nvram", po::value<std::string>(&nvram), "--jazz: 8 KiB DS1225 NVRAM image, written in place (use a copy)")
+      ("jazz-ms-insns", po::value<uint64_t>(&jazz_ms_insns)->default_value(50000), "--jazz: instructions per R4030 timer / RTC millisecond")
+      ("screen", po::value<std::string>(&screen), "--jazz: write the G364 frame buffer to this PPM at exit")
+      ("keys", po::value<std::string>(&keys), "--jazz: keyboard script, lines of '<icnt> key a+b | type text | screen f.ppm'")
+      ("net-tap", po::value<std::string>(&net_tap), "--jazz: SONIC Ethernet host tap interface (also env SONIC_TAP); omit for register-only NIC")
+      ("sdl", po::bool_switch(&sdl_out), "--jazz: live SDL window (G364 display) + keyboard/mouse capture");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -97,15 +111,27 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[cache_model] ENABLED: 32B write-back L1 D-cache (%u sets)%s\n",
             cache_model::L1_SETS, g_stale_detect ? " + STALE_DETECT" : "");
   }
+  jazz_sdl *disp = nullptr;   /* --jazz --sdl live display + input */
   s = new state_t(*sm);
   s->maxicnt = maxinsns;
-  s->mc  = new sgi_mc(s);
-  s->hpc = new sgi_hpc(s);
-  s->scc = new sgi_scc(s);
-  if(!disk.empty()) s->scsi = new sgi_scsi(s, disk, disk_delta, disk_write);
-  s->seeq = new sgi_seeq(s);   /* Seeq 8003 ethernet; tap via env SEEQ_TAP=<ifname> */
   sm->st = s;
-  sm->route_devices = true;
+  if(jazz_mode) {
+    if(!IS_LITTLE_ENDIAN) { std::cerr << "--jazz needs a little-endian build (make EL=1)\n"; return 1; }
+    if(nvram.empty() || prom.empty()) { std::cerr << "--jazz needs --nvram and --prom\n"; return 1; }
+    s->jz = new jazz(s, nvram, jazz_ms_insns, disk, disk_write, net_tap);   /* --disk: SCSI ID 0; --net-tap: SONIC */
+    if(!keys.empty() && !s->jz->load_keys(keys)) { std::cerr << "cannot read --keys " << keys << "\n"; return 1; }
+    if(sdl_out) { disp = new jazz_sdl(s->jz, s); if(!disp->ok()) { delete disp; disp = nullptr; } }
+    sm->route_jazz = true;
+    start_pc = "0xbfc00000";          /* reset vector; the PROM does everything (no pseudo-BIOS) */
+  }
+  else {
+    s->mc  = new sgi_mc(s);
+    s->hpc = new sgi_hpc(s);
+    s->scc = new sgi_scc(s);
+    if(!disk.empty()) s->scsi = new sgi_scsi(s, disk, disk_delta, disk_write);
+    s->seeq = new sgi_seeq(s);   /* Seeq 8003 ethernet; tap via env SEEQ_TAP=<ifname> */
+    sm->route_devices = true;
+  }
 
   initState(s);                    /* CP0 reset state: PRId, Config, SR, Random */
   if(not(filename.empty())) {
@@ -172,7 +198,13 @@ int main(int argc, char *argv[]) {
     void *buf = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     memcpy(sm->mem + 0x1fc00000, buf, st.st_size);
     std::cerr << "loaded PROM firmware (" << st.st_size << " bytes) at phys 0x1fc00000\n";
+    if(jazz_mode) {
+      memcpy(sm->mem + 0xfff00000ULL, buf, st.st_size);   /* Jazz PROM alias (the ARC ROM runs from it) */
+    }
     munmap(buf, st.st_size); close(fd);
+    if(jazz_mode) {
+      goto prom_loaded;               /* no kentry patch: the vendor ROM boots the OS itself */
+    }
 
     /* Patch the kentry slot @0xBFC00008 (phys 0x1fc00008) with the loaded
      * kernel's ELF entry, big-endian.  henry_arcs.S hardcodes 0x88005960 (the
@@ -186,6 +218,7 @@ int main(int argc, char *argv[]) {
     kslot[2] = (kentry >>  8) & 0xff; kslot[3] = (kentry >>  0) & 0xff;
     std::cerr << "patched kentry slot @0xbfc00008 = " << std::hex << kentry << std::dec << "\n";
   }
+ prom_loaded:
 
   /* fake-BIOS: start at the firmware boot stub (e.g. arcs_boot @ 0xa0003000);
    * the stub prints the SCC heartbeat, builds argv/envp, and jumps to /unix. */
@@ -255,6 +288,7 @@ int main(int argc, char *argv[]) {
 
   double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
+    if(disp && (s->icnt & 0xfffff) == 0) { disp->pump(); }
     /* BECOUNT: tally userspace + be-region (0x0c-0x10M text/libc) dynamic instrs; print at the crash pc. */
     { static const bool g_bec = getenv("BECOUNT") != nullptr;
       static uint64_t g_us=0, g_be=0; static uint64_t g_be_first_icnt=0;
@@ -371,10 +405,15 @@ int main(int argc, char *argv[]) {
   }
   t0 = timestamp() - t0;
 
+  if(s->jz && !screen.empty()) {
+    s->jz->dump_screen(screen.c_str());
+    std::cerr << "[jazz] wrote frame buffer to " << screen << "\n";
+  }
   if(s->scsi) s->scsi->flush_delta();   /* persist COW overlay on clean exit (no-op without --disk-delta) */
 
   if(globals::pctrace) fclose(globals::pctrace);
   std::cout << "\n" << s->icnt << " instructions executed, brk=" << (int)s->brk << "\n";
+  { extern cache_model *g_cmodel; if(g_cmodel) fprintf(stderr, "[cache_model] total STALE reads = %llu\n", (unsigned long long)g_cmodel->n_stale); }
   std::cout << (static_cast<double>(s->icnt) / t0)*1e-6 << " minsns/sec\n";
   { extern void l1_alias_report(); l1_alias_report(); }   /* L1_ALIAS VIPT alias-freq sweep */
   if(!retire_name.empty() && !rt.empty()) {
@@ -385,6 +424,8 @@ int main(int argc, char *argv[]) {
               << " retire_trace records to " << retire_name << "\n";
   }
 
+  { extern void jazz_dump_hot(state_t *); jazz_dump_hot(s); }   /* JAZZ_HOTPC: hot-cluster disasm (s still live) */
+  delete disp;
   delete s->mc; delete s->hpc; delete s->scc; delete s->scsi; delete s->seeq; delete s; delete sm;
   return 0;
 }

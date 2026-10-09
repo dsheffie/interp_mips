@@ -11,7 +11,12 @@
 #include "sparse_mem.hh"
 #include "mips_insns.hh"
 
+/* MIPS_EL: little-endian guest (Jazz / Windows NT); make EL=1.  Default big-endian. */
+#ifdef MIPS_EL
+#define IS_LITTLE_ENDIAN true
+#else
 #define IS_LITTLE_ENDIAN false
+#endif
 
 enum class fpMode {
   mipsii, mipsiv, mips3
@@ -107,6 +112,7 @@ class sgi_hpc;
 class sgi_scc;
 class sgi_scsi;
 class sgi_seeq;
+class jazz;
 class gdb_stub;
 
 class state_t{
@@ -152,6 +158,7 @@ public:
   sgi_mc *mc = nullptr;
   sgi_hpc *hpc = nullptr;
   sgi_scc *scc = nullptr;
+  jazz *jz = nullptr;          /* --jazz: Microsoft Jazz / MIPS Magnum platform */
   sgi_scsi *scsi = nullptr;
   sgi_seeq *seeq = nullptr;
   gdb_stub *gdb = nullptr;

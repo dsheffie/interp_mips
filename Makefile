@@ -1,10 +1,10 @@
 UNAME_S = $(shell uname -s)
 
-OBJ = main.o pseudo_bios.o loadelf.o disassemble.o helper.o interpret.o sparse_mem.o cache_model.o sgi_mc.o sgi_hpc.o sgi_scc.o sgi_scsi.o sgi_seeq.o saveState.o gdbstub.o githash.o shmem.o cosim.o
+OBJ = main.o pseudo_bios.o loadelf.o disassemble.o helper.o interpret.o sparse_mem.o cache_model.o sgi_mc.o sgi_hpc.o sgi_scc.o sgi_scsi.o sgi_seeq.o saveState.o gdbstub.o githash.o shmem.o cosim.o jazz.o jazz_esp.o jazz_sonic.o jazz_sdl.o
 
 ifeq ($(UNAME_S),Linux)
 	CXX = g++ -march=native #-flto
-	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options -lboost_serialization -lcapstone
+	EXTRA_LD = -ldl -lffi -lbfd -lunwind -lboost_program_options -lboost_serialization -lcapstone $(shell pkg-config --libs sdl2)
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
@@ -17,7 +17,11 @@ ifeq ($(UNAME_S),Darwin)
 	EXTRA_LD = -L/opt/local/lib -lboost_program_options-mt -lcapstone
 endif
 
-CXXFLAGS = -std=c++17 -g $(OPT)
+CXXFLAGS = -std=c++17 -g $(OPT) $(shell pkg-config --cflags sdl2)
+# EL=1: little-endian guest (-DMIPS_EL).  make clean when switching.
+ifeq ($(EL),1)
+CXXFLAGS += -DMIPS_EL
+endif
 LIBS =  $(EXTRA_LD) -lpthread
 
 DEP = $(OBJ:.o=.d)
@@ -41,7 +45,8 @@ $(EXE) : $(OBJ) $(SF_LIB)
 $(SF_LIB):
 	$(MAKE) -C $(SF_BUILD)
 
-githash.cc : .git/HEAD .git/index
+GIT_DIR_PATH := $(shell git rev-parse --git-dir)
+githash.cc : $(GIT_DIR_PATH)/HEAD $(GIT_DIR_PATH)/index
 	echo "const char *githash = \"$(shell git rev-parse HEAD)\";" > $@
 
 %.o: %.cc

@@ -18,6 +18,7 @@
 
 
 #include "interpret.hh"
+#include "jazz.hh"
 #include "sgi_hpc.hh"
 #include "sgi_scc.hh"
 #include "disassemble.hh"
@@ -235,6 +236,10 @@ static inline uint32_t exc_vector(state_t *s, bool is_refill, bool exl_was_set,
 /* Common tail for a synchronous exception: write Cause.ExcCode, set EXL (clearing
  * ERL), and vector.  set_exc_pc() (EPC + Cause.BD) must already have run. */
 static inline void raise_common(state_t *s, uint32_t exccode) {
+  { static const bool g_jexc = getenv("JAZZ_EXC") != nullptr;   /* --jazz: log every exception */
+    if(g_jexc && s->jz && exccode != 0u)
+      fprintf(stderr, "[exc] code=%u pc=%08x badva=%08x icnt=%llu\n", exccode, (uint32_t)s->pc,
+              (uint32_t)s->cpr0[CPR0_BADVADDR], (unsigned long long)s->icnt); }
   bool exl_was_set = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   s->cpr0[CPR0_CAUSE] = (s->cpr0[CPR0_CAUSE] & ~(0x1fu << 2)) | (exccode << 2);
   s->cpr0[CPR0_SR]    = (s->cpr0[CPR0_SR] & ~SR_ERL) | SR_EXL;
@@ -375,6 +380,15 @@ void maybe_take_interrupt(state_t *s) {
    * raised an interrupt (irq_poke). The SCSI completion is synchronous and the
    * kernel needs IP2 delivered right after the command -- a throttled delay loses
    * it and the wd93 driver hits its 60s timeout + bus reset. */
+  if(s->jz) {
+    /* Jazz: R4030 interval timer -> IP6 (Cause bit 14), local devices -> IP3 (bit 11) */
+    s->jz->tick(s->icnt);
+    if(s->jz->ip6()) s->cpr0[CPR0_CAUSE] |=  (1u << 14);
+    else             s->cpr0[CPR0_CAUSE] &= ~(1u << 14);
+    if(s->jz->ip3()) s->cpr0[CPR0_CAUSE] |=  (1u << 11);
+    else             s->cpr0[CPR0_CAUSE] &= ~(1u << 11);
+    if(s->jz->reset_requested()) s->brk = 1;
+  }
   if(!s->irq_poke && (s->icnt & (INT_POLL - 1)) != 0) return;
   s->irq_poke = false;
 
@@ -400,6 +414,10 @@ void maybe_take_interrupt(state_t *s) {
                   pc, ip, (unsigned long)s->icnt);
         }
       } }
+    { static const bool g_jexc = getenv("JAZZ_EXC") != nullptr;   /* --jazz: log interrupts taken */
+      if(g_jexc && s->jz)
+        fprintf(stderr, "[int] pc=%08x cause=%08x sr=%08x icnt=%llu\n", (uint32_t)s->pc,
+                cause, sr, (unsigned long long)s->icnt); }
     set_exc_pc(s);
     raise_common(s, 0u);                               /* ExcCode 0 = Int */
   }
@@ -461,10 +479,150 @@ static void raise_ri(state_t *s, uint32_t inst) {
  * branch/jump must NOT be taken: the exception has already redirected pc to the
  * handler with EPC = the branch pc (BD=1), and overwriting pc with the branch
  * target would SWALLOW the delay-slot fault (the RTL takes it -> co-sim diverges). */
+/* JAZZ_BRSTAT: delay-slot packing + branch-likely usage over executed NT code.  Gated to
+ * icnt >= JAZZ_BRSTAT_FLOOR (default 2e9, well past the ROM POST) and bucketed by the branch's
+ * PC region.  run_delay_slot() counts every executed delay slot (branch AND jump) and the NOPs
+ * among them; the conditional-branch engine counts likely vs plain.  Self-prints at exit. */
+bool guest_rd32_be(state_t *s, uint64_t va, uint32_t *out);
+static const bool g_brstat = getenv("JAZZ_BRSTAT") != nullptr;
+static const uint64_t g_brstat_floor =
+  getenv("JAZZ_BRSTAT_FLOOR") ? strtoull(getenv("JAZZ_BRSTAT_FLOOR"), 0, 0) : 2000000000ULL;
+/* JAZZ_HOTPC: flat per-PC execution profiler over the kernel window (no hashing), dumped at exit
+ * as disassembled windows around the hottest clusters -- to read loop structure / scheduling. */
+static const bool g_hotpc = getenv("JAZZ_HOTPC") != nullptr;
+static const bool g_stale_triage = getenv("STALE_TRIAGE") != nullptr;
+static const uint32_t HOT_LO = 0x80000000u, HOT_HI = 0x82000000u;
+static uint32_t *g_hotcnt = nullptr;
+static state_t *g_hot_s = nullptr;
+std::string getAsmString(uint32_t inst, uint32_t addr);
+void initCapstone();
+
+uint64_t g_cacheop_cnt[4][8] = {{0}};
+struct brstat_t {
+  const char *name[3] = {"kseg0 (kernel/HAL)", "mapped (drivers)", "other"};
+  uint64_t ds_total[3] = {0,0,0}, ds_nop[3] = {0,0,0};
+  uint64_t cond[3] = {0,0,0}, likely[3] = {0,0,0};
+  std::unordered_map<uint32_t,bool> ds_seen[3];   /* static: delay-slot PC -> is NOP */
+  std::unordered_map<uint32_t,bool> br_seen[3];   /* static: branch PC -> is likely */
+  uint64_t icnt_lo = 0, icnt_hi = 0;
+  static void stat_line(const char *tag, std::unordered_map<uint32_t,bool> &ds,
+                        std::unordered_map<uint32_t,bool> &br) {
+    uint64_t dn = 0, bl = 0;
+    for(auto &kv : ds) { if(kv.second) { dn++; } }
+    for(auto &kv : br) { if(kv.second) { bl++; } }
+    fprintf(stderr, "[brstat-static] %-18s  distinct delay slots %8zu  NOP %8llu (%.1f%% filled)  "
+            "distinct cond-br %8zu  likely %8llu (%.1f%%)\n", tag, ds.size(),
+            (unsigned long long)dn, ds.size() ? 100.0*(ds.size()-dn)/ds.size() : 0.0,
+            br.size(), (unsigned long long)bl, br.size() ? 100.0*bl/br.size() : 0.0);
+  }
+  ~brstat_t() {
+    if(!g_brstat) { return; }
+    fprintf(stderr, "\n[brstat] window icnt %llu..%llu (%llu insns)\n",
+            (unsigned long long)icnt_lo, (unsigned long long)icnt_hi,
+            (unsigned long long)(icnt_hi - icnt_lo));
+    uint64_t dt=0,dn=0,c=0,l=0;
+    for(int r = 0; r < 3; r++) {
+      if(ds_total[r] == 0 && cond[r] == 0) { continue; }
+      fprintf(stderr, "[brstat] %-18s  delay slots %10llu  NOP %10llu (%.1f%% filled)  "
+              "cond-br %9llu  likely %9llu (%.1f%%)\n", name[r],
+              (unsigned long long)ds_total[r], (unsigned long long)ds_nop[r],
+              ds_total[r] ? 100.0*(ds_total[r]-ds_nop[r])/ds_total[r] : 0.0,
+              (unsigned long long)cond[r], (unsigned long long)likely[r],
+              cond[r] ? 100.0*likely[r]/cond[r] : 0.0);
+      dt+=ds_total[r]; dn+=ds_nop[r]; c+=cond[r]; l+=likely[r];
+    }
+    fprintf(stderr, "[brstat] %-18s  delay slots %10llu  NOP %10llu (%.1f%% filled)  "
+            "cond-br %9llu  likely %9llu (%.1f%%)\n", "TOTAL",
+            (unsigned long long)dt, (unsigned long long)dn, dt?100.0*(dt-dn)/dt:0.0,
+            (unsigned long long)c, (unsigned long long)l, c?100.0*l/c:0.0);
+    std::unordered_map<uint32_t,bool> ds_all, br_all;
+    for(int r = 0; r < 3; r++) {
+      if(ds_seen[r].empty() && br_seen[r].empty()) { continue; }
+      stat_line(name[r], ds_seen[r], br_seen[r]);
+      ds_all.insert(ds_seen[r].begin(), ds_seen[r].end());
+      br_all.insert(br_seen[r].begin(), br_seen[r].end());
+    }
+    stat_line("TOTAL", ds_all, br_all);
+    const char *cache_nm[4] = {"I", "D", "SI", "SD"};
+    const char *op_nm[8] = {"IdxWBInv","IdxLdTag","IdxStTag","CreateDE","HitInv","FillHitWBInv","HitWB","HitSetV"};
+    bool any = false;
+    for(int c = 0; c < 4; c++) { for(int o = 0; o < 8; o++) { if(g_cacheop_cnt[c][o]) { any = true; } } }
+    if(any) {
+      fprintf(stderr, "[brstat] CACHE ops in window (DMA coherence):\n");
+      for(int c = 0; c < 4; c++) {
+        for(int o = 0; o < 8; o++) {
+          if(g_cacheop_cnt[c][o]) {
+            fprintf(stderr, "[brstat]   %-2s %-12s %12llu\n", cache_nm[c], op_nm[o],
+                    (unsigned long long)g_cacheop_cnt[c][o]);
+          }
+        }
+      }
+    }
+  }
+
+} g_bs;
+
+void jazz_dump_hot(state_t *s) {
+  if(!g_hotpc or !g_hotcnt) { return; }
+    uint32_t n = (HOT_HI - HOT_LO) / 4;
+    uint64_t total = 0;
+    std::vector<uint32_t> idx;
+    for(uint32_t i = 0; i < n; i++) {
+      if(g_hotcnt[i]) { total += g_hotcnt[i]; idx.push_back(i); }
+    }
+    std::sort(idx.begin(), idx.end(), [](uint32_t a, uint32_t b){ return g_hotcnt[a] > g_hotcnt[b]; });
+    fprintf(stderr, "\n[hotpc] %zu distinct kernel PCs, %llu samples in window\n",
+            idx.size(), (unsigned long long)total);
+    initCapstone();
+    std::vector<uint32_t> centers;
+    for(uint32_t i : idx) {
+      uint32_t pc = HOT_LO + (i << 2);
+      bool near = false;
+      for(uint32_t c : centers) { if(pc > c - 0x200 and pc < c + 0x200) { near = true; break; } }
+      if(near) { continue; }
+      centers.push_back(pc);
+      if(centers.size() >= 8) { break; }
+    }
+    for(uint32_t c : centers) {
+      uint64_t winsum = 0;
+      for(int32_t d = -0x60; d <= 0x80; d += 4) {
+        uint32_t pc = c + d;
+        if(pc >= HOT_LO and pc < HOT_HI) { winsum += g_hotcnt[(pc - HOT_LO) >> 2]; }
+      }
+      fprintf(stderr, "\n[hotpc] ---- cluster @ %08x : hottest %llu, window %llu (%.1f%% of profiled) ----\n",
+              c, (unsigned long long)g_hotcnt[(c - HOT_LO) >> 2], (unsigned long long)winsum,
+              total ? 100.0 * winsum / total : 0.0);
+      for(int32_t d = -0x40; d <= 0x80; d += 4) {
+        uint32_t pc = c + d;
+        if(pc < HOT_LO or pc >= HOT_HI) { continue; }
+        uint32_t raw = 0; guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)pc, &raw);
+        uint32_t inst = __builtin_bswap32(raw);   /* guest_rd32_be yields the BE word; capstone (LE) wants the logical value */
+        uint64_t cnt = g_hotcnt[(pc - HOT_LO) >> 2];
+        fprintf(stderr, "  %08x %10llu  %08x  %s%s\n", pc, (unsigned long long)cnt, inst,
+                getAsmString(inst, pc).c_str(), pc == c ? "   <== hottest" : "");
+      }
+    }
+  }
+static inline int brstat_region(uint64_t pc) {
+  uint32_t p = (uint32_t)pc;
+  if(p >= 0x80000000u && p < 0xa0000000u) { return 0; }
+  if(p >= 0xc0000000u) { return 1; }
+  return 2;
+}
+
 template <bool EL>
 static inline bool run_delay_slot(state_t *s) {
   bool exl_before = (s->cpr0[CPR0_SR] & SR_EXL) != 0;
   bool saved = s->in_delay_slot;
+  if(g_brstat && s->icnt >= g_brstat_floor) {
+    if(g_bs.icnt_lo == 0) { g_bs.icnt_lo = s->icnt; }
+    g_bs.icnt_hi = s->icnt;
+    int r = brstat_region(s->pc);               /* s->pc is the delay-slot word here */
+    uint32_t ds = 0; guest_rd32_be(s, s->pc, &ds);
+    g_bs.ds_total[r]++;
+    if(ds == 0) { g_bs.ds_nop[r]++; }
+    g_bs.ds_seen[r][(uint32_t)s->pc] = (ds == 0);
+  }
   s->in_delay_slot = true;
   execMips<EL>(s);
   s->in_delay_slot = saved;
@@ -712,6 +870,10 @@ static bool g_ring_frozen = false;
 static void raise_tlb(state_t *s, uint64_t va, uint32_t exccode,
                       bool is_refill, bool is_xtlb) {
   static const bool tlbdbg = getenv("TLBDBG") != nullptr;
+  { static const bool g_jexc = getenv("JAZZ_EXC") != nullptr;   /* --jazz: log TLB exceptions too */
+    if(g_jexc && s->jz)
+      fprintf(stderr, "[tlbexc] code=%u refill=%d va=%08x pc=%08x icnt=%llu\n", exccode, (int)is_refill,
+              (uint32_t)va, (uint32_t)s->pc, (unsigned long long)s->icnt); }
 #ifdef ENABLE_O32_TRACE
   { static const bool seg_trig = getenv("TRACEWIN_SEGV") != nullptr;
     static uint64_t seg_floor = getenv("TRACEWIN_SEGV_FLOOR") ? strtoull(getenv("TRACEWIN_SEGV_FLOOR"),0,0) : 0;
@@ -1038,6 +1200,14 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
     /* kseg0 (0x80000000-0x9fffffff) and kseg1 (0xa0000000-0xbfffffff): unmapped */
     if(seg == 0x4 || seg == 0x5) {
       if(seg == 0x4 && op != tlb_op::fetch) { s->mem.cache_active = true; } /* kseg0 cached */
+      if(g_stale_triage && op != tlb_op::fetch) {
+        uint32_t pc = (uint32_t)s->pc;
+        if(pc == 0x8002a7a8u or pc == 0x80604f80u) {
+          fprintf(stderr, "[triage] pc=%08x va=%08x pa=%08x %s %s icnt=%llu\n", pc, lo32,
+                  lo32 & 0x1fffffff, seg == 4 ? "kseg0" : "kseg1", seg == 4 ? "CACHED" : "uncached",
+                  (unsigned long long)s->icnt);
+        }
+      }
       return lo32 & 0x1fffffff;
     }
     /* useg/kuseg (seg 0-3), ksseg/kseg2 (seg 6), kseg3 (seg 7): TLB mapped */
@@ -1152,6 +1322,14 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
     ce.vpn = vpn; ce.asid = cur_asid; ce.ppn = (uint32_t)(pa >> 12);
     ce.dirty = (e_lo & 0x4u) != 0; ce.valid = true; ce.cached = cca_cached;
     if(cca_cached && op != tlb_op::fetch) { s->mem.cache_active = true; }
+    if(g_stale_triage && op != tlb_op::fetch) {
+      uint32_t pc = (uint32_t)s->pc;
+      if(pc == 0x8002a7a8u or pc == 0x80604f80u) {
+        fprintf(stderr, "[triage] pc=%08x va=%016llx pa=%08x mapped C=%u %s icnt=%llu\n", pc,
+                (unsigned long long)va, (uint32_t)pa, (unsigned)((e_lo >> 3) & 7u),
+                cca_cached ? "CACHED" : "uncached", (unsigned long long)s->icnt);
+      }
+    }
     return (uint32_t)pa;
   }
 
@@ -1490,6 +1668,12 @@ void branch(uint32_t inst, state_t *s) {
     }
   }
 
+  if(g_brstat && s->icnt >= g_brstat_floor) {
+    int r = brstat_region(s->pc);               /* s->pc is still the branch PC here */
+    g_bs.cond[r]++;
+    if(isLikely) { g_bs.likely[r]++; }
+    g_bs.br_seen[r][(uint32_t)s->pc] = isLikely;
+  }
   s->pc += 4;
   if(isLikely) {
     /* BLTZALL/BGEZALL: the link (ra <- pc+8) is UNCONDITIONAL -- only the branch
@@ -2958,6 +3142,15 @@ void execMips(state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rd = (inst >> 11) & 31;
   s->icnt++;
+  if(g_hotpc && s->icnt >= g_brstat_floor) {
+    uint32_t pc = (uint32_t)s->pc;
+    if(pc >= HOT_LO and pc < HOT_HI) {
+      if(g_hotcnt == nullptr) { g_hotcnt = (uint32_t *)calloc((HOT_HI - HOT_LO) / 4, 4); }
+      uint32_t &c = g_hotcnt[(pc - HOT_LO) >> 2];
+      if(c != 0xffffffffu) { c++; }
+      g_hot_s = s;
+    }
+  }
   /* RETLOG: scoped (icnt in [RETLO,RETHI]) retire log mirroring the silicon flight recorder
    * (pc + first-changed-GPR + value), emitted for the PREVIOUS instruction (its result is now
    * visible in s->gpr).  Used to align golden vs the silicon window and find the first divergence. */
@@ -3614,7 +3807,7 @@ void execMips(state_t *s) {
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
 	    if(idx==0 && getenv("TLBTALLY")) { static uint64_t pv=~0ull; uint64_t c=s->tlb[0].entry_lo1;
 	      if(c!=pv){ fprintf(stderr,"[iss-idx0-wr] hi=%llx lo0=%llx lo1=%llx v1=%d icnt=%lu\n",(unsigned long long)s->tlb[0].entry_hi,(unsigned long long)s->tlb[0].entry_lo0,(unsigned long long)c,(int)((c>>1)&1),(unsigned long)s->icnt); pv=c; } }
-	    assert(s->tlb[idx].page_mask == 0);
+	    assert(s->jz != nullptr || s->tlb[idx].page_mask == 0);   /* Jazz firmware maps 64K..16M pages */
 	    iss_tlbdup_check(s, idx, "tlbwi");
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
@@ -3632,7 +3825,7 @@ void execMips(state_t *s) {
 	    s->tlb[idx].entry_lo0 = s->cpr0_64[CPR0_ENTRYLO0];
 	    s->tlb[idx].entry_lo1 = s->cpr0_64[CPR0_ENTRYLO1];
 	    s->tlb[idx].page_mask = s->cpr0[CPR0_PAGEMASK];
-	    assert(s->tlb[idx].page_mask == 0);
+	    assert(s->jz != nullptr || s->tlb[idx].page_mask == 0);   /* Jazz firmware maps 64K..16M pages */
 	    iss_tlbdup_check(s, idx, "tlbwr");
 	  }
 	  utlb_flush();   /* mapping changed -> drop the micro-TLB */
@@ -3690,6 +3883,10 @@ void execMips(state_t *s) {
 	    s->pc = (state_t::reg_t)s->cpr0_64[CPR0_EPC] - 4;
 	    s->cpr0[CPR0_SR] &= ~SR_EXL;
 	  }
+	  { static const bool g_jexc = getenv("JAZZ_EXC") != nullptr;
+	    if(g_jexc && s->jz)
+	      fprintf(stderr, "[eret] to=%08x sr=%08x icnt=%llu\n", (uint32_t)(s->pc + 4),
+	              s->cpr0[CPR0_SR], (unsigned long long)s->icnt); }
 	  HISTO(s, mipsInsn::ERET);
 	  break;
 	}
@@ -4014,6 +4211,10 @@ void execMips(state_t *s) {
 	{
 	  uint32_t rs  = (inst >> 21) & 31;
 	  uint32_t cop = (inst >> 16) & 31;       /* [20:18]=op  [17:16]=cache(0=I,1=D,2=SI,3=SD) */
+	  if(g_brstat && s->icnt >= g_brstat_floor) {   /* JAZZ_BRSTAT: tally CACHE ops (DMA-coherence signature) */
+	    extern uint64_t g_cacheop_cnt[4][8];
+	    g_cacheop_cnt[cop & 3][(cop >> 2) & 7]++;
+	  }
 	  int16_t  himm = (int16_t)(inst & 0xffff);
 	  uint64_t va  = s->gpr[rs] + (int32_t)himm;
 	  { static const bool g_watchinvl = getenv("WATCHINVL") != nullptr;

@@ -58,6 +58,14 @@ public:
   uint8_t *mem = nullptr;
   state_t *st = nullptr;
   bool route_devices = false;
+  /* --jazz: PA >= 0x08000000 goes to the Jazz platform (VRAM and the PROM are served from here) */
+  bool route_jazz = false;
+  static inline bool jazz_mem_load(uint64_t pa) {
+    return (pa >= 0x40000000ULL && pa < 0x40800000ULL) ||
+      (pa >= 0x1fc00000ULL && pa < 0x20000000ULL) || (pa >= 0xfff00000ULL && pa < 0x100000000ULL);
+  }
+  uint64_t jazz_dev_read(uint64_t pa, int sz);
+  void jazz_dev_write(uint64_t pa, uint64_t v, int sz);
   /* set per-access by va_translate: true only for a CACHED cpu load/store (kseg0
    * or a mapped C==3 page, and never a fetch).  DMA (get_raw_ptr) and MMIO leave
    * it as-is/false, so they always hit backing DRAM directly. */
@@ -126,6 +134,9 @@ public:
               (unsigned long)g_cur_icnt, (uint32_t)g_cur_pc, (uint32_t)byte_addr,
               (unsigned long long)(uint64_t)*reinterpret_cast<T*>(mem+_ea), sizeof(T));
     }
+    if(route_jazz && byte_addr >= 0x08000000ULL && !jazz_mem_load(byte_addr)) {
+      return static_cast<T>(jazz_dev_read(byte_addr, sizeof(T)));
+    }
     if(route_devices) {
       if(byte_addr>=0x1f000000 && byte_addr<=0x1fffffff) return route_load<T>(byte_addr);
       byte_addr = mc_alias(byte_addr);
@@ -157,6 +168,11 @@ public:
       fprintf(stderr, "[wr] icnt=%lu pc=%08x pa=%08x val=%016llx sz=%zu\n",
               (unsigned long)g_cur_icnt, (uint32_t)g_cur_pc, (uint32_t)byte_addr,
               (unsigned long long)(uint64_t)v, sizeof(T));
+    if(route_jazz && byte_addr >= 0x08000000ULL &&
+       !(byte_addr >= 0x40000000ULL && byte_addr < 0x40800000ULL)) {   /* VRAM is memory; PROM writes dropped */
+      jazz_dev_write(byte_addr, static_cast<uint64_t>(v), sizeof(T));
+      return;
+    }
     if(route_devices) {
       if(byte_addr>=0x1f000000 && byte_addr<=0x1fffffff) { route_store<T>(byte_addr, v); return; }
       byte_addr = mc_alias(byte_addr);

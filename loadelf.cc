@@ -27,32 +27,6 @@
 #endif
 
 
-#define INTEGRAL_ENABLE_IF(SZ,T) typename std::enable_if<std::is_integral<T>::value and (sizeof(T)==SZ),T>::type* = nullptr
-
-template <typename T, INTEGRAL_ENABLE_IF(1,T)>
-T bswap_(T x) {
-  return x;
-}
-
-template <typename T, INTEGRAL_ENABLE_IF(2,T)> 
-T bswap_(T x) {
-  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  return  __builtin_bswap16(x);
-}
-
-template <typename T, INTEGRAL_ENABLE_IF(4,T)>
-T bswap_(T x) {
-  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  return  __builtin_bswap32(x);
-}
-
-template <typename T, INTEGRAL_ENABLE_IF(8,T)> 
-T bswap_(T x) {
-  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "must be little endian machine");
-  return  __builtin_bswap64(x);
-}
-
-#undef INTEGRAL_ENABLE_IF
 
 
 static const uint8_t magicArr[4] = {0x7f, 'E', 'L', 'F'};
@@ -106,31 +80,36 @@ void load_elf(const char* fn, state_t *ms) {
   }
 
   /* Check for a MIPS machine */
-  assert(checkBigEndian(eh32));
+  /* the ELF's data encoding must match the build (make EL=1 for little-endian) */
+  if(IS_LITTLE_ENDIAN ? !checkLittleEndian(eh32) : !checkBigEndian(eh32)) {
+    printf("INTERP: ELF endianness does not match this %s-endian build\n",
+           IS_LITTLE_ENDIAN ? "little" : "big");
+    exit(-1);
+  }
 
-  if(bswap_(eh32->e_machine) != 8) {
+  if(bswap<IS_LITTLE_ENDIAN>(eh32->e_machine) != 8) {
     printf("INTERP : non-mips binary..goodbye\n");
     exit(-1);
   }
 
-  uint32_t lAddr = bswap_(eh32->e_entry);
+  uint32_t lAddr = bswap<IS_LITTLE_ENDIAN>(eh32->e_entry);
 
-  e_phnum = bswap_(eh32->e_phnum);
-  e_phoff = bswap_(eh32->e_phoff);
+  e_phnum = bswap<IS_LITTLE_ENDIAN>(eh32->e_phnum);
+  e_phoff = bswap<IS_LITTLE_ENDIAN>(eh32->e_phoff);
   ph32 = reinterpret_cast<Elf32_Phdr*>(buf + e_phoff);
-  e_shnum = bswap_(eh32->e_shnum);
-  sh32 = reinterpret_cast<Elf32_Shdr*>(buf + bswap_(eh32->e_shoff));
+  e_shnum = bswap<IS_LITTLE_ENDIAN>(eh32->e_shnum);
+  sh32 = reinterpret_cast<Elf32_Shdr*>(buf + bswap<IS_LITTLE_ENDIAN>(eh32->e_shoff));
   ms->pc = (int64_t)(int32_t)lAddr;
 
   uint32_t loaddr = ~0U, hiaddr = 0;
   /* Find instruction segments and copy to
    * the memory buffer */
   for(int32_t i = 0; i < e_phnum; i++, ph32++) {
-    int32_t p_memsz = bswap_(ph32->p_memsz);
-    int32_t p_offset = bswap_(ph32->p_offset);
-    int32_t p_filesz = bswap_(ph32->p_filesz);
-    int32_t p_type = bswap_(ph32->p_type);
-    uint32_t p_vaddr = bswap_(ph32->p_vaddr);
+    int32_t p_memsz = bswap<IS_LITTLE_ENDIAN>(ph32->p_memsz);
+    int32_t p_offset = bswap<IS_LITTLE_ENDIAN>(ph32->p_offset);
+    int32_t p_filesz = bswap<IS_LITTLE_ENDIAN>(ph32->p_filesz);
+    int32_t p_type = bswap<IS_LITTLE_ENDIAN>(ph32->p_type);
+    uint32_t p_vaddr = bswap<IS_LITTLE_ENDIAN>(ph32->p_vaddr);
     /* stolen from QEMU */
     if(p_type == PT_LOAD) {
       uint32_t sz = (p_vaddr + p_memsz);

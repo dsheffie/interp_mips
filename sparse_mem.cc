@@ -9,6 +9,7 @@
 #endif
 
 #include "sparse_mem.hh"
+#include "jazz.hh"
 #include "interpret.hh"
 #include "sgi_mc.hh"
 #include "sgi_hpc.hh"
@@ -241,6 +242,12 @@ template <typename T> void sparse_mem::route_store(uint64_t pa, T v) {
     *reinterpret_cast<T*>(mem+pa) = v;
     break;
   }
+}
+uint64_t sparse_mem::jazz_dev_read(uint64_t pa, int sz) {
+  return st->jz->read(pa, sz);
+}
+void sparse_mem::jazz_dev_write(uint64_t pa, uint64_t v, int sz) {
+  st->jz->write(pa, v, sz);
 }
 #define INST(T) template T sparse_mem::route_load<T>(uint64_t); template void sparse_mem::route_store<T>(uint64_t, T);
 INST(uint8_t) INST(uint16_t) INST(uint32_t) INST(uint64_t)
