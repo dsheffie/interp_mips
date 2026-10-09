@@ -3237,7 +3237,9 @@ void execMips(state_t *s) {
       }
       case 0x09: { /* jalr */
 	state_t::reg_t jaddr = s->gpr[rs];
-	s->gpr[31] = s->pc + 8;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
+	if(rd != 0) {
+	  s->gpr[rd] = s->pc + 8;   /* full 64-bit link (n64 user PCs exceed 32 bits) */
+	}
 	s->pc += 4;
 	if(!run_delay_slot<EL>(s))
 	  s->pc = jaddr;
@@ -3741,11 +3743,14 @@ void execMips(state_t *s) {
 	case 0x4: /*mtc0*/
 	  if(rd != 15) { /* PRId (reg 15) is read-only */
 	    /* Sail mips_insts.sail execute(MTC0 ...EntryHi): EntryHi takes its fields
-	     * from the FULL 64-bit GPR (no zero-extend); every other register is the
-	     * usual 32-bit zero-extended write.  Reserved fields are then dropped per
-	     * the R4400 spec (cp0_write_mask). */
+	     * from the FULL 64-bit GPR (no zero-extend); every other register takes the
+	     * sign-extended low word (MIPS III MTC0 into a 64-bit CP0 register).  Zero-
+	     * extending broke a 32-bit kernel's `mtc0 EPC; eret` to a mapped kseg2/kseg3
+	     * PC: eret went to 0x00000000fce27900 (R=0), which never matches the R=3 TLB
+	     * entry -> endless TLB-invalid loop (NT 4.0 on --jazz).  Reserved fields are
+	     * then dropped per the R4400 spec (cp0_write_mask). */
 	    { uint64_t v = (rd == CPR0_ENTRYHI) ? s->gpr[rt]
-	                                        : (uint64_t)(uint32_t)s->gpr[rt];
+	                                        : (uint64_t)(int64_t)(int32_t)s->gpr[rt];
 	      s->cpr0_64[rd] = cp0_write_mask(rd, v); }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
