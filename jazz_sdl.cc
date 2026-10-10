@@ -57,10 +57,11 @@ jazz_sdl::jazz_sdl(jazz *jz, state_t *s) : jz(jz), s(s) {
    * before the renderer is created. */
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
   /* Open at the native framebuffer size so text renders 1:1 (crisp).  Still resizable; with
-   * nearest filtering a resized window stays sharp instead of smearing. */
+   * nearest filtering a resized window stays sharp instead of smearing.  NOTE: no
+   * SDL_WINDOW_ALLOW_HIGHDPI -- on Retina it quadruples the render backbuffer (2560x2048),
+   * which slows the render/sim loop enough to make the guest cursor visibly lag the mouse. */
   SDL_Window *wn = SDL_CreateWindow("interp_mips jazz (NT)", SDL_WINDOWPOS_CENTERED,
-                                    SDL_WINDOWPOS_CENTERED, (int)w, (int)h,
-                                    SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+                                    SDL_WINDOWPOS_CENTERED, (int)w, (int)h, SDL_WINDOW_RESIZABLE);
   if(wn == nullptr) {
     fprintf(stderr, "[jazz] sdl: CreateWindow failed: %s\n", SDL_GetError());
     SDL_Quit();
@@ -74,7 +75,7 @@ jazz_sdl::jazz_sdl(jazz *jz, state_t *s) : jz(jz), s(s) {
   ren = rn;
   ensure_texture(w, h);
   SDL_RaiseWindow(wn);                            /* a terminal-launched (non-bundled) binary opens in the background on macOS */
-  fprintf(stderr, "[jazz] sdl: window up (framebuffer %ux%u); click the window to capture keyboard+mouse, Ctrl+Alt to release, close window to stop\n", w, h);
+  fprintf(stderr, "[jazz] sdl: window up (framebuffer %ux%u); click the window to capture keyboard+mouse, Ctrl+Alt+G to release, close window to stop\n", w, h);
 }
 
 /* Modal input capture.  On macOS a bare (non-.app) binary never becomes the key app on its own, so
@@ -93,7 +94,7 @@ void jazz_sdl::set_grab(bool on) {
     SDL_RaiseWindow((SDL_Window *)win);
   }
   SDL_SetWindowTitle((SDL_Window *)win,
-                     on ? "interp_mips jazz (NT) -- captured; Ctrl+Alt to release"
+                     on ? "interp_mips jazz (NT) -- captured; Ctrl+Alt+G to release"
                         : "interp_mips jazz (NT) -- click to capture keyboard+mouse");
 }
 
@@ -138,9 +139,12 @@ void jazz_sdl::pump() {
         if(e.key.repeat) {                       /* the guest does its own key repeat */
           break;
         }
-        /* Ctrl+Alt is the capture-release "host key" (QEMU convention); never forward it to NT, and
-         * send the modifier breaks so NT doesn't see Ctrl stuck down after the release. */
-        if(grabbed and e.type == SDL_KEYDOWN and (SDL_GetModState() & KMOD_CTRL) and (SDL_GetModState() & KMOD_ALT)) {
+        /* Ctrl+Alt+G is the capture-release "host key" (QEMU convention).  It needs the 'G' so that
+         * bare Ctrl+Alt+Del passes through to NT (otherwise the release fires the instant Ctrl+Alt
+         * are held and Del never reaches the guest).  Send the Ctrl/Alt breaks so NT doesn't see
+         * them stuck down after the release. */
+        if(grabbed and e.type == SDL_KEYDOWN and e.key.keysym.sym == SDLK_g and
+           (SDL_GetModState() & KMOD_CTRL) and (SDL_GetModState() & KMOD_ALT)) {
           set_grab(false);
           jz->inject_key_name("ctrl", false);
           jz->inject_key_name("alt", false);
