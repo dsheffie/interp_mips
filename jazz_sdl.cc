@@ -94,7 +94,7 @@ void jazz_sdl::set_grab(bool on) {
     SDL_RaiseWindow((SDL_Window *)win);
   }
   SDL_SetWindowTitle((SDL_Window *)win,
-                     on ? "interp_mips jazz (NT) -- captured; Ctrl+Alt+G to release"
+                     on ? "interp_mips jazz (NT) -- captured; Ctrl+Alt+Backspace = Ctrl-Alt-Del, Ctrl+Alt+G to release"
                         : "interp_mips jazz (NT) -- click to capture keyboard+mouse");
 }
 
@@ -148,6 +148,21 @@ void jazz_sdl::pump() {
           set_grab(false);
           jz->inject_key_name("ctrl", false);
           jz->inject_key_name("alt", false);
+          break;
+        }
+        /* Ctrl+Alt+Backspace injects the full Ctrl+Alt+Del "secure attention sequence".
+         * On a Mac keyboard the key labelled "delete" is actually Backspace, so pressing
+         * Ctrl+Alt+Delete there sends Ctrl+Alt+Backspace and never reaches NT (the real
+         * forward-Delete is fn+delete).  Map the natural Mac combo to a self-contained SAS so
+         * the three-finger salute Just Works regardless of which Ctrl/Alt are physically held. */
+        if(grabbed and e.type == SDL_KEYDOWN and e.key.keysym.sym == SDLK_BACKSPACE and
+           (SDL_GetModState() & KMOD_CTRL) and (SDL_GetModState() & KMOD_ALT)) {
+          jz->inject_key_name("ctrl",   true);
+          jz->inject_key_name("alt",    true);
+          jz->inject_key_name("delete", true);
+          jz->inject_key_name("delete", false);
+          jz->inject_key_name("alt",    false);
+          jz->inject_key_name("ctrl",   false);
           break;
         }
         if(grabbed) {
