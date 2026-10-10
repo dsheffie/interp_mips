@@ -52,9 +52,15 @@ jazz_sdl::jazz_sdl(jazz *jz, state_t *s) : jz(jz), s(s) {
     return;
   }
   uint32_t w = jz->fb_width(), h = jz->fb_height();
-  /* open smaller than the 1280x1024 framebuffer but resizable; logical size scales the content */
+  /* Nearest-neighbor scaling: the default (bilinear) smears the 8bpp console text into an
+   * unreadable blur whenever the window isn't exactly the framebuffer size.  Must be set
+   * before the renderer is created. */
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+  /* Open at the native framebuffer size so text renders 1:1 (crisp).  Still resizable; with
+   * nearest filtering a resized window stays sharp instead of smearing. */
   SDL_Window *wn = SDL_CreateWindow("interp_mips jazz (NT)", SDL_WINDOWPOS_CENTERED,
-                                    SDL_WINDOWPOS_CENTERED, 1024, 820, SDL_WINDOW_RESIZABLE);
+                                    SDL_WINDOWPOS_CENTERED, (int)w, (int)h,
+                                    SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if(wn == nullptr) {
     fprintf(stderr, "[jazz] sdl: CreateWindow failed: %s\n", SDL_GetError());
     SDL_Quit();
