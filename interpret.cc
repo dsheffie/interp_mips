@@ -1069,7 +1069,7 @@ static void iss_tlbdup_check(state_t *s, uint32_t idx, const char *how) {
  * cacheable DATA access (va,pa) from va_translate. */
 namespace {
   struct alias_l1 {
-    static const uint32_t NOVAL = 0xffffffffu;
+    static constexpr uint32_t NOVAL = 0xffffffffu;   /* constexpr: implicitly inline (ODR-used by tag.assign) */
     uint32_t kb = 0, lg_sets = 0;
     std::vector<uint32_t> tag;               /* resident line_pa per set (NOVAL = empty) */
     uint64_t n_back_inval = 0;
