@@ -122,6 +122,16 @@ uint64_t jazz::read_dev(uint64_t pa, int sz) {
     update_isr();
     return rv;
   }
+  /* G364 geometry readback: the Linux g364fb driver READS DISPLAY_REG/VDISPLAY_REG to learn
+   * the mode the firmware set (NT instead WRITES them, handled in write() above).  Serve them
+   * back from the decoded fields -- the inverse of the write decode -- defaulting to 1280x1024
+   * (matching fb_width/fb_height) since our passive ARC shim never programs the G364. */
+  if(pa >= 0x60080000ULL and pa < 0x60082000ULL and sz >= 2) {
+    uint32_t o = (uint32_t)(pa - 0x60080000ULL);
+    if(o == 0x118) { return (g364_width  ? g364_width  : 1280) / 4; }   /* xres = val*4 */
+    if(o == 0x150) { return (g364_height ? g364_height : 1024) * 2; }   /* yres = val/2 */
+    return 0;
+  }
   uint64_t v = 0;
   for(int i = 0; i < sz; i++) {
     v |= uint64_t(read8(pa + i)) << (8*i);
