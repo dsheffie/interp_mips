@@ -60,7 +60,7 @@ jazz_sdl::jazz_sdl(jazz *jz, state_t *s) : jz(jz), s(s) {
     SDL_Quit();
     return;
   }
-  SDL_Renderer *rn = SDL_CreateRenderer(wn, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+  SDL_Renderer *rn = SDL_CreateRenderer(wn, -1, SDL_RENDERER_ACCELERATED)   /* no vsync: never block the sim */;
   if(rn == nullptr) {
     rn = SDL_CreateRenderer(wn, -1, 0);          /* fall back to software */
   }
@@ -124,6 +124,13 @@ void jazz_sdl::pump() {
         break;
       }
   }
+  /* events are polled on every call (keeps the window responsive); rendering the
+   * 1.3M-pixel framebuffer is throttled to ~30 Hz by wall clock */
+  uint32_t now = SDL_GetTicks();
+  if(now - last_render_ms < 33) {
+    return;
+  }
+  last_render_ms = now;
   uint32_t w = jz->fb_width(), h = jz->fb_height();
   ensure_texture(w, h);
   jz->fb_rgba(pixels);

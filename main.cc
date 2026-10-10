@@ -288,7 +288,7 @@ int main(int argc, char *argv[]) {
 
   double t0 = timestamp();
   while(s->brk == 0 && s->icnt < s->maxicnt) {
-    if(disp && (s->icnt & 0xfffff) == 0) { disp->pump(); }
+    if(disp && (s->icnt & 0x3ffff) == 0) { disp->pump(); }   /* ~every 256K insns: poll input */
     /* BECOUNT: tally userspace + be-region (0x0c-0x10M text/libc) dynamic instrs; print at the crash pc. */
     { static const bool g_bec = getenv("BECOUNT") != nullptr;
       static uint64_t g_us=0, g_be=0; static uint64_t g_be_first_icnt=0;
