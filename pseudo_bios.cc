@@ -42,10 +42,12 @@ static const char *const kEnvp[] = {
 } // namespace
 
 void install_pseudo_bios(state_t *s, sparse_mem *sm) {
-  /* Scratch arena near the top of the 16 MiB RAM bank (PA 0x08000000..0x09000000);
-   * sash leaves argv/envp here and the kernel reads them in early mlsetup, before
-   * memory init zeroes anything. kseg0 pointer = 0x80000000 | PA. */
-  uint32_t pa = 0x08fff000;
+  /* Scratch arena for argv/envp; the kernel reads it in early setup (prom_init /
+   * mlsetup) before memory init zeroes anything.  kseg0 pointer = 0x80000000 | PA.
+   * SGI/IRIX: top of the 16 MiB RAM bank at PA 0x08000000.  Jazz has 128 MiB at PA 0
+   * (jazz.cc returns 0 for PA >= 0x08000000), so the arena must live *inside* RAM --
+   * place it high (112 MiB), well above the ~6 MiB kernel image + embedded initramfs. */
+  uint32_t pa = IS_LITTLE_ENDIAN ? 0x07000000u : 0x08fff000u;
   uint8_t *m = sm->mem;
 
   auto kseg0  = [](uint32_t p) -> uint32_t { return 0x80000000u | p; };
@@ -57,9 +59,15 @@ void install_pseudo_bios(state_t *s, sparse_mem *sm) {
     pa += (uint32_t)n;
     return kseg0(at);
   };
-  auto put_be32 = [&](uint32_t v) {                       /* big-endian word */
-    m[pa+0] = (uint8_t)(v >> 24); m[pa+1] = (uint8_t)(v >> 16);
-    m[pa+2] = (uint8_t)(v >> 8);  m[pa+3] = (uint8_t)v;
+  auto put_word = [&](uint32_t v) {                       /* argv/envp pointer, TARGET endianness */
+    if(IS_LITTLE_ENDIAN) {                                /* the --jazz (EL) Linux build */
+      m[pa+0] = (uint8_t)v;         m[pa+1] = (uint8_t)(v >> 8);
+      m[pa+2] = (uint8_t)(v >> 16); m[pa+3] = (uint8_t)(v >> 24);
+    }
+    else {                                                /* the big-endian IRIX/SGI build */
+      m[pa+0] = (uint8_t)(v >> 24); m[pa+1] = (uint8_t)(v >> 16);
+      m[pa+2] = (uint8_t)(v >> 8);  m[pa+3] = (uint8_t)v;
+    }
     pa += 4;
   };
 
@@ -70,11 +78,11 @@ void install_pseudo_bios(state_t *s, sparse_mem *sm) {
 
   pa = (pa + 3u) & ~3u;                                   /* align arrays */
   uint32_t argv_base = kseg0(pa);
-  for(uint32_t p : argptrs) put_be32(p);
-  put_be32(0);                                            /* argv NULL terminator */
+  for(uint32_t p : argptrs) put_word(p);
+  put_word(0);                                            /* argv NULL terminator */
   uint32_t envp_base = kseg0(pa);
-  for(uint32_t p : envptrs) put_be32(p);
-  put_be32(0);                                            /* envp NULL terminator */
+  for(uint32_t p : envptrs) put_word(p);
+  put_word(0);                                            /* envp NULL terminator */
 
   s->gpr[4] = argc;                 /* a0 = argc */
   s->gpr[5] = sext32(argv_base);    /* a1 = argv */

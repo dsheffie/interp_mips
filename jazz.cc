@@ -38,19 +38,27 @@ jazz::jazz(state_t *s, const std::string &nvram_file, uint64_t ms_insns, const s
   cmos[0xb] = 0x06;
   cmos[0xd] = 0x80;
   rtc_base_sec = time(nullptr);
-  /* DS1225 NVRAM: map the file shared so the firmware's environment writes persist */
-  nvram_fd = open(nvram_file.c_str(), O_RDWR);
-  if(nvram_fd < 0) {
-    fprintf(stderr, "[jazz] cannot open nvram %s\n", nvram_file.c_str());
-    exit(-1);
+  /* DS1225 NVRAM: map the file shared so the firmware's environment writes persist.  The clean-room
+   * Linux boot (--arcs, no vendor ROM) needs no NVRAM -- its ARC shim stubs GetEnvironmentVariable --
+   * so an empty nvram_file gets an anonymous zeroed 8 KiB buffer (reads 0, writes don't persist). */
+  if(nvram_file.empty()) {
+    nvram = reinterpret_cast<uint8_t*>(mmap(nullptr, 8192, PROT_READ | PROT_WRITE,
+                                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
   }
-  struct stat st;
-  fstat(nvram_fd, &st);
-  if(st.st_size < 8192) {
-    fprintf(stderr, "[jazz] nvram %s is %ld bytes, need 8192\n", nvram_file.c_str(), (long)st.st_size);
-    exit(-1);
+  else {
+    nvram_fd = open(nvram_file.c_str(), O_RDWR);
+    if(nvram_fd < 0) {
+      fprintf(stderr, "[jazz] cannot open nvram %s\n", nvram_file.c_str());
+      exit(-1);
+    }
+    struct stat st;
+    fstat(nvram_fd, &st);
+    if(st.st_size < 8192) {
+      fprintf(stderr, "[jazz] nvram %s is %ld bytes, need 8192\n", nvram_file.c_str(), (long)st.st_size);
+      exit(-1);
+    }
+    nvram = reinterpret_cast<uint8_t*>(mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, nvram_fd, 0));
   }
-  nvram = reinterpret_cast<uint8_t*>(mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, nvram_fd, 0));
   esp = new jazz_esp(this, disk, disk_write);
   sonic = new jazz_sonic(this, ms_insns, net_tap);
 }

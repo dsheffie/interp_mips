@@ -3951,6 +3951,14 @@ void execMips(state_t *s) {
 	      s->cpr0_64[rd] = cp0_write_mask(rd, v); }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
+	  if(rd == 7) {
+	    /* r9999 console hook: a CP0 write to register 7 (unused on R4000) pushes the low byte
+	     * to the core's putchar FIFO (exec.sv t_push_putchar).  The clean-room ARC firmware's
+	     * Write vector uses `mtc0 x,$7` as prom_putchar, so this is the Linux/Jazz console --
+	     * model it here or all console output is swallowed. */
+	    fputc((int)(s->gpr[rt] & 0xff), stdout);
+	    fflush(stdout);
+	  }
 	  ptetrack_probe(s, rd, rt);
 	  if(rd == CPR0_COMPARE) { /* writing Compare re-arms + clears the timer interrupt (IP[7]) */
 	    s->cpr0[CPR0_CAUSE] &= ~(1u << 15);

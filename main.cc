@@ -117,12 +117,24 @@ int main(int argc, char *argv[]) {
   sm->st = s;
   if(jazz_mode) {
     if(!IS_LITTLE_ENDIAN) { std::cerr << "--jazz needs a little-endian build (make EL=1)\n"; return 1; }
-    if(nvram.empty() || prom.empty()) { std::cerr << "--jazz needs --nvram and --prom\n"; return 1; }
+    /* Two boot paths: the NT boot runs the vendor PROM (--prom + --nvram) from the reset vector;
+     * the clean-room Linux boot loads our ARC shim (--arcs) at PA 0x1000 and the kernel ELF (--file)
+     * and starts at the kernel entry (the shim is passive -- the kernel calls through its romvec). */
+    const bool nt_boot = not prom.empty();
+    if(nt_boot) {
+      if(nvram.empty()) { std::cerr << "--jazz --prom (NT) needs --nvram\n"; return 1; }
+    }
+    else if(arcs.empty() or filename.empty()) {
+      std::cerr << "--jazz without --prom needs --arcs <firmware> and --file <kernel> (clean-room Linux boot)\n";
+      return 1;
+    }
     s->jz = new jazz(s, nvram, jazz_ms_insns, disk, disk_write, net_tap);   /* --disk: SCSI ID 0; --net-tap: SONIC */
     if(!keys.empty() && !s->jz->load_keys(keys)) { std::cerr << "cannot read --keys " << keys << "\n"; return 1; }
     if(sdl_out) { disp = new jazz_sdl(s->jz, s); if(!disp->ok()) { delete disp; disp = nullptr; } }
     sm->route_jazz = true;
-    start_pc = "0xbfc00000";          /* reset vector; the PROM does everything (no pseudo-BIOS) */
+    if(nt_boot) {
+      start_pc = "0xbfc00000";        /* reset vector; the PROM does everything (no pseudo-BIOS) */
+    }
   }
   else {
     s->mc  = new sgi_mc(s);
