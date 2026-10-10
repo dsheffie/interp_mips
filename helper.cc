@@ -11,7 +11,9 @@
 #include <cxxabi.h>
 
 #ifdef __amd64__
-#include <x86intrin.h>
+#ifdef __amd64__
+#include <x86intrin.h>   /* _mm_crc32_u8 (SSE4.2); non-x86 uses the software CRC */
+#endif
 #endif
 
 #include "helper.hh"

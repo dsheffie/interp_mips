@@ -5,7 +5,9 @@
 #include <iostream>
 
 #ifdef __amd64__
-#include <x86intrin.h>
+#ifdef __amd64__
+#include <x86intrin.h>   /* _mm_crc32_u8 (SSE4.2); non-x86 uses the software CRC */
+#endif
 #endif
 
 #include "sparse_mem.hh"
@@ -22,6 +24,13 @@ static const uint64_t SCC_END  = 0x1fbd983fULL;
 
 
 #define PROT (PROT_READ | PROT_WRITE)
+/* macOS has MAP_ANON (not MAP_ANONYMOUS) and no MAP_NORESERVE */
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
 #define MAP (MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE)
 
 #ifdef ENABLE_O32_TRACE
