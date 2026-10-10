@@ -37,3 +37,8 @@ golden_*.bin
 g*.log
 iss_boot.log
 gin.txt
+
+# wasm build artifacts (sources live in wasm/, outputs are generated)
+wasm/obj/
+wasm/data/
+wasm/site/

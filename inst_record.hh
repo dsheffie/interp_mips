@@ -21,6 +21,7 @@
 #include <fstream>
 #include <string>
 #include <list>
+#include <map>
 
 struct inst_record {
   uint64_t pc;

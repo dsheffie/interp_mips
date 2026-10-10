@@ -6,8 +6,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#ifndef __EMSCRIPTEN__            /* no libunwind in the WASM build; dbt_backtrace() is #if 0 anyway */
 #define UNW_LOCAL_ONLY
 #include <libunwind.h>
+#endif
 #include <cxxabi.h>
 
 #ifdef __amd64__

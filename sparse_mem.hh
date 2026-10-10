@@ -54,7 +54,24 @@ public:
   static const uint64_t pgsize = 4096;
   /* 1ULL, not 1UL: unsigned long is 32 bits on 32-bit targets (wasm32, i386),
    * where 1UL<<32 is undefined and rejects as a non-constant initializer. */
-  static const uint64_t sz = 1ULL<<32;  
+#ifdef __EMSCRIPTEN__
+  /* wasm32 can't lazily reserve a 4 GB map (emscripten's anonymous mmap commits the full
+   * size, and even a 1 GB flat buffer fails).  The Jazz/Linux guest touches only RAM
+   * [0,0x08000000) and VRAM [0x40000000,0x40800000), so fold VRAM down to just above RAM
+   * (em_fold) and keep the backing buffer to ~144 MiB. */
+  static const uint64_t sz = 0x09000000ULL;
+#else
+  static const uint64_t sz = 1ULL<<32;
+#endif
+  /* wasm only: relocate the 8 MiB G364 VRAM window from 0x40000000 to 0x08000000 so the
+   * flat buffer stays small.  Identity on native.  Applied at the final mem[] index only,
+   * after all address routing, so the device/RAM decode above is unaffected. */
+  static inline uint64_t em_fold(uint64_t a) {
+#ifdef __EMSCRIPTEN__
+    if(a >= 0x40000000ULL && a < 0x40800000ULL) { return a - 0x38000000ULL; }
+#endif
+    return a;
+  }
   uint8_t *mem = nullptr;
   state_t *st = nullptr;
   bool route_devices = false;
@@ -110,7 +127,7 @@ public:
   uint8_t *get_raw_ptr(uint64_t byte_addr) {
     byte_addr &= ((1ULL<<32) - 1);   /* 1ULL: 1UL<<32 is undefined on 32-bit targets */
     if(route_devices) byte_addr = mc_alias(byte_addr);
-    return mem+byte_addr;
+    return mem+em_fold(byte_addr);
   }
   template <typename T>
   T get(uint64_t byte_addr) {
@@ -141,7 +158,7 @@ public:
       if(byte_addr>=0x1f000000 && byte_addr<=0x1fffffff) return route_load<T>(byte_addr);
       byte_addr = mc_alias(byte_addr);
     }
-    return *reinterpret_cast<T*>(mem+byte_addr);
+    return *reinterpret_cast<T*>(mem+em_fold(byte_addr));
   }
   template<typename T>
   void set(uint64_t byte_addr, T v) {
@@ -177,7 +194,7 @@ public:
       if(byte_addr>=0x1f000000 && byte_addr<=0x1fffffff) { route_store<T>(byte_addr, v); return; }
       byte_addr = mc_alias(byte_addr);
     }
-    *reinterpret_cast<T*>(mem+byte_addr) = v;
+    *reinterpret_cast<T*>(mem+em_fold(byte_addr)) = v;
   }
   template <typename T> T route_load(uint64_t pa);
   template <typename T> void route_store(uint64_t pa, T v);

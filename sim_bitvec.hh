@@ -4,7 +4,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#ifdef __EMSCRIPTEN__
+/* the wasm build has no boost; provide the one primitive sim_bitvec uses (hashes are
+ * only consumed by cosim, which the web build doesn't do). */
+#include <functional>
+namespace boost {
+  template<class T> inline void hash_combine(uint64_t &seed, const T &v) {
+    seed ^= std::hash<T>{}(v) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+  }
+}
+#else
 #include <boost/functional/hash.hpp>
+#endif
 
 #include "helper.hh"
 
