@@ -12,7 +12,7 @@
 #include "interpret.hh"
 
 /* local interrupt sources (bit = rc4030 jazz irq; Linux JAZZ_*_IRQ - JAZZ_IRQ_START) */
-static const int SRC_SONIC = 4, SRC_FDC = 1, SRC_SCSI = 5, SRC_KBD = 6, SRC_MOUSE = 7, SRC_COM1 = 8, SRC_COM2 = 9;
+static const int SRC_VIDEO = 3, SRC_SONIC = 4, SRC_FDC = 1, SRC_SCSI = 5, SRC_KBD = 6, SRC_MOUSE = 7, SRC_COM1 = 8, SRC_COM2 = 9;
 
 jazz::jazz(state_t *s, const std::string &nvram_file, uint64_t ms_insns, const std::string &disk,
            bool disk_write, const std::string &net_tap)
@@ -150,7 +150,11 @@ void jazz::write(uint64_t pa, uint64_t v, int sz) {
   for(int i = 0; i < sz; i++) {
     write8(pa + i, (v >> (8*i)) & 0xff);
   }
-  if(pa >= 0x60080000ULL and pa < 0x60082000ULL and sz >= 4) {
+  if(pa >= 0x60080000ULL and pa < 0x60200000ULL and video_irq) {
+    video_irq = false;                           /* any G364 control write acknowledges the retrace (as QEMU) */
+    update_isr();
+  }
+  if(pa >= 0x60080000ULL and pa < 0x60082000ULL and sz >= 2) {
     uint32_t o = (uint32_t)(pa - 0x60080000ULL);
     uint32_t w = (uint32_t)v;
     if(o >= 0x800 and o < 0x1000) {
@@ -158,6 +162,18 @@ void jazz::write(uint64_t pa, uint64_t v, int sz) {
       palette[idx][0] = (w >> 16) & 0xff;
       palette[idx][1] = (w >> 8) & 0xff;
       palette[idx][2] = w & 0xff;
+    }
+    else if(o >= 0x1000 and o < 0x2000) {      /* cursor pattern */
+      cursor_pat[(o - 0x1000) >> 3] = (uint16_t)w;
+    }
+    else if(o >= 0x508 and o < 0x520) {        /* cursor palette (3 entries) */
+      int idx = (o - 0x508) >> 3;
+      cursor_palette[idx][0] = (w >> 16) & 0xff;
+      cursor_palette[idx][1] = (w >> 8) & 0xff;
+      cursor_palette[idx][2] = w & 0xff;
+    }
+    else if(o == 0x638) {
+      cursor_pos = w;
     }
     else if(o == 0x118) {
       g364_width = w * 4;
@@ -465,6 +481,13 @@ void jazz::tick(uint64_t ic) {
     timer_pending = true;
     next_tick += timer_period;
   }
+  if(g364_width != 0 and icnt >= next_vblank) {  /* ~60 Hz vertical retrace; NT's G364 driver moves the pointer there */
+    next_vblank = icnt + 16 * ms_insns;
+    if(not video_irq) {
+      video_irq = true;
+      update_isr();
+    }
+  }
   sonic->tick(icnt);
   if(sonic->irq()) {
     update_isr();
@@ -482,6 +505,28 @@ void jazz::tick(uint64_t ic) {
     next_key = icnt + ms_insns;
     update_isr();
   }
+  /* host mouse motion is coalesced: one packet per ~10 ms (100 Hz sample rate), sent only into an
+   * empty output buffer, so a slow guest sees fewer, larger moves instead of a growing backlog */
+  bool mouse_pending = mouse_dx != 0 or mouse_dy != 0 or mouse_btn != mouse_sent_btn;
+  if(mouse_pending and mouse_stream and kbd_out.empty() and not(kbd_cmd_byte & 0x20) and
+     icnt >= next_mouse) {
+    int dx = mouse_dx, my = -mouse_dy;            /* PS/2 +Y is up; screen +Y is down */
+    if(dx >  255) { dx =  255; }
+    if(dx < -256) { dx = -256; }
+    if(my >  255) { my =  255; }
+    if(my < -256) { my = -256; }
+    mouse_dx -= dx;
+    mouse_dy += my;
+    uint8_t b0 = 0x08 | (mouse_btn & 0x07);       /* bit3 always 1 */
+    if(dx < 0) { b0 |= 0x10; }                    /* X sign (9-bit two's complement) */
+    if(my < 0) { b0 |= 0x20; }                    /* Y sign */
+    kbd_out.push_back(0x100 | b0);                /* 3-byte standard PS/2 packet on the aux port */
+    kbd_out.push_back(0x100 | (uint8_t)dx);
+    kbd_out.push_back(0x100 | (uint8_t)my);
+    mouse_sent_btn = mouse_btn;
+    next_mouse = icnt + 10 * ms_insns;
+    update_isr();
+  }
 }
 
 void jazz::update_isr() {
@@ -493,6 +538,9 @@ void jazz::update_isr() {
   }
   if(fdc_irq) {
     p |= 1u << SRC_FDC;
+  }
+  if(video_irq) {
+    p |= 1u << SRC_VIDEO;
   }
   if(esp->irq()) {
     p |= 1u << SRC_SCSI;
@@ -757,6 +805,8 @@ void jazz::kbd_write(uint32_t o, uint8_t v) {
 void jazz::kbd_data_to_device(uint8_t v, bool aux) {
   uint16_t a = aux ? 0x100 : 0;
   if(aux and aux_dev_arg != 0) {                /* argument of F3 (sample rate) / E8 (resolution) */
+    if(aux_dev_arg == 0xf3) { aux_rate = v; }
+    else { aux_res = v & 3; }
     aux_dev_arg = 0;
     kbd_out.push_back(a | 0xfa);
     return;
@@ -772,9 +822,24 @@ void jazz::kbd_data_to_device(uint8_t v, bool aux) {
         mouse_stream = true;
         break;
       case 0xf5:                                /* disable data reporting */
-      case 0xff:                                /* reset also stops reporting */
         mouse_stream = false;
         break;
+      case 0xf6:                                /* set defaults */
+      case 0xff:                                /* reset also stops reporting */
+        mouse_stream = false;
+        aux_rate = 100;
+        aux_res = 2;
+        aux_scale21 = false;
+        break;
+      case 0xe6: aux_scale21 = false; break;
+      case 0xe7: aux_scale21 = true; break;
+      case 0xe9:                                /* status request: ACK + 3 status bytes */
+        kbd_out.push_back(a | 0xfa);
+        kbd_out.push_back(a | uint8_t((mouse_stream ? 0x20 : 0) | (aux_scale21 ? 0x10 : 0) |
+                                      (mouse_btn & 0x07)));
+        kbd_out.push_back(a | aux_res);
+        kbd_out.push_back(a | aux_rate);
+        return;
       default:
         break;
       }
@@ -899,6 +964,12 @@ void jazz::run_key_event(const key_event &e) {
     dump_screen(e.arg.c_str());
     return;
   }
+  if(e.op == "mouse") {                          /* mouse dx dy [buttons]: host-style relative move */
+    int dx = 0, dy = 0, b = 0;
+    sscanf(e.arg.c_str(), "%d %d %d", &dx, &dy, &b);
+    inject_mouse(dx, dy, (uint8_t)b);
+    return;
+  }
   if(e.op == "key") {                            /* a+b+c: press in order, release in reverse */
     std::vector<int> ks;
     size_t p = 0;
@@ -1000,9 +1071,11 @@ void jazz::dump_screen(const char *fn) {
     return;
   }
   fprintf(f, "P6\n%u %u\n255\n", w, h);
-  const uint8_t *vram = s->mem.get_raw_ptr(0x40000000ULL + (g364_top & 0x7fffff));
+  std::vector<uint32_t> px((size_t)w * h);
+  fb_rgba(px.data());                            /* includes the hardware cursor */
   for(uint32_t i = 0; i < w * h; i++) {
-    fwrite(palette[vram[i]], 1, 3, f);
+    uint8_t rgb[3] = { uint8_t(px[i] >> 16), uint8_t(px[i] >> 8), uint8_t(px[i]) };
+    fwrite(rgb, 1, 3, f);
   }
   fclose(f);
 }
@@ -1018,6 +1091,24 @@ void jazz::fb_rgba(uint32_t *dst) {
     const uint8_t *p = palette[vram[i]];
     dst[i] = 0xff000000u | (uint32_t(p[0]) << 16) | (uint32_t(p[1]) << 8) | p[2];
   }
+  /* G364 hardware cursor (NT's pointer): 64x64, 2 bpp, 0 = transparent, 1..3 = cursor palette */
+  if((g364_ctla & 0x00800000u) or cursor_pos == 0xffffffffu) {
+    return;
+  }
+  int cx = (int)(cursor_pos >> 12) & 0xfff, cy = (int)(cursor_pos & 0xfff);
+  for(int yy = 0; yy < 64; yy++) {
+    int y = cy + yy;
+    if(y < 0 or y >= (int)h) { continue; }
+    for(int xx = 0; xx < 64; xx++) {
+      int x = cx + xx;
+      if(x < 0 or x >= (int)w) { continue; }
+      int op = (cursor_pat[yy * 8 + xx / 8] >> ((xx & 7) * 2)) & 3;
+      if(op) {
+        const uint8_t *c = cursor_palette[op - 1];
+        dst[y * w + x] = 0xff000000u | (uint32_t(c[0]) << 16) | (uint32_t(c[1]) << 8) | c[2];
+      }
+    }
+  }
 }
 
 void jazz::inject_key_name(const char *name, bool make) {
@@ -1028,19 +1119,11 @@ void jazz::inject_key_name(const char *name, bool make) {
 }
 
 void jazz::inject_mouse(int dx, int dy, uint8_t buttons) {
-  if(not mouse_stream or kbd_out.size() > 64) {
-    return;                                      /* not streaming, or the guest isn't draining */
+  if(not mouse_stream) {
+    mouse_dx = mouse_dy = 0;                     /* not streaming: drop host motion */
+    return;
   }
-  if(dx >  127) { dx =  127; }
-  if(dx < -128) { dx = -128; }
-  int my = -dy;                                  /* PS/2 +Y is up; screen +Y is down */
-  if(my >  127) { my =  127; }
-  if(my < -128) { my = -128; }
-  uint8_t b0 = 0x08 | (buttons & 0x07);          /* bit3 always 1 */
-  if(dx < 0) { b0 |= 0x10; }                     /* X sign */
-  if(my < 0) { b0 |= 0x20; }                     /* Y sign */
-  kbd_out.push_back(0x100 | b0);                 /* 3-byte standard PS/2 packet on the aux port */
-  kbd_out.push_back(0x100 | (uint8_t)dx);
-  kbd_out.push_back(0x100 | (uint8_t)my);
-  update_isr();
+  mouse_dx += dx;                                /* tick() turns the accumulated motion into packets */
+  mouse_dy += dy;
+  mouse_btn = buttons;
 }

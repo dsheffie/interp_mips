@@ -71,6 +71,11 @@ private:
   /* G364 */
   uint8_t palette[256][3];
   uint32_t g364_width = 0, g364_height = 0, g364_top = 0, g364_ctla = 0;
+  uint8_t cursor_palette[3][3] = {};
+  uint16_t cursor_pat[512] = {};               /* 64x64 hardware cursor, 2 bits/pixel, 8 px per entry */
+  uint32_t cursor_pos = 0xffffffffu;           /* x << 12 | y (top-left) */
+  bool video_irq = false;                      /* G364 vertical retrace, cleared by any control write */
+  uint64_t next_vblank = 0;
   /* i8042 */
   std::deque<uint16_t> kbd_out;                /* bit 8 = from the aux (mouse) port */
   uint8_t kbd_cmd_byte = 0x45, kbd_pending_cmd = 0;
@@ -78,9 +83,14 @@ private:
   bool kbd_scan = true;                        /* keyboard scanning (device F4 enable / F5 disable) */
   bool mouse_stream = false;                   /* aux data reporting enabled (0xf4 / 0xf5) */
   uint8_t aux_dev_arg = 0;                     /* aux command awaiting its argument byte (F3/E8) */
+  uint8_t aux_rate = 100, aux_res = 2;         /* sample rate / resolution, reported by E9 */
+  bool aux_scale21 = false;                    /* E7 2:1 scaling / E6 1:1 */
   uint8_t kbd_dev_arg = 0;                     /* device command waiting for its argument byte */
   std::deque<uint8_t> host_keys;               /* scan codes from --keys, not yet in kbd_out */
   uint64_t next_key = 0;
+  int mouse_dx = 0, mouse_dy = 0;              /* host motion not yet sent (coalesced into packets) */
+  uint8_t mouse_btn = 0, mouse_sent_btn = 0;
+  uint64_t next_mouse = 0;
   struct key_event {
     uint64_t icnt;
     std::string op, arg;
