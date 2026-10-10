@@ -32,7 +32,7 @@
  * -frounding-math, so add/sub/mul silently rounded to nearest regardless of RM,
  * corrupting anything that sets a non-default mode (e.g. libc's %f dtoa). */
 extern "C" {
-#include "softfloat/source/include/softfloat.h"
+#include "softfloat.h"
 }
 
 /* host double/float <-> softfloat bit-container (pure reinterpret, no rounding) */

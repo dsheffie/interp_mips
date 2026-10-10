@@ -2,9 +2,11 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#ifdef __linux__
 #include <net/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
+#endif
 #include <unistd.h>
 #include "jazz_sonic.hh"
 #include "jazz.hh"
@@ -69,6 +71,7 @@ jazz_sonic::jazz_sonic(jazz *jz, uint64_t ms_insns, const std::string &tap_ifnam
     fprintf(stderr, "[jazz] sonic: no tap (set SONIC_TAP=<ifname>); register model only\n");
     return;
   }
+#ifdef __linux__
   int fd = ::open("/dev/net/tun", O_RDWR);
   if(fd < 0) {
     fprintf(stderr, "[jazz] sonic: open /dev/net/tun failed (need CAP_NET_ADMIN); register model only\n");
@@ -87,6 +90,10 @@ jazz_sonic::jazz_sonic(jazz *jz, uint64_t ms_insns, const std::string &tap_ifnam
   fcntl(fd, F_SETFL, fl | O_NONBLOCK);
   tap_fd = fd;
   fprintf(stderr, "[jazz] sonic: tap up on %s (fd %d)\n", ifr.ifr_name, tap_fd);
+#else
+  (void)want;
+  fprintf(stderr, "[jazz] sonic: TAP only supported on Linux; register model only\n");
+#endif
 }
 
 jazz_sonic::~jazz_sonic() {

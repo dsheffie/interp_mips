@@ -7,8 +7,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#ifdef __linux__
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#endif
 
 /* ---- Seeq register bits (seeq.h / iris seeq8003.rs) ------------------------ */
 namespace {
@@ -51,6 +53,7 @@ sgi_seeq::sgi_seeq(state_t *s_, const std::string &tap_ifname) : s(s_) {
     fprintf(stderr, "sgi_seeq: no tap (set SEEQ_TAP=<ifname>); register model only\n");
     return;
   }
+#ifdef __linux__
   int fd = ::open("/dev/net/tun", O_RDWR);
   if(fd < 0) {
     fprintf(stderr, "sgi_seeq: open /dev/net/tun: %s (need CAP_NET_ADMIN); register model only\n",
@@ -70,6 +73,10 @@ sgi_seeq::sgi_seeq(state_t *s_, const std::string &tap_ifname) : s(s_) {
   fcntl(fd, F_SETFL, fl | O_NONBLOCK);
   tap_fd = fd;
   fprintf(stderr, "sgi_seeq: tap up on %s (fd %d)\n", ifr.ifr_name, tap_fd);
+#else
+  (void)want;
+  fprintf(stderr, "sgi_seeq: TAP only supported on Linux; register model only\n");
+#endif
 }
 
 sgi_seeq::~sgi_seeq() {

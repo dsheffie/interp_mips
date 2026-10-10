@@ -17,7 +17,7 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # CMake build (build/interp_mips_el) first, then the in-tree Makefile build
-if [ -x "$HERE/build/interp_mips_el" ]; then BIN="$HERE/build/interp_mips_el"; else BIN="$HERE/interp_mips_el"; fi
+BIN="$HERE/build/interp_mips_el"
 J0="${JAZZ_J0:-$HOME/code/jazz/j0}"
 PROM="${JAZZ_PROM:-$J0/setup/NTPROM.RAW}"
 DISK="${JAZZ_DISK:-$J0/nt4img/nt4.raw}"
