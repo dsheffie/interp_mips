@@ -67,7 +67,28 @@ jazz_sdl::jazz_sdl(jazz *jz, state_t *s) : jz(jz), s(s) {
   win = wn;
   ren = rn;
   ensure_texture(w, h);
-  fprintf(stderr, "[jazz] sdl: window up (framebuffer %ux%u); click to focus, close window to stop\n", w, h);
+  SDL_RaiseWindow(wn);                            /* a terminal-launched (non-bundled) binary opens in the background on macOS */
+  fprintf(stderr, "[jazz] sdl: window up (framebuffer %ux%u); click the window to capture keyboard+mouse, Ctrl+Alt to release, close window to stop\n", w, h);
+}
+
+/* Modal input capture.  On macOS a bare (non-.app) binary never becomes the key app on its own, so
+ * keystrokes leak to the terminal; and without pointer capture the host and guest cursors drift apart
+ * (different acceleration, deltas clamp at the window edge) so you can't aim at a dialog.  Relative-mouse
+ * mode hides the host cursor, feeds raw deltas to the PS/2 mouse, and forces the window to the foreground,
+ * which fixes both.  Ctrl+Alt (or switching away) releases it.  Keyboard/mouse are injected only while
+ * captured, so this is a clean modal grab. */
+void jazz_sdl::set_grab(bool on) {
+  if(on == grabbed) {
+    return;
+  }
+  grabbed = on;
+  SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+  if(on) {
+    SDL_RaiseWindow((SDL_Window *)win);
+  }
+  SDL_SetWindowTitle((SDL_Window *)win,
+                     on ? "interp_mips jazz (NT) -- captured; Ctrl+Alt to release"
+                        : "interp_mips jazz (NT) -- click to capture keyboard+mouse");
 }
 
 jazz_sdl::~jazz_sdl() {
@@ -101,12 +122,25 @@ void jazz_sdl::pump() {
       case SDL_QUIT:
         s->brk = 1;
         return;
+      case SDL_WINDOWEVENT:
+        if(e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {   /* Cmd-Tab / click away frees the cursor */
+          set_grab(false);
+        }
+        break;
       case SDL_KEYDOWN:
       case SDL_KEYUP:
         if(e.key.repeat) {                       /* the guest does its own key repeat */
           break;
         }
-        {
+        /* Ctrl+Alt is the capture-release "host key" (QEMU convention); never forward it to NT, and
+         * send the modifier breaks so NT doesn't see Ctrl stuck down after the release. */
+        if(grabbed and e.type == SDL_KEYDOWN and (SDL_GetModState() & KMOD_CTRL) and (SDL_GetModState() & KMOD_ALT)) {
+          set_grab(false);
+          jz->inject_key_name("ctrl", false);
+          jz->inject_key_name("alt", false);
+          break;
+        }
+        if(grabbed) {
           const char *nm = sdl_key_name(e.key.keysym.sym);
           if(nm) {
             jz->inject_key_name(nm, e.type == SDL_KEYDOWN);
@@ -114,11 +148,21 @@ void jazz_sdl::pump() {
         }
         break;
       case SDL_MOUSEMOTION:
-        jz->inject_mouse(e.motion.xrel, e.motion.yrel, ps2_buttons());
+        if(grabbed) {
+          jz->inject_mouse(e.motion.xrel, e.motion.yrel, ps2_buttons());
+        }
         break;
       case SDL_MOUSEBUTTONDOWN:
-      case SDL_MOUSEBUTTONUP:
+        if(not grabbed) {                        /* first click captures input; consume it */
+          set_grab(true);
+          break;
+        }
         jz->inject_mouse(0, 0, ps2_buttons());
+        break;
+      case SDL_MOUSEBUTTONUP:
+        if(grabbed) {
+          jz->inject_mouse(0, 0, ps2_buttons());
+        }
         break;
       default:
         break;

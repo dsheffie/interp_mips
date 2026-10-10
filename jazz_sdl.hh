@@ -24,7 +24,9 @@ private:
   uint32_t *pixels = nullptr;
   uint32_t tw = 0, th = 0;
   uint32_t last_render_ms = 0;        /* wall-clock render throttle (~30 Hz) */
+  bool grabbed = false;               /* modal input capture (relative mouse + foreground focus) */
   void ensure_texture(uint32_t w, uint32_t h);
+  void set_grab(bool on);
 };
 
 #endif
