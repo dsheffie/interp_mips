@@ -14,3 +14,26 @@ interp_mips
 *prom*.bin
 *.zip
 indy_4613/
+
+# build dirs + binaries + run scratch (CMake / Makefile)
+build/
+interp_mips_el
+interp_mips_be
+build_*.log
+nt_run/
+
+# simulation scratch
+*.ckpt
+*.delta
+delta.disk
+*.img
+perf.data*
+__pycache__/
+*.pre_*
+run.bbv
+golden_*.bin
+
+# run logs
+g*.log
+iss_boot.log
+gin.txt

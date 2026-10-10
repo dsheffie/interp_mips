@@ -16,14 +16,15 @@
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BIN="$HERE/interp_mips_el"
+# CMake build (build/interp_mips_el) first, then the in-tree Makefile build
+if [ -x "$HERE/build/interp_mips_el" ]; then BIN="$HERE/build/interp_mips_el"; else BIN="$HERE/interp_mips_el"; fi
 J0="${JAZZ_J0:-$HOME/code/jazz/j0}"
 PROM="${JAZZ_PROM:-$J0/setup/NTPROM.RAW}"
 DISK="${JAZZ_DISK:-$J0/nt4img/nt4.raw}"
 NVRAM_SRC="${JAZZ_NVRAM:-$J0/nt4img/nvram}"
 WORK="${JAZZ_WORK:-$HERE/nt_run}"
 
-[ -x "$BIN" ] || { echo "error: $BIN not built -- run 'make EL=1' in $HERE first"; exit 1; }
+[ -x "$BIN" ] || { echo "error: $BIN not built -- build first: cmake -B build -DMIPS_EL=ON && cmake --build build -j (or make EL=1)"; exit 1; }
 for f in "$PROM" "$DISK" "$NVRAM_SRC"; do
   [ -f "$f" ] || { echo "error: missing $f (set JAZZ_* env or convert the qcow2 to nt4.raw)"; exit 1; }
 done
