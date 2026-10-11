@@ -3703,7 +3703,9 @@ void execMips(state_t *s) {
 	HISTO(s, mipsInsn::DSUBU);
 	break;
       case 0x14: /* dsllv: rd = rt << rs[5:0] */
-	s->gpr[rd] = s->gpr[rt] << (s->gpr[rs] & 63);
+	/* shift as unsigned: a signed 64-bit left shift that overflows the sign bit is
+	 * UB (gcc wraps, clang/emcc may not), which corrupts the result's high bits. */
+	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] << (s->gpr[rs] & 63));
 	s->pc += 4;
 	HISTO(s, mipsInsn::DSLLV);
 	break;
@@ -3718,7 +3720,7 @@ void execMips(state_t *s) {
 	HISTO(s, mipsInsn::DSRAV);
 	break;
       case 0x38: /* dsll: rd = rt << sa */
-	s->gpr[rd] = s->gpr[rt] << sa;
+	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] << sa);   /* unsigned shift: signed <<-overflow is UB */
 	s->pc += 4;
 	HISTO(s, mipsInsn::DSLL);
 	break;
@@ -3733,7 +3735,7 @@ void execMips(state_t *s) {
 	HISTO(s, mipsInsn::DSRA);
 	break;
       case 0x3C: /* dsll32: rd = rt << (sa + 32) */
-	s->gpr[rd] = s->gpr[rt] << (sa + 32);
+	s->gpr[rd] = (int64_t)((uint64_t)s->gpr[rt] << (sa + 32));   /* unsigned shift: signed <<-overflow is UB */
 	s->pc += 4;
 	HISTO(s, mipsInsn::DSLL32);
 	break;
