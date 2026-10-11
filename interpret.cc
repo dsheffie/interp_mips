@@ -1551,7 +1551,9 @@ void branch(uint32_t inst, state_t *s) {
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
-  int32_t imm = ((int32_t)himm) << 2;
+  int32_t imm = (int32_t)himm * 4;   /* branch offset *4; '* 4' not '<< 2' -- left-shift of a
+                                      * negative himm is UB, which gcc (native) and clang (emcc)
+                                      * may compile differently and diverge on specific branches. */
   state_t::reg_t npc = s->pc+4; 
   bool isLikely = false, takeBranch = false, saveReturn = false;
   switch(bt)
@@ -3383,7 +3385,9 @@ void execMips(state_t *s) {
     switch(funct) 
       {
       case 0x00: /*sll*/
-	s->gpr[rd] = static_cast<int32_t>(s->gpr[rt]) << sa;
+	/* SLL is a *logical* shift: do it unsigned (signed <<-overflow is UB, which clang/emcc
+	 * and gcc may resolve differently), then sign-extend the 32-bit result to 64 bits. */
+	s->gpr[rd] = static_cast<int32_t>(static_cast<uint32_t>(s->gpr[rt]) << sa);
 	s->pc += 4;
 	if(inst == 0) {
 	  HISTO(s, mipsInsn::NOP);
