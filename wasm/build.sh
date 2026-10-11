@@ -30,8 +30,12 @@ for b in $(cd "$SFBUILD" && ls *.o 2>/dev/null | sed 's/\.o$//'); do
 done
 
 # ---- 2. stage the bundled clean-room Linux guest (firmware + kernel w/ embedded rootfs) ----
-cp -u ~/code/jazz/jazz-mini/jazz_arcs.bin "$DATA/"
-cp -u ~/code/linux-jazz/vmlinux.32        "$DATA/"
+# Rebuild these upstream first when their sources change: `make` in ~/code/jazz/jazz-mini
+# (jazz_arcs.bin) and `make ARCH=mips CROSS_COMPILE=mips-linux-gnu- vmlinux.32` in
+# ~/code/linux-jazz (which re-embeds jazz-mini's initramfs.spec + init.sh).  Plain cp, not
+# `cp -u`: a stale $DATA copy that happens to be newer must not silently win and ship.
+cp ~/code/jazz/jazz-mini/jazz_arcs.bin "$DATA/"
+cp ~/code/linux-jazz/vmlinux.32        "$DATA/"
 
 # ---- 3. the simulator (native main.cc / gdbstub / cosim / disassemble are excluded) ----
 echo ">> interp_mips"
