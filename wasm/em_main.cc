@@ -49,6 +49,27 @@ uint64_t g_watch_lo = 0, g_watch_hi = ~0ULL;
 uint64_t g_cur_pc = 0, g_cur_icnt = 0;
 uint64_t g_htrace = 0;
 
+/* ---- NT disk: sparse, in-memory, built by JS during upload (see index.html) ----
+ * The 4 GiB raw is ~99.5% zeros, so JS keeps only the non-zero 64 KiB blocks in Module.ntDisk
+ * (a Map).  These shims serve the base image to jazz_esp synchronously (the data is already
+ * resident); writes stay in jazz_esp's C-side overlay, so the user's file is never modified. */
+EM_JS(int, em_disk_present, (void), {
+  return (Module.ntDisk && Module.ntDisk.blocks) ? 1 : 0;
+});
+EM_JS(unsigned, em_disk_nblocks, (void), {
+  return Module.ntDisk ? (Module.ntDisk.nblocks >>> 0) : 0;
+});
+EM_JS(void, em_disk_read, (unsigned lba, uint8_t *dst), {
+  var d = Module.ntDisk;
+  var byteOff = lba * 512;                 /* JS doubles carry this past 2^32 fine */
+  var bs = d.blockSize;
+  var blk = Math.floor(byteOff / bs);
+  var within = byteOff - blk * bs;
+  var b = d.blocks.get(blk);
+  if (b) { HEAPU8.set(b.subarray(within, within + 512), dst); }
+  else   { HEAPU8.fill(0, dst, dst + 512); }   /* unmapped == zeros */
+});
+
 static state_t *s = nullptr;
 static sparse_mem *sm = nullptr;
 static jazz_sdl *disp = nullptr;
@@ -107,7 +128,8 @@ static void boot(bool nt) {
   sm->st = s;
 
   const char *nvram = nt ? "/nvram" : "";      /* NT needs its DS1225; Linux uses an anon buffer */
-  s->jz = new jazz(s, nvram, 50000, nt ? "/disk.raw" : "", false, "");
+  /* no file-backed disk in wasm: the NT disk is the JS sparse store (jazz_esp uses em_disk_*). */
+  s->jz = new jazz(s, nvram, 50000, "", false, "");
   sm->route_jazz = true;
 
 #ifndef EM_HEADLESS
@@ -120,8 +142,10 @@ static void boot(bool nt) {
     /* NT: run the vendor PROM from the reset vector (it loads osloader itself). */
     size_t n = 0; uint8_t *rom = slurp("/NTPROM.RAW", &n);
     if(!rom) { printf("[em] NT needs NTPROM.RAW uploaded\n"); return; }
-    memcpy(sm->mem + 0x1fc00000, rom, n);
-    memcpy(sm->mem + 0xfff00000ULL, rom, n);   /* Jazz PROM alias */
+    /* get_raw_ptr applies em_fold, so these land in the compact wasm buffer (0x08800000 /
+     * 0x08c00000), not at the raw 0x1fc00000 / 0xfff00000 which is far past the 144 MiB map. */
+    memcpy(sm->get_raw_ptr(0x1fc00000ULL), rom, n);
+    memcpy(sm->get_raw_ptr(0xfff00000ULL), rom, n);   /* Jazz PROM alias */
     free(rom);
     s->pc = (int64_t)(int32_t)0xbfc00000u;
     printf("[em] booting Windows NT 4.0 from NTPROM.RAW\n");

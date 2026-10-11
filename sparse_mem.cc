@@ -58,8 +58,16 @@ sparse_mem::sparse_mem() {
   void* mempt = mmap(nullptr, sparse_mem::sz, PROT, MAP, -1, 0);
   mem = reinterpret_cast<uint8_t*>(mempt);
   assert(mem != reinterpret_cast<uint8_t*>(~0UL));
+#ifdef __EMSCRIPTEN__
+  /* emscripten's anonymous mmap is not guaranteed zero-filled (and the native MADV_DONTNEED zeroing
+   * below is a no-op on wasm32, where 1UL<<32 is undefined), so the guest would read garbage RAM.
+   * The NT firmware reads RAM expecting zeros; without this it skips SCSI enumeration ("Invalid
+   * device name").  The buffer is fully committed at 144 MiB here, so zero it explicitly. */
+  memset(mem, 0, sparse_mem::sz);
+#else
   assert(madvise(mem, 1UL<<32, MADV_DONTNEED)==0);
   //memset(mem, 0, sparse_mem::sz);
+#endif
 #ifdef ENABLE_O32_TRACE
   g_ramcap = getenv("RAMCAP") != nullptr;
   g_wrtrack = getenv("WRTRACK") != nullptr;

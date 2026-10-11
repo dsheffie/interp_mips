@@ -7,6 +7,17 @@
 #include "jazz_esp.hh"
 #include "jazz.hh"
 
+#ifdef __EMSCRIPTEN__
+/* In the browser the disk is a sparse, in-memory image owned by JS (built from the uploaded
+ * qcow2); these are implemented as EM_JS shims in wasm/em_main.cc.  Reads come from there;
+ * writes still go to the C-side overlay below, so the upload is never modified. */
+extern "C" {
+  int      em_disk_present(void);
+  unsigned em_disk_nblocks(void);
+  void     em_disk_read(unsigned lba, uint8_t *dst);
+}
+#endif
+
 /* register offsets (read / write names differ) */
 static const uint32_t ESP_TCLO = 0x0, ESP_TCMID = 0x1, ESP_FIFO = 0x2, ESP_CMD = 0x3;
 static const uint32_t ESP_RSTAT = 0x4, ESP_WBUSID = 0x4, ESP_RINTR = 0x5, ESP_RSEQ = 0x6;
@@ -35,6 +46,14 @@ static const uint8_t NOT_READY = 0x2, ILLEGAL_REQUEST = 0x5, UNIT_ATTENTION = 0x
 jazz_esp::jazz_esp(jazz *jz, const std::string &disk_path, bool disk_write)
   : jz(jz), direct_write(disk_write) {
   hard_reset();
+#ifdef __EMSCRIPTEN__
+  if(em_disk_present()) {
+    nblocks = em_disk_nblocks();               /* full virtual geometry; reads served from JS */
+    fprintf(stderr, "[jazz] esp: SCSI ID 0 = sparse upload, %lu blocks [copy-on-write]\n",
+            (unsigned long)nblocks);
+  }
+  else
+#endif
   if(not disk_path.empty()) {
     fd = open(disk_path.c_str(), disk_write ? O_RDWR : O_RDONLY);
     if(fd < 0) {
@@ -122,7 +141,9 @@ int jazz_esp::select() {
   if(current_req) {
     cancel_request();                          /* a new command before the old one finished */
   }
-  if(target != DISK_ID or fd < 0) {            /* no such target: selection timeout */
+  if(target != DISK_ID or nblocks == 0) {      /* no such target: selection timeout.  Test nblocks,
+                                                * not fd: the wasm build has no file descriptor (the disk
+                                                * is the in-memory sparse store), yet the disk IS present. */
     rregs[ESP_RSTAT] = 0;
     asc_mode = ASC_MODE_DIS;
     rregs[ESP_RINTR] = INTR_DC;
@@ -1067,9 +1088,14 @@ void jazz_esp::block_read(uint64_t lba, uint8_t *dst) {
     memcpy(dst, it->second.data(), 512);
     return;
   }
+#ifdef __EMSCRIPTEN__
+  em_disk_read((unsigned)lba, dst);            /* base image from the JS sparse store (zeros if unmapped) */
+  return;
+#else
   if(pread(fd, dst, 512, (off_t)(lba * 512)) != 512) {
     memset(dst, 0, 512);
   }
+#endif
 }
 
 void jazz_esp::block_write(uint64_t lba, const uint8_t *src) {

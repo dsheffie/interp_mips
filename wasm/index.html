@@ -22,6 +22,12 @@
   canvas { width:100%; height:100%; image-rendering:pixelated; outline:none; display:block; }
   .note { margin-top:18px; color:var(--mut); font-size:13px; }
   .note b { color:var(--fg); }
+  .serial-h { margin:18px 0 6px; color:var(--mut); font-size:12px; text-transform:uppercase;
+              letter-spacing:.06em; }
+  #serial { background:#000; border:1px solid var(--line); border-radius:8px; margin:0;
+            padding:12px 14px; height:300px; overflow:auto; white-space:pre-wrap;
+            word-break:break-word; color:#c9d1d9; font-size:12.5px; line-height:1.45; }
+  #serial .em { color:var(--acc); }
   code { background:var(--panel); padding:1px 5px; border-radius:4px; }
   a { color:var(--acc); }
   details { margin-top:14px; background:var(--panel); border:1px solid var(--line);
@@ -44,25 +50,32 @@
 
   <div class="screen"><canvas id="canvas" tabindex="0"></canvas></div>
 
+  <p class="serial-h">Serial console (ttyS0)</p>
+  <pre id="serial">(boot to see output)</pre>
+
   <p class="note">
-    Click <b>Boot Linux</b>, then click the screen to capture keyboard &amp; mouse (<code>Ctrl+Alt</code> or
-    switch tabs to release). This is a self-contained clean-room stack — our own ARC firmware shim plus a
-    GPL MIPS Linux kernel with an embedded BusyBox rootfs. Nothing is uploaded or sent anywhere.
+    The <b>canvas</b> is the G364 framebuffer — it shows the kernel boot up to the fbcon handoff.
+    The <b>serial console</b> above is where the BusyBox userspace runs: this is a non-interactive demo
+    image that prints a banner, passes its awk/md5/printf self-tests, reaches <code>JAZZ-MINI-DONE</code>,
+    and reboots. A self-contained clean-room stack — our own ARC firmware shim plus a GPL MIPS Linux kernel
+    with an embedded BusyBox rootfs. Nothing is uploaded or sent anywhere.
   </p>
 
   <details>
     <summary>Run Windows NT 4.0 (bring your own ROM + disk)</summary>
     <p class="note" style="margin-top:10px">
       NT 4.0 (MIPS) ran on this exact machine. It's <b>not bundled</b> — it's Microsoft's proprietary code —
-      but if you own a copy you can supply <code>NTPROM.RAW</code>, a raw disk image, and an 8&nbsp;KiB NVRAM file.
-      <i>Browser NT support is still in progress (the disk-streaming + high-memory mapping aren't wired yet);
-      these pickers are a placeholder.</i>
+      but if you own a copy you can supply the three files below. The disk is a <b>qcow2</b> image
+      (<code>qemu-img convert -O qcow2 nt4.raw nt4.qcow2</code> if yours is raw); it's parsed in-browser,
+      only its allocated clusters are kept in memory (~230&nbsp;MB), and writes stay local — your file
+      is never modified. Nothing is uploaded or sent anywhere.
     </p>
     <div class="nt">
-      <label>ROM <input type="file" id="nt-rom"></label>
-      <label>disk <input type="file" id="nt-disk"></label>
-      <label>nvram <input type="file" id="nt-nvram"></label>
+      <label>ROM (NTPROM.RAW) <input type="file" id="nt-rom"></label>
+      <label>disk (.qcow2) <input type="file" id="nt-disk"></label>
+      <label>nvram (8&nbsp;KiB) <input type="file" id="nt-nvram"></label>
       <button id="boot-nt" disabled>Boot NT</button>
+      <span class="status" id="nt-status"></span>
     </div>
   </details>
 
@@ -78,19 +91,32 @@
   var statusEl = document.getElementById('status');
   var bootBtn  = document.getElementById('boot');
   var canvas   = document.getElementById('canvas');
+  var serialEl = document.getElementById('serial');
   var mod = null;
+  var serialStarted = false;
 
   function status(t) { statusEl.textContent = t; }
 
+  /* Append a line of serial/sim output to the on-page console (this is where the BusyBox
+   * userspace output lands, since /dev/console is ttyS0).  Auto-scroll if near the bottom. */
+  function serial(t) {
+    console.log(t);
+    if (!serialStarted) { serialEl.textContent = ''; serialStarted = true; }
+    var atBottom = serialEl.scrollHeight - serialEl.scrollTop - serialEl.clientHeight < 40;
+    serialEl.appendChild(document.createTextNode(t + '\n'));
+    if (atBottom) { serialEl.scrollTop = serialEl.scrollHeight; }
+  }
+
   InterpMips({
     canvas: canvas,
-    print:    function (t) { console.log(t); },
-    printErr: function (t) { console.log(t); },
+    print:    serial,
+    printErr: serial,
   }).then(function (M) {
     mod = M;
     bootBtn.disabled = false;
     bootBtn.textContent = 'Boot Linux';
     status('ready — click Boot Linux');
+    ntReady();                                            /* enable Boot NT if files already chosen */
     if (location.hash === '#boot') { bootBtn.click(); }   /* headless smoke-test hook */
   }).catch(function (e) {
     status('failed to load: ' + e);
@@ -104,22 +130,70 @@
     mod._boot_linux();
   };
 
-  // NT pickers write into the MEMFS the sim reads; left disabled until browser NT lands.
-  function loadInto(path, inputId) {
-    var f = document.getElementById(inputId).files[0];
-    if (!f) { return Promise.resolve(false); }
-    return f.arrayBuffer().then(function (b) {
-      mod.FS.writeFile(path, new Uint8Array(b)); return true;
+  // ---- Windows NT: ROM + nvram into MEMFS, qcow2 parsed into a sparse in-memory disk ----
+  var ntStatus = document.getElementById('nt-status');
+  var ntBtn    = document.getElementById('boot-nt');
+  function pick(id) { return document.getElementById(id).files[0]; }
+  function ntReady() {
+    if (ntBtn) { ntBtn.disabled = !(mod && pick('nt-rom') && pick('nt-disk') && pick('nt-nvram')); }
+  }
+  ['nt-rom','nt-disk','nt-nvram'].forEach(function (id) {
+    var el = document.getElementById(id); if (el) { el.onchange = ntReady; }
+  });
+
+  function writeMemfs(path, inputId) {
+    return pick(inputId).arrayBuffer().then(function (b) {
+      mod.FS.writeFile(path, new Uint8Array(b));
     });
   }
-  var ntBtn = document.getElementById('boot-nt');
+
+  /* Parse a qcow2 (v2/v3, uncompressed) into a Map of allocated 64 KiB clusters keyed by guest
+   * block index.  The sim reads these via em_disk_read; unmapped blocks read back as zeros. */
+  function loadQcow2(file) {
+    return file.arrayBuffer().then(function (ab) {
+      var u8 = new Uint8Array(ab), dv = new DataView(ab);
+      if (dv.getUint32(0) !== 0x514649fb) { throw new Error('not a qcow2 image'); }
+      var cbits = dv.getUint32(20);
+      var size  = Number(dv.getBigUint64(24));
+      var l1size = dv.getUint32(36);
+      var l1off = Number(dv.getBigUint64(40));
+      var cs = 1 << cbits, l2ents = cs / 8;
+      var MASK = 0x00fffffffffffe00n;        // L1/L2 offset mask (bits 9..55)
+      var blocks = new Map();
+      for (var i = 0; i < l1size; i++) {
+        var l2off = Number(dv.getBigUint64(l1off + i * 8) & MASK);
+        if (l2off === 0) { continue; }
+        for (var j = 0; j < l2ents; j++) {
+          var d = dv.getBigUint64(l2off + j * 8);
+          if (d === 0n) { continue; }
+          if (d & (1n << 62n)) { throw new Error('compressed qcow2 clusters are not supported'); }
+          if (d & 1n) { continue; }          // QCOW_OFLAG_ZERO -> leave unmapped (zeros)
+          var coff = Number(d & MASK);
+          if (coff === 0) { continue; }
+          blocks.set(i * l2ents + j, u8.slice(coff, coff + cs));   // copy cluster out
+        }
+      }
+      return { blockSize: cs, nblocks: Math.floor(size / 512), blocks: blocks };
+    });
+  }
+
   if (ntBtn) {
     ntBtn.onclick = function () {
-      Promise.all([
-        loadInto('/NTPROM.RAW', 'nt-rom'),
-        loadInto('/disk.raw',   'nt-disk'),
-        loadInto('/nvram',      'nt-nvram'),
-      ]).then(function () { canvas.focus(); mod._boot_nt(); });
+      ntBtn.disabled = true;
+      ntStatus.textContent = 'loading ROM + nvram…';
+      Promise.all([ writeMemfs('/NTPROM.RAW', 'nt-rom'), writeMemfs('/nvram', 'nt-nvram') ])
+        .then(function () {
+          ntStatus.textContent = 'parsing qcow2 disk…';
+          return loadQcow2(pick('nt-disk'));
+        })
+        .then(function (disk) {
+          mod.ntDisk = disk;
+          ntStatus.textContent = 'disk: ' + disk.blocks.size + ' clusters, booting…';
+          status('booting Windows NT — click the screen to capture input');
+          canvas.focus();
+          mod._boot_nt();
+        })
+        .catch(function (e) { ntStatus.textContent = 'error: ' + e.message; ntBtn.disabled = false; });
     };
   }
 })();

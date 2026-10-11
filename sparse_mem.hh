@@ -63,12 +63,16 @@ public:
 #else
   static const uint64_t sz = 1ULL<<32;
 #endif
-  /* wasm only: relocate the 8 MiB G364 VRAM window from 0x40000000 to 0x08000000 so the
-   * flat buffer stays small.  Identity on native.  Applied at the final mem[] index only,
-   * after all address routing, so the device/RAM decode above is unaffected. */
+  /* wasm only: relocate the high memory-backed windows down next to the 128 MiB of RAM so the
+   * flat buffer stays small.  Identity on native.  Applied at the final mem[] index only, after
+   * all address routing, so the device/RAM decode above is unaffected.  Layout in the 144 MiB
+   * buffer: RAM [0,0x08000000) | VRAM -> 0x08000000 (8M) | NT PROM -> 0x08800000 (4M) |
+   * PROM alias -> 0x08c00000 (1M).  Total 0x08d00000 < sz (0x09000000). */
   static inline uint64_t em_fold(uint64_t a) {
 #ifdef __EMSCRIPTEN__
-    if(a >= 0x40000000ULL && a < 0x40800000ULL) { return a - 0x38000000ULL; }
+    if(a >= 0x40000000ULL && a < 0x40800000ULL)  { return a - 0x38000000ULL; } /* G364 VRAM 8M */
+    if(a >= 0x1fc00000ULL && a < 0x20000000ULL)  { return a - 0x17400000ULL; } /* NT PROM 4M -> 0x08800000 */
+    if(a >= 0xfff00000ULL && a < 0x100000000ULL) { return a - 0xf7300000ULL; } /* PROM alias 1M -> 0x08c00000 */
 #endif
     return a;
   }
