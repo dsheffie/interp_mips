@@ -134,9 +134,11 @@ void load_elf(const char* fn, state_t *ms) {
       // 		<< "\n";
       
       
-      /* not strictly required, prefault fills with zeros */
+      /* not strictly required, prefault fills with zeros.  Must go through va2pa
+       * like the copy loop below: a raw kseg0 vaddr (0x80080000) is >= 0x08000000,
+       * so with jazz routing it floods the device path instead of zeroing RAM. */
       for(int32_t cc = 0; cc < p_memsz; cc++) {
-	mem.set<uint8_t>(cc+p_vaddr, 0);
+	mem.set<uint8_t>(va2pa(cc+p_vaddr), 0);
       }
       
       for(int32_t cc = 0; cc < p_filesz; cc++) {
