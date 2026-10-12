@@ -75,6 +75,11 @@ static sparse_mem *sm = nullptr;
 static jazz_sdl *disp = nullptr;
 static bool g_running = false;
 
+/* Push the live run stats to the page's #stats row (see index.html). */
+EM_JS(void, em_stats, (double mips, double nop_ds, double icnt), {
+  if(typeof Module.updateStats === 'function') { Module.updateStats(mips, nop_ds, icnt); }
+});
+
 /* Load a flat file (embedded or uploaded, in MEMFS) into a heap buffer. */
 static uint8_t *slurp(const char *path, size_t *len_out) {
   FILE *f = fopen(path, "rb");
@@ -118,6 +123,19 @@ static void em_step() {
     execMips(s);
   }
   if(disp) { disp->pump(); }                   /* poll input + render the G364 (throttled to ~30 Hz) */
+
+  /* Refresh the page stats ~2x/sec: MIPS over the elapsed window (smoother than
+   * per-frame, which is render-jittered), plus live icnt + NOP-delay-slot count. */
+  static double stat_t0 = 0;                   /* wall-clock (ms) at last emit */
+  static uint64_t stat_icnt0 = 0;              /* s->icnt at last emit */
+  double now = emscripten_get_now();
+  if(stat_t0 == 0) { stat_t0 = now; stat_icnt0 = s->icnt; }
+  else if(now - stat_t0 >= 500.0) {
+    double mips = (double)(s->icnt - stat_icnt0) / (now - stat_t0) / 1000.0;  /* insns/ms -> MIPS */
+    em_stats(mips, (double)s->nop_delay_slots, (double)s->icnt);
+    stat_t0 = now;
+    stat_icnt0 = s->icnt;
+  }
 }
 
 /* Build the Jazz platform and boot.  nt=false -> bundled clean-room Linux; nt=true -> uploaded NT. */

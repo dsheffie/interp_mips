@@ -9,18 +9,26 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  .wrap { max-width:1120px; margin:0 auto; padding:24px 16px 64px; }
+  .wrap { max-width:1312px; margin:0 auto; padding:24px 16px 64px; }
   h1 { font-size:21px; margin:0 0 4px; font-weight:600; }
-  .sub { color:var(--mut); margin:0 0 20px; }
+  .sub { color:var(--mut); margin:0 0 20px; max-width:820px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
   button { background:var(--acc); color:#07131f; border:0; border-radius:7px;
            padding:9px 16px; font:inherit; font-weight:600; cursor:pointer; }
   button:disabled { background:#21262d; color:var(--mut); cursor:default; }
   .status { color:var(--mut); }
+  .stats { display:flex; gap:22px; flex-wrap:wrap; margin:0 0 14px; color:var(--mut);
+           font-size:13px; }
+  .stats b { color:var(--fg); font-weight:600; }
   .screen { background:#000; border:1px solid var(--line); border-radius:8px;
-            overflow:hidden; aspect-ratio:1280/1024; display:flex; }
-  canvas { width:100%; height:100%; image-rendering:pixelated; outline:none; display:block; }
-  .note { margin-top:18px; color:var(--mut); font-size:13px; }
+            overflow:hidden; display:flex; justify-content:center; align-items:center; }
+  /* Display the framebuffer at its OWN intrinsic size and aspect ratio (no hardcoded
+     1280/1024 stretch -- NT or a reconfigured guest may pick another mode), scaling DOWN
+     only when the column is narrower.  At native size the pixels map to an integer
+     device-pixel multiple on hi-DPI screens, so 8bpp text stays crisp instead of smearing
+     under a fractional downscale. */
+  canvas { max-width:100%; height:auto; image-rendering:pixelated; outline:none; display:block; }
+  .note { margin-top:18px; color:var(--mut); font-size:13px; max-width:820px; }
   .note b { color:var(--fg); }
   .serial-h { margin:18px 0 6px; color:var(--mut); font-size:12px; text-transform:uppercase;
               letter-spacing:.06em; }
@@ -48,17 +56,24 @@
     <span class="status" id="status">fetching WebAssembly…</span>
   </div>
 
-  <div class="screen"><canvas id="canvas" tabindex="0"></canvas></div>
+  <div class="stats" id="stats">
+    <span>speed <b id="st-mips">—</b> MIPS</span>
+    <span>instructions <b id="st-icnt">—</b></span>
+    <span>NOP delay slots <b id="st-nop">—</b></span>
+  </div>
+
+  <div class="screen"><canvas id="canvas" width="1280" height="1024" tabindex="0"></canvas></div>
 
   <p class="serial-h">Serial console (ttyS0)</p>
   <pre id="serial">(boot to see output)</pre>
 
   <p class="note">
-    The <b>canvas</b> is the G364 framebuffer — it shows the kernel boot up to the fbcon handoff.
-    The <b>serial console</b> above is where the BusyBox userspace runs: this is a non-interactive demo
-    image that prints a banner, passes its awk/md5/printf self-tests, reaches <code>JAZZ-MINI-DONE</code>,
-    and reboots. A self-contained clean-room stack — our own ARC firmware shim plus a GPL MIPS Linux kernel
-    with an embedded BusyBox rootfs. Nothing is uploaded or sent anywhere.
+    The <b>canvas</b> is the G364 framebuffer: the kernel boots on it and hands off to an
+    <b>interactive BusyBox shell</b> on tty1 — click the canvas and type (<code>reboot -f</code> restarts).
+    The <b>serial console</b> above (ttyS0) is output-only — it shows the kernel log plus the init
+    banner and its awk/md5/printf self-tests up to <code>JAZZ-MINI-DONE</code>. A self-contained
+    clean-room stack — our own ARC firmware shim plus a GPL MIPS Linux kernel with an embedded
+    BusyBox rootfs. Nothing is uploaded or sent anywhere.
   </p>
 
   <details>
@@ -97,6 +112,16 @@
 
   function status(t) { statusEl.textContent = t; }
 
+  /* Called from the sim (~2x/sec) to refresh the stats row. */
+  var mipsEl = document.getElementById('st-mips');
+  var icntEl = document.getElementById('st-icnt');
+  var nopEl  = document.getElementById('st-nop');
+  function updateStats(mips, nopDs, icnt) {
+    mipsEl.textContent = mips.toFixed(1);
+    icntEl.textContent = Math.round(icnt).toLocaleString();
+    nopEl.textContent  = Math.round(nopDs).toLocaleString();
+  }
+
   /* Append a line of serial/sim output to the on-page console (this is where the BusyBox
    * userspace output lands, since /dev/console is ttyS0).  Auto-scroll if near the bottom. */
   function serial(t) {
@@ -113,6 +138,7 @@
     printErr: serial,
   }).then(function (M) {
     mod = M;
+    M.updateStats = updateStats;                          /* em_stats() -> Module.updateStats */
     bootBtn.disabled = false;
     bootBtn.textContent = 'Boot Linux';
     status('ready — click Boot Linux');

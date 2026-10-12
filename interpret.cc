@@ -3108,6 +3108,11 @@ void execMips(state_t *s) {
   uint32_t ipa = va_translate(s, (uint64_t)s->pc, tlb_op::fetch);
   if(s->tlb_fault) return;   /* instruction-fetch TLB miss -> vectored */
   uint32_t inst = bswap<EL>(mem.get<uint32_t>(ipa));
+#ifdef __EMSCRIPTEN__
+  /* webpage stat: count branch/jump delay slots filled with a NOP (inst == 0).
+   * run_delay_slot sets in_delay_slot before this execMips runs the slot word. */
+  if(s->in_delay_slot && inst == 0) { s->nop_delay_slots++; }
+#endif
   { static const bool g_dis = getenv("DISPROBE") != nullptr;
     static uint32_t seen[128]; static int nseen=0;
     uint32_t pc32=(uint32_t)s->pc;

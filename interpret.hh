@@ -168,6 +168,11 @@ public:
    * core.sv: n_epc = in_delay_slot ? pc-4 : pc; n_exc_in_delay = in_delay_slot). */
   bool in_delay_slot = false;
 
+  /* Webpage stat only (wasm build): running count of executed branch/jump delay
+   * slots that hold a NOP (inst == 0).  Incremented in execMips under
+   * __EMSCRIPTEN__ so the native/cosim/FPGA-ISS paths stay bit-identical. */
+  uint64_t nop_delay_slots = 0;
+
   /* True between a load-linked and its matching store-conditional (set by LL/LLD,
    * cleared by SC/SCD and by any exception).  The functional SC always succeeds,
    * so this is not needed for execution -- it exists so a checkpoint is never
