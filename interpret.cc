@@ -595,7 +595,7 @@ void jazz_dump_hot(state_t *s) {
       for(int32_t d = -0x40; d <= 0x80; d += 4) {
         uint32_t pc = c + d;
         if(pc < HOT_LO or pc >= HOT_HI) { continue; }
-        uint32_t raw = 0; guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)pc, &raw);
+        uint32_t raw = 0; guest_rd32_be(s, sext64(pc), &raw);
         uint32_t inst = __builtin_bswap32(raw);   /* guest_rd32_be yields the BE word; capstone (LE) wants the logical value */
         uint64_t cnt = g_hotcnt[(pc - HOT_LO) >> 2];
         fprintf(stderr, "  %08x %10llu  %08x  %s%s\n", pc, (unsigned long long)cnt, inst,
@@ -722,14 +722,14 @@ void dump_current_process(state_t *s) {
     uint32_t sp  = (uint32_t)s->gpr[29];
     uint32_t s0 = (uint32_t)s->gpr[16];    /* lcl_intrd's interrupt descriptor ptr */
     uint32_t hdlr = 0, lvl = 0, mbit = 0;
-    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 +  0), &hdlr);  /* handler fn */
-    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 +  8), &mbit);  /* mask bit */
-    guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(s0 + 12), &lvl);   /* local level 0/1/2 */
+    guest_rd32_be(s, sext64(s0 +  0), &hdlr);  /* handler fn */
+    guest_rd32_be(s, sext64(s0 +  8), &mbit);  /* mask bit */
+    guest_rd32_be(s, sext64(s0 + 12), &lvl);   /* local level 0/1/2 */
     fprintf(stderr, "[spin] icnt=%lu pc=%08x epc=%08x ra=%08x s0=%08x hdlr=%08x lvl=%u mbit=%08x sp=%08x stack:",
             (unsigned long)s->icnt, (uint32_t)s->pc, epc, ra, s0, hdlr, lvl, mbit, sp);
     for(int i = 0; i < 96; i++) {
       uint32_t w;
-      if(!guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)(sp + i * 4), &w)) break;
+      if(!guest_rd32_be(s, sext64(sp + i * 4), &w)) break;
       if(w >= 0x88002180u && w < 0x882aa180u) fprintf(stderr, " %08x", w);
     }
     fprintf(stderr, "\n");
@@ -741,12 +741,12 @@ void dump_current_process(state_t *s) {
             (unsigned long)s->icnt, (uint32_t)s->pc);
     return;
   }
-  if(!guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)ut + 488, &proc) || proc == 0) {
+  if(!guest_rd32_be(s, sext64(ut) + 488, &proc) || proc == 0) {
     fprintf(stderr, "[curproc] icnt=%lu pc=%08x: ut=%08x has no proc\n",
             (unsigned long)s->icnt, (uint32_t)s->pc, ut);
     return;
   }
-  uint64_t pbase = (uint64_t)(int64_t)(int32_t)proc;
+  uint64_t pbase = sext64(proc);
   char comm[33]; int ci = 0;
   for(; ci < 32; ci++) {
     uint32_t pa;
@@ -1144,7 +1144,7 @@ static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
    * Gated to 32-bit mode so IRIX/kernel 64-bit (XKPHYS/xkseg) addressing is untouched.
    * [NT 3.1/MIPS: ntdll used `lui 0x8000; lw -off` to read the TEB slot at 0x7ffff4a8,
    *  which mistranslated and drove smss into runaway stack recursion -> bugcheck 0x71.] */
-  if(!in_64b_mode(s)) { va = (uint64_t)(int64_t)(int32_t)va; }
+  if(!in_64b_mode(s)) { va = sext64((uint32_t)va); }
   uint32_t hi32 = (uint32_t)(va >> 32);
   uint32_t lo32 = (uint32_t)va;
 
@@ -1381,7 +1381,7 @@ static void ptetrack_probe(state_t *s, uint32_t rd, uint32_t rt) {
   if(n++ >= 40) { return; }
   uint32_t ldva = g_gpr_ld_va[rt], ldpa = g_gpr_ld_pa[rt], ldpc = g_gpr_ld_pc[rt];
   uint32_t ptemem = 0;
-  if(ldva) { guest_rd32_be(s, (uint64_t)(int64_t)(int32_t)ldva, &ptemem); }
+  if(ldva) { guest_rd32_be(s, sext64(ldva), &ptemem); }
   uint64_t w = (uint64_t)ldpa >> 2;
   fprintf(stderr, "[PTETRACK] EntryLo%d=%08x (dev PFN) via r%u pc=%08x icnt=%lu\n",
           (rd == CPR0_ENTRYLO0) ? 0 : 1, v, rt, (uint32_t)s->pc, (unsigned long)s->icnt);
@@ -1989,7 +1989,7 @@ static void _mtc1(uint32_t inst, state_t *s) {
   uint32_t rt = (inst>>16) & 31;
   /* FR=1: FPR[fs]=sign_extend32(GPR[rt][31:0]).  FR=0: write the fs[0]-selected
    * 32b half of the even reg, preserving the other half (r9999 mtc1 merge). */
-  if(fpr_fr1(s)) { s->cpr1[fs] = (uint64_t)(int64_t)(int32_t)(uint32_t)s->gpr[rt]; }
+  if(fpr_fr1(s)) { s->cpr1[fs] = sext64((uint32_t)s->gpr[rt]); }
   else           { *fpr_hw(s, fs) = (uint32_t)s->gpr[rt]; }
   s->pc += 4;
   HISTO(s, mipsInsn::MTC1);
@@ -1999,7 +1999,7 @@ static void _mfc1(uint32_t inst, state_t *s) {
   uint32_t fs = (inst>>11) & 31;
   uint32_t rt = (inst>>16) & 31;
   /* FR=1: GPR[rt]=sign_extend32(FPR[fs][31:0]).  FR=0: extract the fs[0] half. */
-  s->gpr[rt] = (int64_t)(int32_t)(*fpr_hw(s, fs));
+  s->gpr[rt] = sext32(*fpr_hw(s, fs));
   s->pc +=4;
   HISTO(s, mipsInsn::MFC1);
 }
@@ -2039,7 +2039,7 @@ static void _cfc1(uint32_t inst, state_t *s) {
   uint32_t rt = (inst>>16) & 31;
   /* GPR[rt] = sign_extend32(FCR[cr]); FCR0 is the read-only FIR */
   uint32_t v = (cr == 0) ? 0x00000500u : (uint32_t)s->fcr1[fcr_index(cr)];
-  s->gpr[rt] = (int64_t)(int32_t)v;
+  s->gpr[rt] = sext32(v);
   s->pc += 4;
   HISTO(s, mipsInsn::CFC1);
 }
@@ -3303,11 +3303,11 @@ void execMips(state_t *s) {
       bool ok_pcb, ok_lim, ok_b0, ok_b1, ok_e0, ok_e1;
       uint32_t idx = (bv - 0xff800000u) >> 12;
       uint32_t pcb   = rd32(0xffffffffffffa014ULL, ok_pcb);   /* PDA base ptr  */
-      uint32_t lim   = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x380), ok_lim);
-      uint32_t base0 = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x378), ok_b0);
-      uint32_t base1 = rd32((uint64_t)(int64_t)(int32_t)(pcb + 0x37c), ok_b1);
-      uint32_t e0    = rd32((uint64_t)(int64_t)(int32_t)(base0 + idx*4), ok_e0);
-      uint32_t e1    = rd32((uint64_t)(int64_t)(int32_t)(base1 + idx*4), ok_e1);
+      uint32_t lim   = rd32(sext64(pcb + 0x380), ok_lim);
+      uint32_t base0 = rd32(sext64(pcb + 0x378), ok_b0);
+      uint32_t base1 = rd32(sext64(pcb + 0x37c), ok_b1);
+      uint32_t e0    = rd32(sext64(base0 + idx*4), ok_e0);
+      uint32_t e1    = rd32(sext64(base1 + idx*4), ok_e1);
       bool ok_kpt, ok_klim;
       uint32_t kptbl = rd32(0xffffffff8832cf58ULL, ok_kpt);   /* global kernel PT base */
       uint32_t klim  = rd32(0xffffffff8832b588ULL, ok_klim);  /* kmissnxt limit */
@@ -3494,7 +3494,7 @@ void execMips(state_t *s) {
 	break;
       case 0x18: { /* mult: 32x32 signed (operands are the low 32 bits) */
 	int64_t y;
-	y = (int64_t)(int32_t)s->gpr[rs] * (int64_t)(int32_t)s->gpr[rt];
+	y = sext32((uint32_t)s->gpr[rs]) * sext32((uint32_t)s->gpr[rt]);
 	s->lo = (int32_t)(y & 0xffffffff);
 	s->hi = (int32_t)(y >> 32);
 	s->pc += 4;
@@ -3970,7 +3970,7 @@ void execMips(state_t *s) {
 	     * entry -> endless TLB-invalid loop (NT 4.0 on --jazz).  Reserved fields are
 	     * then dropped per the R4400 spec (cp0_write_mask). */
 	    { uint64_t v = (rd == CPR0_ENTRYHI) ? s->gpr[rt]
-	                                        : (uint64_t)(int64_t)(int32_t)s->gpr[rt];
+	                                        : sext64((uint32_t)s->gpr[rt]);
 	      s->cpr0_64[rd] = cp0_write_mask(rd, v); }
 	    s->cpr0[rd] = (uint32_t)s->cpr0_64[rd];
 	  }
