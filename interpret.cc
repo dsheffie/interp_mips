@@ -1133,6 +1133,18 @@ void l1_alias_report() {
 }
 
 static uint32_t va_translate_inner(state_t *s, uint64_t va, tlb_op op) {
+  /* 32-bit addressing mode: the effective address is 32 bits, sign-extended from
+   * bit 31 (R4000 User's Manual: 32-bit mode VAs are the sign-extension of EA[31:0]).
+   * A base built with lui of a bit-31-set constant is sign-extended to 64 bits
+   * (e.g. `lui 0x8000` -> 0xffffffff80000000); adding a negative offset to reach a
+   * useg address just below 0x80000000 then leaves hi32=0xffffffff on a useg VA
+   * (0xffffffff7ffff4a8 for user 0x7ffff4a8).  Translating that 64-bit form mismatches
+   * the user TLB entry (wrong region/VPN) and reads the wrong page.  Re-sign-extending
+   * from bit 31 is idempotent for well-formed addresses and fixes the malformed case.
+   * Gated to 32-bit mode so IRIX/kernel 64-bit (XKPHYS/xkseg) addressing is untouched.
+   * [NT 3.1/MIPS: ntdll used `lui 0x8000; lw -off` to read the TEB slot at 0x7ffff4a8,
+   *  which mistranslated and drove smss into runaway stack recursion -> bugcheck 0x71.] */
+  if(!in_64b_mode(s)) { va = (uint64_t)(int64_t)(int32_t)va; }
   uint32_t hi32 = (uint32_t)(va >> 32);
   uint32_t lo32 = (uint32_t)va;
 
