@@ -1,5 +1,10 @@
 # interp_mips
 
+> **The SGI Indy (IP22) simulator now lives at
+> [indysim](https://github.com/dsheffie/indysim)** (split from this repo with full
+> history; Newport graphics, PS/2, and IRIX 6.5 to the 4Dwm desktop). New Indy work
+> goes there.
+
 A fast **functional** MIPS (R4000 / SGI IP22) instruction-set simulator. It boots
 SGI IP22 firmware + kernels (IRIX 6.5, IP22 Linux) using a **1:1 virtual→physical
 mapping** (no real TLB datapath), which sidesteps the RTL's TLB wall and makes it
