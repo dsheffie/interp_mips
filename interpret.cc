@@ -1918,24 +1918,32 @@ void _sc(uint32_t inst, state_t *s) {
         (unsigned long long)s->icnt,(unsigned long long)nu,(unsigned long long)nk); }
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
-  s->mem.set<int32_t>(ea,  bswap<EL>(static_cast<int32_t>(s->gpr[rt])));
-  s->gpr[rt] = 1;
+  /* SC succeeds only if the LL reservation survived: an exception/ERET between
+   * ll and sc (e.g. an interrupt that context-switches to another thread which
+   * updates the word) must fail it.  Always-succeed lost IRIX mutex waiter bits
+   * (mutex_unlock's CAS overwrote owner|WAITER with 0 -> no mutex_wake; Xsgi
+   * slept forever in socket_pair_cmplock, fsn hung in validate_pane_buffer). */
+  if(s->ll_armed) {
+    s->mem.set<int32_t>(ea,  bswap<EL>(static_cast<int32_t>(s->gpr[rt])));
+  }
+  s->gpr[rt] = s->ll_armed ? 1 : 0;
   s->pc += 4;
   HISTO(s, mipsInsn::SC);
 }
 
 template <bool EL>
 void _scd(uint32_t inst, state_t *s) {
-  /* store conditional doubleword (mirrors _sc; single-core functional sim, so
-   * the store always succeeds and rt is set to 1) */
+  /* store conditional doubleword (mirrors _sc: fails without the LL reservation) */
   uint32_t rt = (inst >> 16) & 31;
   uint32_t rs = (inst >> 21) & 31;
   int16_t himm = (int16_t)(inst & ((1<<16) - 1));
   int32_t imm = (int32_t)himm;
   uint32_t ea = va_translate(s, s->gpr[rs] + imm, tlb_op::store);
   if(s->tlb_fault) return;
-  s->mem.set<int64_t>(ea, bswap<EL>(static_cast<int64_t>(s->gpr[rt])));
-  s->gpr[rt] = 1;
+  if(s->ll_armed) {
+    s->mem.set<int64_t>(ea, bswap<EL>(static_cast<int64_t>(s->gpr[rt])));
+  }
+  s->gpr[rt] = s->ll_armed ? 1 : 0;
   s->pc += 4;
   HISTO(s, mipsInsn::SC);
 }
@@ -3910,6 +3918,7 @@ void execMips(state_t *s) {
 	    if(g_jexc && s->jz)
 	      fprintf(stderr, "[eret] to=%08x sr=%08x icnt=%llu\n", (uint32_t)(s->pc + 4),
 	              s->cpr0[CPR0_SR], (unsigned long long)s->icnt); }
+	  s->ll_armed = false;   /* R4000: ERET clears LLbit */
 	  HISTO(s, mipsInsn::ERET);
 	  break;
 	}

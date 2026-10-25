@@ -79,6 +79,7 @@ void gdb_stub::try_accept() {
   int fd = accept(listen_fd, nullptr, nullptr);
   if(fd < 0) return;
   int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);  /* BSD/macOS: accept() inherits O_NONBLOCK */
   conn_fd = fd;
   fprintf(stderr, "[gdb] client attached\n");
 }
