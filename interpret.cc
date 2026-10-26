@@ -2657,10 +2657,6 @@ static void fpCmp(uint32_t inst, state_t *s) {
 
   switch(cond)
     {
-    case COND_UN:
-      v = (Tfs == Tft);
-      setConditionCode(s, v, cc);   /* FCSR bit 23/25.. is architectural; FCCR mirrors it */
-      break;
     case COND_EQ:
       v = (Tfs == Tft);
       HISTO(s, select_fp_insn<T>(mipsInsn::DP_CMP_EQ, mipsInsn::SP_CMP_EQ));            
