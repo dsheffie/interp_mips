@@ -54,6 +54,7 @@ namespace globals {
   bool trace_fp = false;
   bool report_syscalls = false;
   retire_trace *retire_log = nullptr;
+  std::unordered_map<uint64_t, mem_stat_t> *mem_stats = nullptr;
   FILE *pctrace = nullptr;
   uint32_t pctrace_start = 0x88005960u;
   bool pctrace_on = false;
@@ -63,7 +64,7 @@ namespace globals {
 static state_t *s = nullptr;
 
 int main(int argc, char *argv[]) {
-  std::string filename, arcs, retire_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out, restore_name;
+  std::string filename, arcs, retire_name, mempcs_name, memout_name, start_pc, disk, prom, disk_delta, ckpt_at, ckpt_out, restore_name;
   std::string cosim;   /* "server"|"client": lockstep co-sim vs the JIT sim */
   std::string cpu;
   bool disk_write = false;   /* --disk-write: write straight through to --disk (no COW) */
@@ -83,6 +84,8 @@ int main(int argc, char *argv[]) {
       ("file,f",    po::value<std::string>(&filename), "ELF kernel image")
       ("arcs",      po::value<std::string>(&arcs),     "ARCS firmware blob (loaded at PA 0x1000)")
       ("retiretrace", po::value<std::string>(&retire_name), "emit boost retire_trace for rv64analyzer")
+      ("mempcs", po::value<std::string>(&mempcs_name), "load/store vpcs of interest (hex, one per line; mips-analyzer --mempcs output)")
+      ("memout", po::value<std::string>(&memout_name), "with --mempcs: per-pc address range + stride summary, written at exit")
       ("maxicnt,m", po::value<uint64_t>(&maxinsns)->default_value(~(0UL)), "max instructions")
       ("start-pc", po::value<std::string>(&start_pc)->default_value(""), "fake-BIOS: start PC e.g. 0xa0003000 (skips pseudo_bios + arcs patch; firmware does the handoff)")
       ("disk",     po::value<std::string>(&disk),     "raw SCSI disk image for HD0 (e.g. irix65.img)")
@@ -250,6 +253,28 @@ int main(int argc, char *argv[]) {
   if(!retire_name.empty()) {
     globals::retire_log = &rt;
     globals::trace_retirement = true;
+  }
+  std::unordered_map<uint64_t, globals::mem_stat_t> mem_stats;
+  if(!mempcs_name.empty() != !memout_name.empty()) {
+    std::cerr << "--mempcs and --memout go together\n";
+    return 1;
+  }
+  if(!mempcs_name.empty()) {
+    FILE *fp = fopen(mempcs_name.c_str(), "r");
+    if(fp == nullptr) {
+      std::cerr << "can't open " << mempcs_name << "\n";
+      return 1;
+    }
+    char line[256];
+    while(fgets(line, sizeof(line), fp)) {
+      if(line[0] == '#' or line[0] == '\n') {
+        continue;
+      }
+      mem_stats[strtoull(line, nullptr, 16)];
+    }
+    fclose(fp);
+    globals::mem_stats = &mem_stats;
+    std::cerr << "mempcs: watching " << mem_stats.size() << " pcs\n";
   }
 
   const char *pctrace = getenv("PCTRACE");
@@ -466,6 +491,20 @@ int main(int argc, char *argv[]) {
   std::cout << (static_cast<double>(s->icnt) / t0)*1e-6 << " minsns/sec\n";
 
   
+  if(globals::mem_stats) {
+    FILE *fp = fopen(memout_name.c_str(), "w");
+    if(fp == nullptr) {
+      std::cerr << "can't open " << memout_name << "\n";
+      return 1;
+    }
+    fprintf(fp, "# vpc count bytes lo hi stride breaks\n");
+    for(auto &p : mem_stats) {
+      const globals::mem_stat_t &m = p.second;
+      fprintf(fp, "%lx %lu %u %lx %lx %ld %lu\n", p.first, m.count, m.bytes,
+              m.count ? m.lo : 0UL, m.hi, m.stride, m.breaks);
+    }
+    fclose(fp);
+  }
   if(!retire_name.empty() && !rt.empty()) {
     std::ofstream ofs(retire_name, std::ios::binary);
     boost::archive::binary_oarchive oa(ofs);

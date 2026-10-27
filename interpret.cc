@@ -3225,6 +3225,43 @@ void execMips(state_t *s) {
   uint32_t ipa = va_translate(s, (uint64_t)s->pc, tlb_op::fetch);
   if(s->tlb_fault) return;   /* instruction-fetch TLB miss -> vectored */
   uint32_t inst = bswap<EL>(mem.get<uint32_t>(ipa));
+  if(globals::mem_stats) {
+    auto it = globals::mem_stats->find((uint64_t)s->pc);
+    if(it != globals::mem_stats->end()) {
+      globals::mem_stat_t &m = it->second;
+      uint32_t op = inst >> 26, rs = (inst >> 21) & 31, rt = (inst >> 16) & 31;
+      uint64_t ea = 0;
+      uint32_t bytes = 0;
+      if(op == 0x13) {                                /* COP1X indexed: base + index */
+        ea = (uint64_t)s->gpr[rs] + (uint64_t)s->gpr[rt];
+        uint32_t f = inst & 0x3f;
+        bytes = (f == 0x0 || f == 0x8) ? 4 : (f == 0xf) ? 0 : 8;
+      }
+      else {
+        ea = (uint64_t)s->gpr[rs] + (uint64_t)(int64_t)(int16_t)(inst & 0xffff);
+        switch(op)
+          {
+          case 0x20: case 0x24: case 0x28: bytes = 1; break;                    /* lb lbu sb */
+          case 0x21: case 0x25: case 0x29: bytes = 2; break;                    /* lh lhu sh */
+          case 0x1a: case 0x1b: case 0x2c: case 0x2d: case 0x34: case 0x35:     /* ldl ldr sdl sdr lld ldc1 */
+          case 0x37: case 0x3c: case 0x3d: case 0x3f: bytes = 8; break;         /* ld scd sdc1 sd */
+          case 0x2f: case 0x33: bytes = 0; break;                               /* cache pref */
+          default: bytes = 4; break;                                            /* lw*, sw*, lwc1, swc1, ll, sc */
+          }
+      }
+      if(m.count == 1) {
+        m.stride = (int64_t)(ea - m.last);
+      }
+      else if(m.count > 1 and (int64_t)(ea - m.last) != m.stride) {
+        m.breaks++;
+      }
+      m.lo = std::min(m.lo, ea);
+      m.hi = std::max(m.hi, ea + (bytes ? bytes - 1 : 0));
+      m.last = ea;
+      m.bytes = bytes;
+      m.count++;
+    }
+  }
   { static const bool g_dis = getenv("DISPROBE") != nullptr;
     static uint32_t seen[128]; static int nseen=0;
     uint32_t pc32=(uint32_t)s->pc;
